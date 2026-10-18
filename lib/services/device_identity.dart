@@ -16,9 +16,43 @@ class DeviceIdentity {
 
   static String get subscriptionUserAgent => 'GhostBox-Alpha-v0.1';
 
+  static Future<String> get deviceModel async {
+    if (Platform.isLinux) {
+      for (final path in const [
+        '/sys/class/dmi/id/product_name',
+        '/sys/devices/virtual/dmi/id/product_name',
+        '/proc/device-tree/model',
+      ]) {
+        try {
+          final model = (await File(path).readAsString())
+              .replaceAll(RegExp(r'[\x00\r\n\t]+'), ' ')
+              .trim();
+          if (model.isNotEmpty &&
+              !const {
+                'default string',
+                'system product name',
+                'to be filled by o.e.m.',
+                'unknown',
+              }.contains(model.toLowerCase())) {
+            return model;
+          }
+        } on Object {
+          // Some Linux systems hide DMI data; use the safe fallback below.
+        }
+      }
+      return 'Linux PC';
+    }
+    if (Platform.isMacOS) return 'Mac';
+    if (Platform.isWindows) return 'Windows PC';
+    if (Platform.isAndroid) return 'Android device';
+    if (Platform.isIOS) return 'iPhone or iPad';
+    return Platform.operatingSystem;
+  }
+
   /// Minimal, non-hardware-fingerprinting client details for the VPN provider.
   static Future<Map<String, String>> get transportHeaders async {
     final id = await installationId;
+    final model = await deviceModel;
     return {
       'X-HWID': id,
       'X-Device-ID': id,
@@ -26,10 +60,13 @@ class DeviceIdentity {
       'X-Client-Version': '0.1',
       'X-Device-OS': Platform.operatingSystem,
       'X-Device-OS-Version': Platform.operatingSystemVersion,
+      'X-Ver-OS': Platform.operatingSystemVersion,
+      'X-Device-Model': model,
       'X-Device-Architecture': architecture,
       'X-GhostBox-Client': 'GhostBox-Alpha-v0.1',
       'X-GhostBox-OS': Platform.operatingSystem,
       'X-GhostBox-OS-Version': Platform.operatingSystemVersion,
+      'X-GhostBox-Model': model,
       'X-GhostBox-Architecture': architecture,
     };
   }

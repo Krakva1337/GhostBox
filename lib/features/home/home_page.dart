@@ -3,7 +3,8 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:ui' as ui;
 
-import 'package:flutter/foundation.dart' show listEquals;
+import 'package:flutter/foundation.dart'
+    show kProfileMode, kReleaseMode, listEquals;
 import 'package:flutter/material.dart';
 import 'package:flutter/cupertino.dart' show CupertinoSwitch, CupertinoSlider;
 import 'package:flutter/services.dart';
@@ -339,7 +340,9 @@ class _HomePageState extends State<HomePage>
               Duration(seconds: coreSettings.pingTimeoutSeconds + 2));
           _recordAppLog('HTTPS и TLS-проверка системного маршрута TUN прошла');
         }
-        if (coreSettings.routing != 'direct') {
+        final hasSystemTunnel = coreSettings.connectionMode == 'tun' ||
+            coreSettings.connectionMode == 'mixed';
+        if (coreSettings.routing != 'direct' && !hasSystemTunnel) {
           await _proxyHttpGet(coreSettings.localPort,
               Duration(seconds: coreSettings.pingTimeoutSeconds + 2));
           _recordAppLog('Проверка HTTPS/TLS через прокси прошла');
@@ -3718,7 +3721,183 @@ class _HomePageState extends State<HomePage>
                     opacity: animation,
                     child: SizeTransition(sizeFactor: animation, child: child)),
                 child: advanced ? _advancedSettings() : _basicSettings()),
+            SizedBox(height: 18),
+            _section('GHOSTBOX'),
+            InkWell(
+                borderRadius: BorderRadius.circular(16),
+                onTap: _showAbout,
+                child: _row(
+                    Icons.info_outline_rounded,
+                    'О приложении',
+                    'Сборка, ядра и устройство',
+                    const Icon(Icons.chevron_right_rounded))),
           ]);
+
+  Future<String> _coreVersion(String name) async {
+    try {
+      final executable = coreExecutable(name, 'vendor');
+      if (!File(executable).existsSync()) return 'Не найдено';
+      final result = await Process.run(executable, ['version'])
+          .timeout(const Duration(seconds: 3));
+      final output = '${result.stdout}\n${result.stderr}'
+          .split('\n')
+          .map((line) => line.trim())
+          .firstWhere((line) => line.isNotEmpty, orElse: () => 'Неизвестно');
+      return result.exitCode == 0 ? output : 'Недоступно';
+    } on Object {
+      return 'Недоступно';
+    }
+  }
+
+  Future<void> _showAbout() async {
+    final model = await DeviceIdentity.deviceModel;
+    final installId = await DeviceIdentity.installationId;
+    final xray = await _coreVersion('xray');
+    final singBox = await _coreVersion('sing-box');
+    if (!mounted) return;
+
+    const appVersion = '0.1.0-alpha.1';
+    const buildNumber = '1';
+    final buildMode = kReleaseMode
+        ? 'Release'
+        : kProfileMode
+            ? 'Profile'
+            : 'Debug';
+    final dartVersion =
+        RegExp(r'^\d+\.\d+\.\d+').firstMatch(Platform.version)?.group(0) ??
+            'Неизвестно';
+    final details = <(String, String)>[
+      ('GhostBox', 'Alpha v$appVersion'),
+      ('Номер сборки', buildNumber),
+      ('Тип сборки', buildMode),
+      (
+        'Платформа сборки',
+        '${Platform.operatingSystem} · ${DeviceIdentity.architecture}'
+      ),
+      ('Dart', dartVersion),
+      ('Xray-core', xray),
+      ('sing-box', singBox),
+      ('Устройство', model),
+      ('Операционная система', Platform.operatingSystem),
+      ('Версия ОС', Platform.operatingSystemVersion),
+      ('Архитектура', DeviceIdentity.architecture),
+      ('ID устройства', installId),
+    ];
+    final report = details.map((item) => '${item.$1}: ${item.$2}').join('\n');
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => Dialog(
+        insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 28),
+        backgroundColor: _surface,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(26)),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 520, maxHeight: 680),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(22, 20, 22, 14),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(children: [
+                  Container(
+                    width: 42,
+                    height: 42,
+                    decoration: BoxDecoration(
+                      color: _accent.withOpacity(.14),
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    child: Icon(Icons.shield_rounded, color: _accent),
+                  ),
+                  const SizedBox(width: 12),
+                  const Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('О GhostBox',
+                            style: TextStyle(
+                                fontSize: 19, fontWeight: FontWeight.w700)),
+                        SizedBox(height: 2),
+                        Text('Информация о сборке и устройстве',
+                            style: TextStyle(fontSize: 11)),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: 'Закрыть',
+                    onPressed: () => Navigator.pop(dialogContext),
+                    icon: const Icon(Icons.close_rounded),
+                  ),
+                ]),
+                const SizedBox(height: 14),
+                Flexible(
+                  child: ListView(
+                    shrinkWrap: true,
+                    children: [
+                      _section('СБОРКА'),
+                      for (final item in details.take(5))
+                        _aboutDetail(item.$1, item.$2),
+                      const SizedBox(height: 10),
+                      _section('ЯДРА'),
+                      for (final item in details.skip(5).take(2))
+                        _aboutDetail(item.$1, item.$2),
+                      const SizedBox(height: 10),
+                      _section('УСТРОЙСТВО'),
+                      for (final item in details.skip(7))
+                        _aboutDetail(item.$1, item.$2),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 10),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    onPressed: () async {
+                      await Clipboard.setData(ClipboardData(text: report));
+                      if (dialogContext.mounted) Navigator.pop(dialogContext);
+                      _message('Сведения скопированы');
+                    },
+                    icon: const Icon(Icons.copy_rounded, size: 17),
+                    label: const Text('Скопировать сведения'),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _aboutDetail(String label, String value) => Padding(
+        padding: const EdgeInsets.only(bottom: 9),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 11),
+          decoration: BoxDecoration(
+            color: Colors.white.withOpacity(.045),
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: Colors.white.withOpacity(.055)),
+          ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                flex: 4,
+                child:
+                    Text(label, style: TextStyle(color: _muted, fontSize: 11)),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                flex: 6,
+                child: SelectableText(value,
+                    textAlign: TextAlign.right,
+                    style: const TextStyle(
+                        fontSize: 11, fontWeight: FontWeight.w600)),
+              ),
+            ],
+          ),
+        ),
+      );
 
   Widget _basicSettings() => Column(
           key: ValueKey('basic'),

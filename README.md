@@ -61,7 +61,7 @@ flutter build linux --release
 
 ### Приватность и диагностика
 
-Настройки и профили хранятся локально. User-Agent содержит только имя и версию клиента; ID установки, ОС, версию ОС и архитектуру GhostBox передаёт отдельными заголовками запросов подписки и XHTTP. Клиент не отправляет MAC-адрес, серийный номер оборудования или имя компьютера. Чтобы панель провайдера показала ОС вместо `Unknown`, она должна распознавать эти заголовки; у VLESS поверх обычного TLS/TCP нет универсального поля устройства.
+Настройки и профили хранятся локально. User-Agent содержит только имя и версию клиента; ID установки, ОС, версию ОС, модель системы и архитектуру GhostBox передаёт отдельными заголовками запросов подписки и XHTTP. На Linux модель берётся из системного DMI, если он доступен; иначе отправляется `Linux PC`. Клиент не отправляет MAC-адрес, серийный номер оборудования или имя компьютера. Панель провайдера должна поддерживать эти заголовки; у VLESS поверх обычного TLS/TCP нет универсального поля устройства.
 
 Файл `.env` предназначен только для локальной разработки, исключён из Git и не встраивается в приложение. Не публикуй подписки, токены, приватные ключи и JSON с учётными данными. Перед передачей журналов удали из них секреты.
 
@@ -128,7 +128,7 @@ Android and Windows preparation notes are in [deploy/PLATFORMS.md](deploy/PLATFO
 
 ### Privacy and diagnostics
 
-Settings and profiles are stored locally. The User-Agent contains only the client name and version; GhostBox sends the installation ID, OS, OS version and architecture in separate subscription and XHTTP request headers. It does not send a MAC address, hardware serial number or computer hostname. A provider panel must recognize these headers to display the OS instead of `Unknown`; VLESS over ordinary TLS/TCP has no universal device-information field.
+Settings and profiles are stored locally. The User-Agent contains only the client name and version; GhostBox sends the installation ID, OS, OS version, system model and architecture in separate subscription and XHTTP request headers. On Linux, the model is read from system DMI when available; otherwise `Linux PC` is sent. The client does not send a MAC address, hardware serial number or computer hostname. The provider panel must support these headers; VLESS over ordinary TLS/TCP has no universal device-information field.
 
 `.env` is for local development, is ignored by Git and is not bundled into the app. Do not publish subscription URLs, tokens, private keys or profile JSON containing credentials. Redact secrets before sharing logs.
 
