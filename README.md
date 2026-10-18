@@ -56,11 +56,13 @@ flutter pub get
 flutter build linux --release
 ```
 
+Чтобы закоммитить изменения и отправить текущую ветку на GitHub без force-push, выполни `./tool/push_github.sh "описание изменений"`.
+
 Инструкции подготовки Android и Windows находятся в [deploy/PLATFORMS.md](deploy/PLATFORMS.md); эти платформы пока не входят в альфа-релиз.
 
 ### Приватность и диагностика
 
-Настройки и профили хранятся локально. GhostBox передаёт случайный постоянный ID установки, версию клиента и минимальные данные ОС/архитектуры в заголовках запросов подписки и XHTTP. Клиент не отправляет MAC-адрес, серийный номер оборудования или имя компьютера. Чтобы панель провайдера показала ОС вместо `Unknown`, она должна распознавать заголовки GhostBox; универсального поля устройства в VLESS нет.
+Настройки и профили хранятся локально. User-Agent содержит только имя и версию клиента; ID установки, ОС, версию ОС и архитектуру GhostBox передаёт отдельными заголовками запросов подписки и XHTTP. Клиент не отправляет MAC-адрес, серийный номер оборудования или имя компьютера. Чтобы панель провайдера показала ОС вместо `Unknown`, она должна распознавать эти заголовки; у VLESS поверх обычного TLS/TCP нет универсального поля устройства.
 
 Файл `.env` предназначен только для локальной разработки, исключён из Git и не встраивается в приложение. Не публикуй подписки, токены, приватные ключи и JSON с учётными данными. Перед передачей журналов удали из них секреты.
 
@@ -122,11 +124,13 @@ flutter pub get
 flutter build linux --release
 ```
 
+To commit changes and push the current branch to GitHub without force-pushing, run `./tool/push_github.sh "describe the changes"`.
+
 Android and Windows preparation notes are in [deploy/PLATFORMS.md](deploy/PLATFORMS.md); these platforms are not part of the alpha release yet.
 
 ### Privacy and diagnostics
 
-Settings and profiles are stored locally. GhostBox sends a stable random installation ID, client version and basic OS/architecture details in subscription and XHTTP request headers. It does not send a MAC address, hardware serial number or computer hostname. A provider panel must recognize GhostBox headers to display the OS instead of `Unknown`; VLESS has no universal device-information field.
+Settings and profiles are stored locally. The User-Agent contains only the client name and version; GhostBox sends the installation ID, OS, OS version and architecture in separate subscription and XHTTP request headers. It does not send a MAC address, hardware serial number or computer hostname. A provider panel must recognize these headers to display the OS instead of `Unknown`; VLESS over ordinary TLS/TCP has no universal device-information field.
 
 `.env` is for local development, is ignored by Git and is not bundled into the app. Do not publish subscription URLs, tokens, private keys or profile JSON containing credentials. Redact secrets before sharing logs.
 

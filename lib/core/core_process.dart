@@ -28,6 +28,10 @@ class CoreProcessBackend implements VpnBackend {
   DateTime? _startedAt;
   File? _runtimeConfig;
   Directory? _runtimeDirectory;
+  bool _shouldStayConnected = false;
+  bool _initializing = false;
+  bool _recoveryInProgress = false;
+  int _restartCount = 0;
   CoreSettings settings = const CoreSettings();
   String? _lastError;
   final List<String> _logs = <String>[];
@@ -52,92 +56,169 @@ class CoreProcessBackend implements VpnBackend {
 
   @override
   Future<void> connect(String profile) async {
-    if (_process != null) return;
+    if (_process != null || _state == VpnState.connecting) return;
+    _shouldStayConnected = true;
+    _initializing = true;
+    _recoveryInProgress = false;
+    _restartCount = 0;
     _state = VpnState.connecting;
     _lastError = null;
     _logs.clear();
-    try {
-      if (!executableAvailable) {
-        throw ProcessException(executable, const [],
-            'Core binary not found. Run tool/fetch_cores.sh first.');
-      }
-      final serverProfile = ServerProfile.fromJson(
-          Map<String, dynamic>.from(jsonDecode(profile) as Map));
-      _validateProfile(serverProfile);
-      if (name == 'sing-box' &&
-          serverProfile.security == 'tls' &&
-          _rawString(serverProfile, 'fp', 'fingerprint') != null) {
-        _logs.add(
-            'Эта сборка sing-box не поддерживает uTLS. Отпечаток браузера не применяется; для него выберите Xray.');
-      }
-      final config = makeConfig(serverProfile);
-      _runtimeDirectory =
-          await Directory.systemTemp.createTemp('ghostbox-core-');
-      _runtimeConfig = File('${_runtimeDirectory!.path}/config.json');
-      await _runtimeConfig!
-          .writeAsString(const JsonEncoder.withIndent('  ').convert(config));
-      final check = await Process.run(
-          executable,
-          name == 'sing-box'
-              ? ['check', '-c', _runtimeConfig!.path]
-              : ['run', '-test', '-c', _runtimeConfig!.path]);
-      if (check.exitCode != 0) {
-        throw FormatException(_configError(
-          serverProfile,
-          '${check.stderr}\n${check.stdout}',
-        ));
-      }
-      _process = await Process.start(
-        executable,
-        ['run', '-c', _runtimeConfig!.path],
-        runInShell: false,
-        environment: {'GOMEMLIMIT': '${settings.memoryMb}MiB'},
-      );
-      _stderr = _process!.stderr
-          .transform<String>(const SystemEncoding().decoder)
-          .transform(const LineSplitter())
-          .listen((line) {
-        _captureLog(line, serverProfile, toStderr: true);
-      });
-      _stdout = _process!.stdout
-          .transform<String>(const SystemEncoding().decoder)
-          .transform(const LineSplitter())
-          .listen((line) {
-        _captureLog(line, serverProfile);
-      });
-      _startedAt = DateTime.now();
-      final running = _process!;
-      running.exitCode.then((code) async {
-        if (_process != running) return;
+    Object? lastError;
+    for (var attempt = 1; attempt <= 3; attempt++) {
+      try {
+        await _startProcess(profile);
+        _initializing = false;
+        return;
+      } on Object catch (error) {
+        lastError = error;
         _process = null;
-        _startedAt = null;
-        _state = code == 0 ? VpnState.disconnected : VpnState.error;
-        if (code != 0)
-          _lastError =
-              'Ядро завершилось с кодом $code: ${_logs.isEmpty ? 'см. журнал' : _logs.last}';
         await _cleanupConfig();
-      });
-      await Future<void>.delayed(const Duration(milliseconds: 350));
-      if (_process != running) {
-        throw FormatException(_lastError ??
-            'Ядро завершилось сразу после запуска. Проверьте журнал и локальный порт.');
+        final retryable = error is ProcessException ||
+            (error is FormatException &&
+                error.message
+                    .startsWith('Ядро завершилось сразу после запуска'));
+        if (attempt == 3 || !retryable) break;
+        _writeLifecycleLog(
+            'Ядро $name не запустилось; повторная попытка ${attempt + 1}/3 через ${attempt} сек.');
+        await Future<void>.delayed(Duration(seconds: attempt));
       }
-      _state = VpnState.connected;
-    } on Object catch (error) {
-      _lastError = error is FormatException
-          ? error.message
-          : error is ProcessException
-              ? 'Не удалось запустить ядро $name. Проверьте установленный файл ядра.'
-              : error.toString();
-      _process = null;
-      await _cleanupConfig();
-      _state = VpnState.error;
-      throw FormatException(_lastError!);
     }
+    _initializing = false;
+    _shouldStayConnected = false;
+    _state = VpnState.error;
+    _lastError = _formatStartError(lastError);
+    throw FormatException(_lastError!);
+  }
+
+  Future<void> _startProcess(String profile) async {
+    if (!executableAvailable) {
+      throw ProcessException(executable, const [],
+          'Core binary not found. Run tool/fetch_cores.sh first.');
+    }
+    final serverProfile = ServerProfile.fromJson(
+        Map<String, dynamic>.from(jsonDecode(profile) as Map));
+    _validateProfile(serverProfile);
+    if (name == 'sing-box' &&
+        serverProfile.security == 'tls' &&
+        _rawString(serverProfile, 'fp', 'fingerprint') != null) {
+      _logs.add(
+          'Эта сборка sing-box не поддерживает uTLS. Отпечаток браузера не применяется; для него выберите Xray.');
+    }
+    final config = makeConfig(serverProfile);
+    await _cleanupConfig();
+    _runtimeDirectory = await Directory.systemTemp.createTemp('ghostbox-core-');
+    _runtimeConfig = File('${_runtimeDirectory!.path}/config.json');
+    await _runtimeConfig!
+        .writeAsString(const JsonEncoder.withIndent('  ').convert(config));
+    final check = await Process.run(
+        executable,
+        name == 'sing-box'
+            ? ['check', '-c', _runtimeConfig!.path]
+            : ['run', '-test', '-c', _runtimeConfig!.path]);
+    if (check.exitCode != 0) {
+      throw FormatException(_configError(
+        serverProfile,
+        '${check.stderr}\n${check.stdout}',
+      ));
+    }
+    _process = await Process.start(
+      executable,
+      ['run', '-c', _runtimeConfig!.path],
+      runInShell: false,
+      environment: {'GOMEMLIMIT': '${settings.memoryMb}MiB'},
+    );
+    _stderr = _process!.stderr
+        .transform<String>(const SystemEncoding().decoder)
+        .transform(const LineSplitter())
+        .listen((line) {
+      _captureLog(line, serverProfile, toStderr: true);
+    });
+    _stdout = _process!.stdout
+        .transform<String>(const SystemEncoding().decoder)
+        .transform(const LineSplitter())
+        .listen((line) {
+      _captureLog(line, serverProfile);
+    });
+    _startedAt = DateTime.now();
+    final running = _process!;
+    running.exitCode.then((code) async {
+      if (_process != running) return;
+      _process = null;
+      _startedAt = null;
+      await _cleanupConfig();
+      if (!_shouldStayConnected) {
+        _state = VpnState.disconnected;
+        return;
+      }
+      _lastError =
+          'Ядро завершилось с кодом $code: ${_logs.isEmpty ? 'см. журнал' : _logs.last}';
+      if (_initializing) {
+        _state = VpnState.error;
+        return;
+      }
+      if (_recoveryInProgress) return;
+      _state = VpnState.connecting;
+      _recoveryInProgress = true;
+      _writeLifecycleLog(
+          'Ядро $name завершилось (код $code); пробую поднять снова');
+      unawaited(_recoverProcess(profile));
+    });
+    await Future<void>.delayed(const Duration(milliseconds: 350));
+    if (_process != running) {
+      throw FormatException(_lastError ??
+          'Ядро завершилось сразу после запуска. Проверьте журнал и локальный порт.');
+    }
+    _state = VpnState.connected;
+    _lastError = null;
+    _restartCount = 0;
+  }
+
+  Future<void> _recoverProcess(String profile) async {
+    const delays = [500, 1200, 2500];
+    for (final delayMs in delays) {
+      if (!_shouldStayConnected) break;
+      _restartCount++;
+      _writeLifecycleLog(
+          'Повторный запуск ядра $_restartCount/${delays.length} через ${delayMs}мс');
+      await Future<void>.delayed(Duration(milliseconds: delayMs));
+      if (!_shouldStayConnected) break;
+      try {
+        await _startProcess(profile);
+        _recoveryInProgress = false;
+        return;
+      } on Object catch (error) {
+        _lastError = _formatStartError(error);
+        _writeLifecycleLog(
+            'Повторный запуск $_restartCount не удался: $_lastError');
+      }
+    }
+    _recoveryInProgress = false;
+    if (_shouldStayConnected) {
+      _shouldStayConnected = false;
+      _state = VpnState.error;
+      _lastError ??= 'Не удалось поднять ядро после трёх попыток.';
+      _writeLifecycleLog('Автоперезапуски ядра исчерпаны');
+    }
+  }
+
+  String _formatStartError(Object? error) => error is FormatException
+      ? error.message
+      : error is ProcessException
+          ? 'Не удалось запустить ядро $name. Проверьте установленный файл ядра.'
+          : error?.toString() ?? 'Неизвестная ошибка запуска ядра.';
+
+  void _writeLifecycleLog(String message) {
+    _logs.add(message);
+    if (_logs.length > 100) _logs.removeAt(0);
+    _coreLogWriteQueue =
+        _coreLogWriteQueue.then((_) => _appendPersistentLog(message));
   }
 
   @override
   Future<void> disconnect() async {
+    _shouldStayConnected = false;
+    _initializing = false;
     final process = _process;
     _process = null;
     await _stderr?.cancel();
@@ -153,6 +234,7 @@ class CoreProcessBackend implements VpnBackend {
     await _cleanupConfig();
     _startedAt = null;
     _state = VpnState.disconnected;
+    _recoveryInProgress = false;
   }
 
   Future<void> _cleanupConfig() async {
@@ -550,13 +632,15 @@ class CoreProcessBackend implements VpnBackend {
         if (blocked.isNotEmpty) {'domain_suffix': blocked, 'action': 'reject'},
         if (settings.routing == 'exclude' && settings.directDomains.isNotEmpty)
           {
-            'domain_suffix': settings.directDomains,
+            'domain_suffix':
+                settings.directDomains.map(CoreSettings.routeSuffix).toList(),
             'action': 'route',
             'outbound': 'direct'
           },
         if (settings.routing == 'rules' && settings.proxyDomains.isNotEmpty)
           {
-            'domain_suffix': settings.proxyDomains,
+            'domain_suffix':
+                settings.proxyDomains.map(CoreSettings.routeSuffix).toList(),
             'action': 'route',
             'outbound': 'proxy'
           },
@@ -626,6 +710,11 @@ class CoreProcessBackend implements VpnBackend {
             if (settings.connectionMode == 'tun' ||
                 settings.connectionMode == 'mixed')
               {'protocol': 'dns', 'action': 'hijack-dns'},
+            if ((settings.routing == 'rules' &&
+                    settings.proxyDomains.isNotEmpty) ||
+                (settings.routing == 'exclude' &&
+                    settings.directDomains.isNotEmpty))
+              {'action': 'sniff'},
             ...rules,
           ],
           'final': settings.routing == 'rules' ? 'direct' : 'proxy'
@@ -784,13 +873,17 @@ class CoreProcessBackend implements VpnBackend {
       if (settings.routing == 'exclude' && settings.directDomains.isNotEmpty)
         {
           'type': 'field',
-          'domain': settings.directDomains.map((e) => 'domain:$e').toList(),
+          'domain': settings.directDomains
+              .map((e) => 'domain:${CoreSettings.routeSuffix(e)}')
+              .toList(),
           'outboundTag': 'direct'
         },
       if (settings.routing == 'rules' && settings.proxyDomains.isNotEmpty)
         {
           'type': 'field',
-          'domain': settings.proxyDomains.map((e) => 'domain:$e').toList(),
+          'domain': settings.proxyDomains
+              .map((e) => 'domain:${CoreSettings.routeSuffix(e)}')
+              .toList(),
           'outboundTag': 'proxy'
         },
       {
@@ -823,7 +916,10 @@ class CoreProcessBackend implements VpnBackend {
             },
             'sniffing': {
               'enabled': true,
-              'destOverride': ['http', 'tls', 'quic']
+              'destOverride': ['http', 'tls', 'quic'],
+              // Use the sniffed SNI/Host for routing only. Replacing the
+              // original destination can break TLS on CDN/virtual-host sites.
+              'routeOnly': true,
             }
           },
         {
@@ -835,7 +931,7 @@ class CoreProcessBackend implements VpnBackend {
           'sniffing': {
             'enabled': true,
             'destOverride': ['http', 'tls', 'quic'],
-            'routeOnly': false,
+            'routeOnly': true,
           }
         }
       ],

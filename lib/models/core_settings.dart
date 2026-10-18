@@ -119,6 +119,12 @@ class CoreSettings {
         .where(isValidDomain)
         .toSet()
         .toList();
+    List<String> routePatterns(String key) => (data[key] as List? ?? const [])
+        .whereType<String>()
+        .map(normalizeRoutePattern)
+        .where(isValidRoutePattern)
+        .toSet()
+        .toList();
     final blacklistMode = choice('dnsBlacklistMode', ['none', 'ads', 'custom'],
         data['blocklistEnabled'] == true ? 'custom' : 'none');
     return CoreSettings(
@@ -145,8 +151,8 @@ class CoreSettings {
           ? data['pingTimeoutSeconds'] as int
           : 4,
       blockedDomains: domains('blockedDomains'),
-      directDomains: domains('directDomains'),
-      proxyDomains: domains('proxyDomains'),
+      directDomains: routePatterns('directDomains'),
+      proxyDomains: routePatterns('proxyDomains'),
       memoryMb: ((data['memoryMb'] as num?)?.toInt() ?? 128).clamp(64, 256),
       showRamUsage: data['showRamUsage'] == true,
       localPort:
@@ -184,4 +190,32 @@ class CoreSettings {
   static bool isValidDomain(String value) => RegExp(
           r'^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$')
       .hasMatch(value.trim().toLowerCase());
+
+  /// Route lists accept DNS suffix patterns such as `*.ru` and
+  /// `*.media.example.org`. Core routing engines receive the suffix without
+  /// `*.` and match both the apex and its subdomains.
+  static String normalizeRoutePattern(String value) =>
+      value.trim().toLowerCase().replaceFirst(RegExp(r'\.$'), '');
+
+  static bool isValidRoutePattern(String value) {
+    final pattern = normalizeRoutePattern(value);
+    if (pattern.startsWith('*.')) {
+      final suffix = pattern.substring(2);
+      return _isValidDomainName(suffix, allowSingleLabel: true);
+    }
+    return isValidDomain(pattern);
+  }
+
+  static String routeSuffix(String value) =>
+      normalizeRoutePattern(value).replaceFirst(RegExp(r'^\*\.'), '');
+
+  static bool _isValidDomainName(String value,
+      {required bool allowSingleLabel}) {
+    if (value.isEmpty || value.length > 253) return false;
+    final labels = value.split('.');
+    if (!allowSingleLabel && labels.length < 2) return false;
+    return labels.every((label) =>
+        label.length <= 63 &&
+        RegExp(r'^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$').hasMatch(label));
+  }
 }

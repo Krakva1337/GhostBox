@@ -14,8 +14,7 @@ class DeviceIdentity {
 
   static String get architecture => Abi.current().toString().split('.').last;
 
-  static String get subscriptionUserAgent =>
-      'GhostBox-Alpha-v0.1 (${Platform.operatingSystem}; $architecture; ${Platform.operatingSystemVersion})';
+  static String get subscriptionUserAgent => 'GhostBox-Alpha-v0.1';
 
   /// Minimal, non-hardware-fingerprinting client details for the VPN provider.
   static Future<Map<String, String>> get transportHeaders async {
@@ -23,6 +22,11 @@ class DeviceIdentity {
     return {
       'X-HWID': id,
       'X-Device-ID': id,
+      'X-Client-Name': 'GhostBox',
+      'X-Client-Version': '0.1',
+      'X-Device-OS': Platform.operatingSystem,
+      'X-Device-OS-Version': Platform.operatingSystemVersion,
+      'X-Device-Architecture': architecture,
       'X-GhostBox-Client': 'GhostBox-Alpha-v0.1',
       'X-GhostBox-OS': Platform.operatingSystem,
       'X-GhostBox-OS-Version': Platform.operatingSystemVersion,

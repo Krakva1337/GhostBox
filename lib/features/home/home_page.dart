@@ -67,6 +67,7 @@ class _HomePageState extends State<HomePage>
   bool loadingAdBlocklist = false;
   final LinuxSystemProxy systemProxy = LinuxSystemProxy();
   bool pendingReconnect = false;
+  bool switchingServer = false;
   String? activeProfileId;
   String? connectionIssue;
   final List<String> appLogs = <String>[];
@@ -266,8 +267,9 @@ class _HomePageState extends State<HomePage>
     super.dispose();
   }
 
-  Future<void> _toggle() async {
-    if (backend.state == VpnState.connecting) return;
+  Future<void> _toggle({bool allowDuringSwitch = false}) async {
+    if (backend.state == VpnState.connecting ||
+        (switchingServer && !allowDuringSwitch)) return;
     if (backend.state == VpnState.connected) {
       _recordAppLog('Отключено');
       glow.stop();
@@ -384,14 +386,19 @@ class _HomePageState extends State<HomePage>
       if (!glow.isAnimating) glow.forward(from: 0);
       uptimeTicker = Timer.periodic(Duration(seconds: 1), (_) {
         if (!mounted) return;
-        if (backend.state != VpnState.connected && activeProfileId != null) {
+        if ((backend.state == VpnState.error ||
+                backend.state == VpnState.disconnected) &&
+            activeProfileId != null &&
+            !switchingServer) {
           activeProfileId = null;
           glow.stop();
+          connectionIssue ??= process?.lastError ??
+              'Ядро завершилось после автоматических попыток перезапуска';
           unawaited(_disconnectActive());
           uptimeTicker?.cancel();
         }
         if (xrayTunnelBridgeActive &&
-            tunnelBridgeBackend?.state != VpnState.connected &&
+            tunnelBridgeBackend?.state == VpnState.error &&
             activeProfileId != null) {
           connectionIssue = tunnelBridgeBackend?.lastError ??
               'TUN-маршрутизатор sing-box остановился';
@@ -876,6 +883,32 @@ class _HomePageState extends State<HomePage>
     await backend.disconnect();
     await systemProxy.restore();
     activeLocalPort = null;
+  }
+
+  Future<void> _switchActiveServer() async {
+    final target = selected;
+    if (switchingServer ||
+        backend.state != VpnState.connected ||
+        target == null ||
+        activeProfileId == target.id) return;
+    switchingServer = true;
+    pendingReconnect = false;
+    connectionIssue = null;
+    _recordAppLog('Переключаю сервер на ${target.name}');
+    if (mounted) setState(() {});
+    try {
+      await _disconnectActive();
+      activeProfileId = null;
+      // The VPN remains active from the user's perspective and reconnects
+      // automatically. TUN has a brief traffic pause while its single
+      // interface is handed from the old core to the new one.
+      if (mounted) setState(() {});
+      await _toggle(allowDuringSwitch: true);
+    } finally {
+      switchingServer = false;
+      pendingReconnect = false;
+      if (mounted) setState(() {});
+    }
   }
 
   Future<void> _setConnectionMode(String mode) async {
@@ -2020,7 +2053,7 @@ class _HomePageState extends State<HomePage>
               Padding(
                   padding: const EdgeInsets.only(top: 3, left: 2),
                   child: Text(
-                      'Добавляй домены вроде example.com. Поддомены тоже попадут в правило. Можно вставить JSON-список.',
+                      'Подойдут example.com и маски *.ru, *.example.org. Маска охватывает домен и его поддомены. Можно вставить JSON-список.',
                       style:
                           TextStyle(color: _muted, fontSize: 11, height: 1.4))),
             ],
@@ -2088,12 +2121,12 @@ class _HomePageState extends State<HomePage>
       return;
     }
     final normalized = values
-        .map((value) => value.trim().toLowerCase())
+        .map(CoreSettings.normalizeRoutePattern)
         .where((value) => value.isNotEmpty)
         .toSet()
         .toList();
     final invalid =
-        normalized.where((value) => !CoreSettings.isValidDomain(value));
+        normalized.where((value) => !CoreSettings.isValidRoutePattern(value));
     if (invalid.isNotEmpty) {
       _message('Неверный домен: ${invalid.first}');
       return;
@@ -2117,7 +2150,8 @@ class _HomePageState extends State<HomePage>
               style:
                   const TextStyle(fontSize: 23, fontWeight: FontWeight.w700)),
           const SizedBox(height: 6),
-          Text('Один домен на строку или вставь JSON.',
+          Text(
+              'Домен или маска на строку. Подойдут *.ru и *.example.org; можно вставить JSON.',
               style: TextStyle(color: _muted, fontSize: 12)),
           const SizedBox(height: 16),
           Container(
@@ -2135,7 +2169,7 @@ class _HomePageState extends State<HomePage>
               style: const TextStyle(fontSize: 13, height: 1.5),
               decoration: const InputDecoration(
                   hintText:
-                      'example.com\nmedia.example.org\n\nили JSON: ["example.com"]',
+                      'example.com\n*.ru\n*.media.example.org\n\nили JSON: ["*.ru"]',
                   border: InputBorder.none,
                   counterText: ''),
             ),
@@ -2276,8 +2310,10 @@ class _HomePageState extends State<HomePage>
                       painter: _OrbRings(
                         progress: glow.value,
                         color: _accent,
-                        active: backend.state == VpnState.connected,
-                        connecting: backend.state == VpnState.connecting,
+                        active: backend.state == VpnState.connected ||
+                            switchingServer,
+                        connecting: backend.state == VpnState.connecting ||
+                            switchingServer,
                       ),
                     ),
                     child!,
@@ -2327,7 +2363,8 @@ class _HomePageState extends State<HomePage>
                             end: Alignment.bottomRight,
                             colors: backend.state == VpnState.error
                                 ? const [Color(0xFFFF9FAD), Color(0xFFAB4A67)]
-                                : backend.state == VpnState.connected
+                                : backend.state == VpnState.connected ||
+                                        switchingServer
                                     ? const [
                                         Color(0xFF93EAD0),
                                         Color(0xFF279B91)
@@ -2343,9 +2380,10 @@ class _HomePageState extends State<HomePage>
                               transitionBuilder: (child, animation) =>
                                   FadeTransition(
                                       opacity: animation, child: child),
-                              child: backend.state == VpnState.connecting
+                              child: backend.state == VpnState.connecting ||
+                                      switchingServer
                                   ? const Icon(Icons.more_horiz_rounded,
-                                      key: ValueKey('connecting'),
+                                      key: ValueKey('connecting-or-switching'),
                                       size: 31,
                                       color: Colors.white)
                                   : Icon(
@@ -2359,18 +2397,21 @@ class _HomePageState extends State<HomePage>
                             ),
                             const SizedBox(height: 7),
                             Text(
-                              backend.state == VpnState.connected
-                                  ? _connectedLabel()
-                                  : backend.state == VpnState.connecting
-                                      ? 'ПОДКЛЮЧАЕМ'
-                                      : 'НАЖМИТЕ',
+                              switchingServer
+                                  ? 'ПЕРЕКЛЮЧАЕМ'
+                                  : backend.state == VpnState.connected
+                                      ? _connectedLabel()
+                                      : backend.state == VpnState.connecting
+                                          ? 'ПОДКЛЮЧАЕМ'
+                                          : 'НАЖМИТЕ',
                               style: const TextStyle(
                                   fontSize: 9,
                                   color: Colors.white,
                                   fontWeight: FontWeight.w600,
                                   letterSpacing: .5),
                             ),
-                            if (backend.state == VpnState.connected)
+                            if (backend.state == VpnState.connected &&
+                                !switchingServer)
                               Text(_uptimeLabel(),
                                   style: const TextStyle(
                                       color: Colors.white70, fontSize: 11)),
@@ -2401,14 +2442,16 @@ class _HomePageState extends State<HomePage>
                     '${activeProfileId ?? selectedId}:${backend.state}'),
                 width: double.infinity,
                 child: Text(
-                    backend.state == VpnState.connected
-                        ? (profiles
-                                .where((p) => p.id == activeProfileId)
-                                .firstOrNull
-                                ?.name ??
-                            selected?.name ??
-                            'Локальный прокси запущен')
-                        : (selected?.name ?? 'Выберите сервер'),
+                    switchingServer
+                        ? (selected?.name ?? 'Переключение сервера')
+                        : backend.state == VpnState.connected
+                            ? (profiles
+                                    .where((p) => p.id == activeProfileId)
+                                    .firstOrNull
+                                    ?.name ??
+                                selected?.name ??
+                                'Локальный прокси запущен')
+                            : (selected?.name ?? 'Выберите сервер'),
                     textAlign: TextAlign.center,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
@@ -3132,17 +3175,22 @@ class _HomePageState extends State<HomePage>
     final tile = InkWell(
         borderRadius: BorderRadius.circular(15),
         onTap: () async {
+          final shouldSwitch = backend.state == VpnState.connected &&
+              activeProfileId != profile.id;
           setState(() {
             selectedId = profile.id;
             _probeGeneration++;
             checkingPing = false;
-            if (backend.state == VpnState.connected &&
-                activeProfileId != profile.id) pendingReconnect = true;
+            if (shouldSwitch) pendingReconnect = true;
             pingMs = null;
             pingSamples = [];
           });
           await _persist();
-          if (coreSettings.autoPing && mounted) _checkConnection();
+          if (shouldSwitch) {
+            await _switchActiveServer();
+          } else if (coreSettings.autoPing && mounted) {
+            _checkConnection();
+          }
         },
         child: Padding(
             padding: EdgeInsets.symmetric(vertical: 1),
