@@ -1,0 +1,16 @@
+.dart_tool/
+.packages
+build/
+dist/
+.flutter-plugins*
+.idea/
+*.iml
+vendor/bin/
+vendor/src/
+.env
+.env.*
+!.env.example
+
+
+.toolchains/
+vendor/windows/

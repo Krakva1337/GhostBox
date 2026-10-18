@@ -1,0 +1,4 @@
+#!/bin/sh
+exec 2>&1
+cd /opt/ghostbox
+exec chpst -u ghostbox:ghostbox /opt/ghostbox/ghostbox_core --config /etc/ghostbox/config.json
