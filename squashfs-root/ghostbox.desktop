@@ -1,9 +1,0 @@
-[Desktop Entry]
-Name=GhostBox
-Comment=Cross-platform VPN client powered by Xray and sing-box
-Exec=AppRun
-Icon=ghostbox
-Terminal=false
-Type=Application
-Categories=Network;
-StartupWMClass=ghostbox

@@ -14,3 +14,4 @@ vendor/src/
 
 .toolchains/
 vendor/windows/
+/squashfs-root/
