@@ -1004,29 +1004,28 @@ class _HomePageState extends State<HomePage>
   }
 
   Future<void> _proxyHttpGet(int localPort, Duration timeout) async {
-    final failures = <String>[];
-    for (final probe in const [
-      ('connectivitycheck.gstatic.com', '/generate_204'),
-      ('cp.cloudflare.com', '/generate_204'),
-      ('www.google.com', '/generate_204'),
-    ]) {
-      try {
-        await _proxyHttpGetFrom(localPort, timeout, probe.$1, probe.$2);
-        return;
-      } on Object catch (error) {
-        failures.add('${probe.$1}: $error');
-      }
+    final uri = Uri.tryParse(coreSettings.proxyGetUrl.trim());
+    if (uri == null ||
+        !const ['https', 'http'].contains(uri.scheme.toLowerCase()) ||
+        uri.host.isEmpty) {
+      throw const FormatException('Некорректная ссылка Proxy GET');
     }
-    throw SocketException(
-        'Проверка через прокси не прошла: ${failures.join(' | ')}');
+    try {
+      await _proxyHttpGetFrom(localPort, timeout, uri);
+    } on Object catch (error) {
+      throw SocketException('Проверка через прокси не прошла: $error');
+    }
   }
 
   Future<void> _proxyHttpGetFrom(
-      int localPort, Duration timeout, String host, String path) async {
+      int localPort, Duration timeout, Uri uri) async {
     Socket? socket;
     SecureSocket? tlsSocket;
     _SocketByteReader? reader;
     try {
+      final host = uri.host;
+      final secure = uri.scheme.toLowerCase() == 'https';
+      final port = uri.hasPort ? uri.port : (secure ? 443 : 80);
       socket = await Socket.connect(InternetAddress.loopbackIPv4, localPort,
           timeout: timeout);
       reader = _SocketByteReader(socket);
@@ -1038,7 +1037,8 @@ class _HomePageState extends State<HomePage>
       }
 
       final domain = utf8.encode(host);
-      socket.add([5, 1, 0, 3, domain.length, ...domain, 1, 187]);
+      socket
+          .add([5, 1, 0, 3, domain.length, ...domain, port >> 8, port & 0xff]);
       await socket.flush();
       final response = await reader.read(4).timeout(timeout);
       if (response[0] != 5 || response[1] != 0) {
@@ -1054,18 +1054,24 @@ class _HomePageState extends State<HomePage>
 
       await reader.close();
       reader = null;
-      tlsSocket =
-          await SecureSocket.secure(socket, host: host).timeout(timeout);
-      reader = _SocketByteReader(tlsSocket);
-      tlsSocket.add(utf8.encode(
-          'GET $path HTTP/1.1\r\nHost: $host\r\nUser-Agent: GhostBox-Alpha-v0.1\r\nConnection: close\r\n\r\n'));
-      await tlsSocket.flush();
+      Socket requestSocket = socket;
+      if (secure) {
+        tlsSocket =
+            await SecureSocket.secure(socket, host: host).timeout(timeout);
+        requestSocket = tlsSocket;
+      }
+      reader = _SocketByteReader(requestSocket);
+      final path = uri.hasQuery ? '${uri.path}?${uri.query}' : uri.path;
+      final hostHeader = port == (secure ? 443 : 80) ? host : '$host:$port';
+      requestSocket.add(utf8.encode(
+          'GET ${path.isEmpty ? '/' : path} HTTP/1.1\r\nHost: $hostHeader\r\nUser-Agent: GhostBox-Alpha-v0.1\r\nConnection: close\r\n\r\n'));
+      await requestSocket.flush();
       final statusLine = await reader.readLine(256).timeout(timeout);
-      if (!RegExp(r'^HTTP/1\.[01] (2|3)\d\d(?: |$)').hasMatch(statusLine)) {
-        throw SocketException('HTTPS $host replied: $statusLine');
+      if (!RegExp(r'^HTTP/1\.[01] [1-5]\d\d(?: |$)').hasMatch(statusLine)) {
+        throw SocketException('$host replied: $statusLine');
       }
     } on Object catch (error) {
-      throw SocketException('HTTPS/TLS $host failed: $error');
+      throw SocketException('HTTP GET ${uri.host} failed: $error');
     } finally {
       await reader?.close();
       tlsSocket?.destroy();
@@ -2162,7 +2168,7 @@ class _HomePageState extends State<HomePage>
     final next = routeListMode == 'rules'
         ? coreSettings.copyWith(proxyDomains: normalized)
         : coreSettings.copyWith(directDomains: normalized);
-    await _saveCore(next);
+    await _applyRoutingSettings(next);
     if (mounted) setState(() => routeListOpen = false);
   }
 
@@ -2227,7 +2233,8 @@ class _HomePageState extends State<HomePage>
           color: Colors.transparent,
           child: InkWell(
             borderRadius: BorderRadius.circular(20),
-            onTap: () => _saveCore(coreSettings.copyWith(routing: value)),
+            onTap: () =>
+                _applyRoutingSettings(coreSettings.copyWith(routing: value)),
             child: AnimatedContainer(
               duration: const Duration(milliseconds: 260),
               curve: Curves.easeOutCubic,
@@ -3504,6 +3511,32 @@ class _HomePageState extends State<HomePage>
     await p.setString('coreSettings', jsonEncode(value.toJson()));
   }
 
+  Future<void> _applyRoutingSettings(CoreSettings value) async {
+    if (backend.state == VpnState.connecting) {
+      _message('Подождите завершения подключения');
+      return;
+    }
+    final reconnect = backend.state == VpnState.connected;
+    if (reconnect) {
+      switchingServer = true;
+      if (mounted) setState(() {});
+    }
+    try {
+      if (reconnect) await _disconnectActive();
+      await _saveCore(value);
+      process?.settings = coreSettings;
+      if (reconnect && selected != null) {
+        await _toggle(allowDuringSwitch: true);
+      }
+    } finally {
+      if (reconnect) {
+        switchingServer = false;
+        pendingReconnect = false;
+        if (mounted) setState(() {});
+      }
+    }
+  }
+
   Future<void> _selectDnsResolver(String choice) async {
     if (choice != 'custom') {
       await _saveCore(coreSettings.copyWith(dns: choice));
@@ -3544,6 +3577,47 @@ class _HomePageState extends State<HomePage>
     }
     await _saveCore(
         coreSettings.copyWith(dns: 'custom', customDnsResolver: value.trim()));
+  }
+
+  Future<void> _editProxyGetUrl() async {
+    final controller = TextEditingController(text: coreSettings.proxyGetUrl);
+    final value = await showDialog<String>(
+        context: context,
+        builder: (context) => AlertDialog(
+              backgroundColor: _surface,
+              title: const Text('Ссылка для Proxy GET'),
+              content: TextField(
+                controller: controller,
+                autofocus: true,
+                keyboardType: TextInputType.url,
+                decoration: const InputDecoration(
+                  hintText: 'https://httpbin.org/status/404',
+                  helperText:
+                      'Любой HTTP-ответ считается успехом. По умолчанию сервер отвечает 404.',
+                ),
+              ),
+              actions: [
+                TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: const Text('Отмена')),
+                FilledButton(
+                    onPressed: () =>
+                        Navigator.pop(context, controller.text.trim()),
+                    child: const Text('Сохранить')),
+              ],
+            ));
+    controller.dispose();
+    if (value == null) return;
+    final uri = Uri.tryParse(value);
+    if (uri == null ||
+        !const ['http', 'https'].contains(uri.scheme.toLowerCase()) ||
+        uri.host.isEmpty ||
+        uri.userInfo.isNotEmpty) {
+      _message('Введи полную ссылку, начинающуюся с http:// или https://');
+      return;
+    }
+    await _saveCore(coreSettings.copyWith(proxyGetUrl: uri.toString()),
+        requiresReconnect: false);
   }
 
   bool _validDnsResolver(String value) {
@@ -4230,7 +4304,8 @@ class _HomePageState extends State<HomePage>
                       'rules': 'Только из списка',
                       'exclude': 'Всё, кроме списка'
                     },
-                    (v) => _saveCore(coreSettings.copyWith(routing: v)))),
+                    (v) => _applyRoutingSettings(
+                        coreSettings.copyWith(routing: v)))),
             _row(
                 coreSettings.routing == 'rules'
                     ? Icons.shield_outlined
@@ -4339,6 +4414,15 @@ class _HomePageState extends State<HomePage>
                     {'proxy': 'Proxy GET', 'tcp': 'TCP', 'icmp': 'ICMP'},
                     (v) => _saveCore(coreSettings.copyWith(pingMode: v),
                         requiresReconnect: false))),
+            if (coreSettings.pingMode == 'proxy')
+              _row(
+                  Icons.link_rounded,
+                  'Ссылка для GET',
+                  coreSettings.proxyGetUrl,
+                  IconButton(
+                      tooltip: 'Изменить ссылку проверки',
+                      onPressed: _editProxyGetUrl,
+                      icon: const Icon(Icons.edit_outlined))),
             _row(
                 Icons.timer_outlined,
                 'Таймаут',

@@ -21,6 +21,7 @@ class CoreSettings {
     this.autoPing = false,
     this.aggressiveXhttpCleanup = false,
     this.pingMode = 'proxy',
+    this.proxyGetUrl = 'https://httpbin.org/status/404',
     this.pingView = 'full',
     this.pingCount = 3,
     this.pingTimeoutSeconds = 4,
@@ -34,6 +35,7 @@ class CoreSettings {
       dnsBlacklistMode,
       logLevel,
       pingMode,
+      proxyGetUrl,
       pingView;
   final int pingCount, pingTimeoutSeconds;
   final bool dnsThroughProxy, blocklistEnabled, autoConnect, autoPing;
@@ -73,6 +75,7 @@ class CoreSettings {
           bool? autoLocalPort,
           String? logLevel,
           String? pingMode,
+          String? proxyGetUrl,
           String? pingView,
           int? pingCount,
           int? pingTimeoutSeconds}) =>
@@ -106,6 +109,7 @@ class CoreSettings {
           autoLocalPort: autoLocalPort ?? this.autoLocalPort,
           logLevel: logLevel ?? this.logLevel,
           pingMode: pingMode ?? this.pingMode,
+          proxyGetUrl: proxyGetUrl ?? this.proxyGetUrl,
           pingView: pingView ?? this.pingView,
           pingCount: pingCount ?? this.pingCount,
           pingTimeoutSeconds: pingTimeoutSeconds ?? this.pingTimeoutSeconds);
@@ -144,6 +148,8 @@ class CoreSettings {
       autoPing: data['autoPing'] == true,
       aggressiveXhttpCleanup: data['aggressiveXhttpCleanup'] == true,
       pingMode: choice('pingMode', ['proxy', 'tcp', 'icmp'], 'proxy'),
+      proxyGetUrl:
+          data['proxyGetUrl'] as String? ?? 'https://httpbin.org/status/404',
       pingView: choice('pingView', ['full', 'number', 'quality'], 'full'),
       pingCount:
           [1, 3, 5].contains(data['pingCount']) ? data['pingCount'] as int : 3,
@@ -182,6 +188,7 @@ class CoreSettings {
         'autoPing': autoPing,
         'aggressiveXhttpCleanup': aggressiveXhttpCleanup,
         'pingMode': pingMode,
+        'proxyGetUrl': proxyGetUrl,
         'pingView': pingView,
         'pingCount': pingCount,
         'pingTimeoutSeconds': pingTimeoutSeconds,

@@ -650,37 +650,12 @@ class CoreProcessBackend implements VpnBackend {
             'outbound': 'proxy'
           },
       ];
-      final dnsServers = _singBoxDnsServers();
-      final dnsFinal = settings.dns == 'combined' ? 'cloudflare' : 'resolver';
-      final dnsRules = <Map<String, dynamic>>[
-        if (blocked.isNotEmpty)
-          {
-            'domain_suffix': blocked,
-            'action': 'predefined',
-            'rcode': 'NXDOMAIN'
-          },
-        if (settings.dns == 'combined')
-          {
-            'query_type': [1],
-            'action': 'route',
-            'server': 'cloudflare'
-          },
-        if (settings.dns == 'combined')
-          {
-            'query_type': [28],
-            'action': 'route',
-            'server': 'google'
-          },
-      ];
+      final dnsConfig = _singBoxDnsConfig();
       return {
         'log': {
           'level': settings.logLevel == 'warning' ? 'warn' : settings.logLevel
         },
-        'dns': {
-          'servers': dnsServers,
-          'final': dnsFinal,
-          if (dnsRules.isNotEmpty) 'rules': dnsRules,
-        },
+        'dns': dnsConfig,
         'inbounds': [
           if (settings.connectionMode == 'tun' ||
               settings.connectionMode == 'mixed')
@@ -985,11 +960,80 @@ class CoreProcessBackend implements VpnBackend {
     };
   }
 
-  List<Map<String, dynamic>> _singBoxDnsServers() {
-    final detour = settings.dnsThroughProxy ? 'proxy' : 'direct';
-    Map<String, dynamic> doh(String tag, String server) => {
+  Map<String, dynamic> _singBoxDnsConfig() {
+    final splitDomains = settings.routing == 'exclude'
+        ? settings.directDomains
+        : settings.routing == 'rules'
+            ? settings.proxyDomains
+            : const <String>[];
+    final splitIsProxy = settings.routing == 'rules';
+    final hasSplit = splitDomains.isNotEmpty;
+    final defaultDetour = hasSplit
+        ? (splitIsProxy ? 'direct' : 'proxy')
+        : (settings.dnsThroughProxy ? 'proxy' : 'direct');
+    final splitDetour = splitIsProxy ? 'proxy' : 'direct';
+    String tag(String name, String detour) => hasSplit ? '$name-$detour' : name;
+
+    final servers = <Map<String, dynamic>>[
+      ..._singBoxDnsServers(
+          detour: defaultDetour, suffix: hasSplit ? '-$defaultDetour' : ''),
+      if (hasSplit)
+        ..._singBoxDnsServers(detour: splitDetour, suffix: '-$splitDetour'),
+    ];
+    final dnsRules = <Map<String, dynamic>>[
+      if (settings.effectiveBlockedDomains.isNotEmpty)
+        {
+          'domain_suffix': settings.effectiveBlockedDomains,
+          'action': 'predefined',
+          'rcode': 'NXDOMAIN'
+        },
+      if (hasSplit && settings.dns != 'combined')
+        {
+          'domain_suffix': splitDomains.map(CoreSettings.routeSuffix).toList(),
+          'action': 'route',
+          'server': tag('resolver', splitDetour),
+        },
+      if (settings.dns == 'combined' && hasSplit)
+        {
+          'domain_suffix': splitDomains.map(CoreSettings.routeSuffix).toList(),
+          'query_type': [1],
+          'action': 'route',
+          'server': tag('cloudflare', splitDetour),
+        },
+      if (settings.dns == 'combined' && hasSplit)
+        {
+          'domain_suffix': splitDomains.map(CoreSettings.routeSuffix).toList(),
+          'query_type': [28],
+          'action': 'route',
+          'server': tag('google', splitDetour),
+        },
+      if (settings.dns == 'combined')
+        {
+          'query_type': [1],
+          'action': 'route',
+          'server': tag('cloudflare', defaultDetour),
+        },
+      if (settings.dns == 'combined')
+        {
+          'query_type': [28],
+          'action': 'route',
+          'server': tag('google', defaultDetour),
+        },
+    ];
+    return {
+      'servers': servers,
+      'final': settings.dns == 'combined'
+          ? tag('cloudflare', defaultDetour)
+          : tag('resolver', defaultDetour),
+      if (dnsRules.isNotEmpty) 'rules': dnsRules,
+    };
+  }
+
+  List<Map<String, dynamic>> _singBoxDnsServers(
+      {required String detour, String suffix = ''}) {
+    Map<String, dynamic> doh(String name, String server) => {
           'type': 'https',
-          'tag': tag,
+          'tag': '$name$suffix',
           'server': server,
           'path': '/dns-query',
           'detour': detour,
@@ -998,7 +1042,7 @@ class CoreProcessBackend implements VpnBackend {
     switch (settings.dns) {
       case 'system':
         return [
-          <String, dynamic>{'type': 'local', 'tag': 'resolver'}
+          <String, dynamic>{'type': 'local', 'tag': 'resolver$suffix'}
         ];
       case 'cloudflare':
         return [doh('resolver', '1.1.1.1')];
@@ -1007,22 +1051,24 @@ class CoreProcessBackend implements VpnBackend {
       case 'combined':
         return [doh('cloudflare', '1.1.1.1'), doh('google', '8.8.8.8')];
       case 'custom':
-        return _customSingBoxDns(settings.customDnsResolver, detour);
+        return _customSingBoxDns(settings.customDnsResolver, detour,
+            'resolver$suffix', 'bootstrap$suffix');
       default:
         return [
-          <String, dynamic>{'type': 'local', 'tag': 'resolver'}
+          <String, dynamic>{'type': 'local', 'tag': 'resolver$suffix'}
         ];
     }
   }
 
-  List<Map<String, dynamic>> _customSingBoxDns(String value, String detour) {
+  List<Map<String, dynamic>> _customSingBoxDns(
+      String value, String detour, String resolverTag, String bootstrapTag) {
     final input = value.trim();
     final bareIp = InternetAddress.tryParse(input);
     if (bareIp != null) {
       return [
         {
           'type': 'udp',
-          'tag': 'resolver',
+          'tag': resolverTag,
           'server': bareIp.address,
           'server_port': 53,
           'detour': detour,
@@ -1047,15 +1093,15 @@ class CoreProcessBackend implements VpnBackend {
     };
     final ip = InternetAddress.tryParse(parsed.host);
     return [
-      if (ip == null) <String, dynamic>{'type': 'local', 'tag': 'bootstrap'},
+      if (ip == null) <String, dynamic>{'type': 'local', 'tag': bootstrapTag},
       {
         'type': type,
-        'tag': 'resolver',
+        'tag': resolverTag,
         'server': parsed.host,
         'server_port': parsed.hasPort ? parsed.port : defaultPort,
         if (type == 'https')
           'path': parsed.path.isEmpty ? '/dns-query' : parsed.path,
-        if (type == 'https' && ip == null) 'domain_resolver': 'bootstrap',
+        if (type == 'https' && ip == null) 'domain_resolver': bootstrapTag,
         'detour': detour,
       }
     ];
