@@ -1036,7 +1036,7 @@ class CoreProcessBackend implements VpnBackend {
           'tag': '$name$suffix',
           'server': server,
           'path': '/dns-query',
-          'detour': detour,
+          if (detour != 'direct') 'detour': detour,
         };
 
     switch (settings.dns) {
@@ -1071,7 +1071,7 @@ class CoreProcessBackend implements VpnBackend {
           'tag': resolverTag,
           'server': bareIp.address,
           'server_port': 53,
-          'detour': detour,
+          if (detour != 'direct') 'detour': detour,
         }
       ];
     }
@@ -1102,7 +1102,7 @@ class CoreProcessBackend implements VpnBackend {
         if (type == 'https')
           'path': parsed.path.isEmpty ? '/dns-query' : parsed.path,
         if (type == 'https' && ip == null) 'domain_resolver': bootstrapTag,
-        'detour': detour,
+        if (detour != 'direct') 'detour': detour,
       }
     ];
   }
