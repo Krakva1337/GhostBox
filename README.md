@@ -56,7 +56,6 @@ flutter pub get
 flutter build linux --release
 ```
 
-Чтобы закоммитить изменения и отправить текущую ветку на GitHub без force-push, выполни `./tool/push_github.sh "описание изменений"`.
 
 Инструкции подготовки Android и Windows находятся в [deploy/PLATFORMS.md](deploy/PLATFORMS.md); эти платформы пока не входят в альфа-релиз.
 
@@ -124,7 +123,6 @@ flutter pub get
 flutter build linux --release
 ```
 
-To commit changes and push the current branch to GitHub without force-pushing, run `./tool/push_github.sh "describe the changes"`.
 
 Android and Windows preparation notes are in [deploy/PLATFORMS.md](deploy/PLATFORMS.md); these platforms are not part of the alpha release yet.
 

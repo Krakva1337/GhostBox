@@ -318,6 +318,8 @@ class _HomePageState extends State<HomePage>
               coreSettings.copyWith(localPort: runtimeLocalPort);
         }
         runtimeProfile = await _withDeviceMetadata(runtimeProfile);
+        final activeCore = process;
+        if (activeCore != null) _bindCoreRecoveryNotices(activeCore);
         final connection = backend.connect(jsonEncode(runtimeProfile.toJson()));
         if (mounted) setState(() {});
         await connection;
@@ -332,16 +334,15 @@ class _HomePageState extends State<HomePage>
             coreSettings.connectionMode == 'mixed') {
           await _waitForTunInterface();
           _recordAppLog('TUN-интерфейс ghostbox0 поднят');
-          final probeIp = await _resolveIpv4('connectivitycheck.gstatic.com');
-          await _verifyTunRoute(probeIp);
-          await _tunHttpGet(
-              probeIp, Duration(seconds: coreSettings.pingTimeoutSeconds + 2));
-          _recordAppLog('HTTP-проверка системного маршрута TUN прошла');
+          await _verifyTunRoute('1.1.1.1');
+          await _tunHttpsGet(
+              Duration(seconds: coreSettings.pingTimeoutSeconds + 2));
+          _recordAppLog('HTTPS и TLS-проверка системного маршрута TUN прошла');
         }
         if (coreSettings.routing != 'direct') {
           await _proxyHttpGet(coreSettings.localPort,
               Duration(seconds: coreSettings.pingTimeoutSeconds + 2));
-          _recordAppLog('Проверка HTTP через прокси прошла');
+          _recordAppLog('Проверка HTTPS/TLS через прокси прошла');
         }
         if (coreSettings.connectionMode == 'system') {
           await systemProxy.enable(runtimeLocalPort);
@@ -759,17 +760,6 @@ class _HomePageState extends State<HomePage>
     }
   }
 
-  Future<String> _resolveIpv4(String host) async {
-    final addresses = await _lookupHost(host);
-    final ipv4 =
-        addresses.where((address) => address.type == InternetAddressType.IPv4);
-    if (ipv4.isEmpty) {
-      throw FormatException(
-          'Не удалось заранее разрешить IPv4-адрес $host. Проверьте DNS.');
-    }
-    return ipv4.first.address;
-  }
-
   Future<ServerProfile> _resolveXrayTunnelProfile(ServerProfile profile) async {
     final addresses = await _lookupHost(profile.address);
     if (addresses.isEmpty) {
@@ -826,6 +816,7 @@ class _HomePageState extends State<HomePage>
         connectionMode: coreSettings.connectionMode,
         localPort: bridgePort,
       );
+    _bindCoreRecoveryNotices(bridge);
     tunnelBridgeBackend = bridge;
     await bridge.connect(jsonEncode(bridgeProfile.toJson()));
   }
@@ -844,31 +835,44 @@ class _HomePageState extends State<HomePage>
     }
   }
 
-  Future<void> _tunHttpGet(String ip, Duration timeout) async {
-    final client = HttpClient()..connectionTimeout = timeout;
-    try {
-      final request = await client
-          .getUrl(Uri(scheme: 'http', host: ip, path: '/generate_204'))
-          .timeout(timeout);
-      request.headers
-          .set(HttpHeaders.hostHeader, 'connectivitycheck.gstatic.com');
-      request.headers.set(HttpHeaders.connectionHeader, 'close');
-      final response = await request.close().timeout(timeout);
-      await response.drain<void>();
-      if (response.statusCode < 200 || response.statusCode >= 400) {
-        throw FormatException(
-            'Системный запрос через TUN получил HTTP ${response.statusCode}.');
+  Future<void> _tunHttpsGet(Duration timeout) async {
+    final failures = <String>[];
+    for (final probe in const [
+      ('connectivitycheck.gstatic.com', '/generate_204'),
+      ('cp.cloudflare.com', '/generate_204'),
+      ('www.google.com', '/generate_204'),
+    ]) {
+      final client = HttpClient()
+        ..connectionTimeout = timeout
+        ..idleTimeout = timeout;
+      try {
+        final request =
+            await client.getUrl(Uri.https(probe.$1, probe.$2)).timeout(timeout);
+        request.followRedirects = true;
+        request.headers.set(HttpHeaders.connectionHeader, 'close');
+        final response = await request.close().timeout(timeout);
+        await response.drain<void>().timeout(timeout);
+        if (response.statusCode < 200 || response.statusCode >= 400) {
+          throw HttpException('HTTP ${response.statusCode}');
+        }
+        return;
+      } on Object catch (error) {
+        failures.add('${probe.$1}: $error');
+      } finally {
+        client.close(force: true);
       }
-    } on Object catch (error) {
-      throw FormatException(
-          'Проверка реального трафика через TUN не прошла: $error');
-    } finally {
-      client.close(force: true);
     }
+    throw SocketException(
+        'HTTPS/TLS через системный TUN не прошёл: ${failures.join(' | ')}');
   }
 
   String _connectionError(Object error) {
     if (error is FormatException) return error.message;
+    if (error is SocketException &&
+        (error.message.contains('HTTPS/TLS') ||
+            error.message.contains('HTTPS '))) {
+      return 'Ядро запущено, но HTTPS-проверка не прошла: ${error.message}';
+    }
     if (error is SocketException || error is TimeoutException) {
       return 'Ядро запущено, но сервер не ответил через прокси. Проверьте сервер и доступ к интернету.';
     }
@@ -1017,6 +1021,7 @@ class _HomePageState extends State<HomePage>
   Future<void> _proxyHttpGetFrom(
       int localPort, Duration timeout, String host, String path) async {
     Socket? socket;
+    SecureSocket? tlsSocket;
     _SocketByteReader? reader;
     try {
       socket = await Socket.connect(InternetAddress.loopbackIPv4, localPort,
@@ -1030,7 +1035,7 @@ class _HomePageState extends State<HomePage>
       }
 
       final domain = utf8.encode(host);
-      socket.add([5, 1, 0, 3, domain.length, ...domain, 0, 80]);
+      socket.add([5, 1, 0, 3, domain.length, ...domain, 1, 187]);
       await socket.flush();
       final response = await reader.read(4).timeout(timeout);
       if (response[0] != 5 || response[1] != 0) {
@@ -1044,15 +1049,23 @@ class _HomePageState extends State<HomePage>
       };
       await reader.read(addressLength + 2).timeout(timeout);
 
-      socket.add(utf8.encode(
-          'GET $path HTTP/1.1\r\nHost: $host\r\nUser-Agent: GhostBox-HealthCheck/1.0\r\nConnection: close\r\n\r\n'));
-      await socket.flush();
+      await reader.close();
+      reader = null;
+      tlsSocket =
+          await SecureSocket.secure(socket, host: host).timeout(timeout);
+      reader = _SocketByteReader(tlsSocket);
+      tlsSocket.add(utf8.encode(
+          'GET $path HTTP/1.1\r\nHost: $host\r\nUser-Agent: GhostBox-Alpha-v0.1\r\nConnection: close\r\n\r\n'));
+      await tlsSocket.flush();
       final statusLine = await reader.readLine(256).timeout(timeout);
       if (!RegExp(r'^HTTP/1\.[01] (2|3)\d\d(?: |$)').hasMatch(statusLine)) {
-        throw SocketException('Health-check server replied: $statusLine');
+        throw SocketException('HTTPS $host replied: $statusLine');
       }
+    } on Object catch (error) {
+      throw SocketException('HTTPS/TLS $host failed: $error');
     } finally {
       await reader?.close();
+      tlsSocket?.destroy();
       socket?.destroy();
     }
   }
@@ -1557,6 +1570,18 @@ class _HomePageState extends State<HomePage>
         _message('Подписка удалена; серверы сохранены в «Мои профили»');
         break;
     }
+  }
+
+  void _bindCoreRecoveryNotices(CoreProcessBackend core) {
+    core.onRecoveryNotice = (message, {bool error = false}) {
+      if (!mounted) return;
+      GhostNotice.show(
+        context,
+        message,
+        error: error,
+        icon: error ? Icons.warning_amber_rounded : Icons.restart_alt_rounded,
+      );
+    };
   }
 
   void _message(String text) => GhostNotice.show(context, text,

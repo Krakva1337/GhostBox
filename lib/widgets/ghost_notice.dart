@@ -9,7 +9,8 @@ class GhostNotice {
 
   static OverlayEntry? _active;
 
-  static void show(BuildContext context, String message, {bool error = false}) {
+  static void show(BuildContext context, String message,
+      {bool error = false, IconData? icon}) {
     if (!context.mounted || message.trim().isEmpty) return;
     final overlay = Overlay.maybeOf(context, rootOverlay: true);
     if (overlay == null) return;
@@ -22,6 +23,7 @@ class GhostNotice {
         _Notice(
           message: message,
           error: error,
+          icon: icon,
           onDismissed: () {
             if (identical(_active, entry)) hide();
           },
@@ -46,11 +48,13 @@ class _Notice extends StatefulWidget {
   const _Notice({
     required this.message,
     required this.error,
+    required this.icon,
     required this.onDismissed,
   });
 
   final String message;
   final bool error;
+  final IconData? icon;
   final VoidCallback onDismissed;
 
   @override
@@ -70,7 +74,7 @@ class _NoticeState extends State<_Notice> with SingleTickerProviderStateMixin {
     _controller = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 360),
-      reverseDuration: const Duration(milliseconds: 180),
+      reverseDuration: const Duration(milliseconds: 240),
     );
     _animation = CurvedAnimation(
       parent: _controller,
@@ -166,9 +170,10 @@ class _NoticeState extends State<_Notice> with SingleTickerProviderStateMixin {
                       Padding(
                         padding: const EdgeInsets.fromLTRB(16, 17, 12, 16),
                         child: Icon(
-                          widget.error
-                              ? Icons.warning_amber_rounded
-                              : Icons.check_circle_outline_rounded,
+                          widget.icon ??
+                              (widget.error
+                                  ? Icons.warning_amber_rounded
+                                  : Icons.check_circle_outline_rounded),
                           color: accent,
                           size: 21,
                         ),

@@ -36,6 +36,7 @@ class CoreProcessBackend implements VpnBackend {
   String? _lastError;
   final List<String> _logs = <String>[];
   Future<void> _coreLogWriteQueue = Future<void>.value();
+  void Function(String message, {bool error})? onRecoveryNotice;
 
   @override
   VpnState get state => _state;
@@ -162,6 +163,10 @@ class CoreProcessBackend implements VpnBackend {
       _recoveryInProgress = true;
       _writeLifecycleLog(
           'Ядро $name завершилось (код $code); пробую поднять снова');
+      onRecoveryNotice?.call(
+        'Ядро неожиданно остановилось. Перезапускаю VPN…',
+        error: false,
+      );
       unawaited(_recoverProcess(profile));
     });
     await Future<void>.delayed(const Duration(milliseconds: 350));
