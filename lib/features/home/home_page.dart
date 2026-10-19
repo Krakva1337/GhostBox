@@ -9,7 +9,7 @@ import 'package:flutter/foundation.dart'
 import 'package:flutter/material.dart';
 import 'package:flutter/cupertino.dart' show CupertinoSwitch, CupertinoSlider;
 import 'package:flutter/services.dart';
-import 'package:file_picker/file_picker.dart';
+import 'package:file_selector/file_selector.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../backends/sing_box_backend.dart';
@@ -27,6 +27,8 @@ import '../../platform/linux_kill_switch.dart';
 import '../../services/profile_parser.dart';
 import '../../services/device_identity.dart';
 import '../../services/dns_ad_blocklist.dart';
+import '../../services/github_updater.dart';
+import '../../services/log_store.dart';
 import '../../theme/theme_settings_panel.dart';
 import '../../theme/theme_controller.dart';
 import '../../widgets/ghost_notice.dart';
@@ -39,6 +41,10 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage>
     with TickerProviderStateMixin, WidgetsBindingObserver {
+  static final Set<String> _countryFlagCodes =
+      ('AD AE AF AG AI AL AM AO AQ AR AS AT AU AW AX AZ BA BB BD BE BF BG BH BI BJ BL BM BN BO BQ BR BS BT BV BW BY BZ CA CC CD CF CG CH CI CK CL CM CN CO CR CU CV CW CX CY CZ DE DJ DK DM DO DZ EC EE EG EH ER ES ET FI FJ FK FM FO FR GA GB GD GE GF GG GH GI GL GM GN GP GQ GR GS GT GU GW GY HK HM HN HR HT HU ID IE IL IM IN IO IQ IR IS IT JE JM JO JP KE KG KH KI KM KN KP KR KW KY KZ LA LB LC LI LK LR LS LT LU LV LY MA MC MD ME MF MG MH MK ML MM MN MO MP MQ MR MS MT MU MV MW MX MY MZ NA NC NE NF NG NI NL NO NP NR NU NZ OM PA PE PF PG PH PK PL PM PN PR PS PT PW PY QA RE RO RS RU RW SA SB SC SD SE SG SH SI SJ SK SL SM SN SO SR SS ST SV SX SY SZ TC TD TF TG TH TJ TK TL TM TN TO TR TT TV TW TZ UA UG UM US UY UZ VA VC VE VG VI VN VU WF WS YE YT ZA ZM ZW')
+          .split(' ')
+          .toSet();
   final homeScroll = ScrollController();
   final settingsScroll = ScrollController();
   final routingScroll = ScrollController();
@@ -84,6 +90,9 @@ class _HomePageState extends State<HomePage>
   final List<Map<String, dynamic>> connectionHistory = <Map<String, dynamic>>[];
   Future<void> _logWriteQueue = Future<void>.value();
   String? logFilePath;
+  int logRetainedConnections = 10;
+  int logMaxSizeMb = 5;
+  bool logCoreOutput = true;
   String? subscriptionUrl;
   List<String> subscriptionProfileIds = [];
   List<Map<String, dynamic>> subscriptions = [];
@@ -93,6 +102,12 @@ class _HomePageState extends State<HomePage>
   bool routeListOpen = false;
   String? routeListMode;
   bool autoRefreshSubscriptions = true;
+  bool autoUpdateApp = false;
+  bool checkingAppUpdate = false;
+  bool installingAppUpdate = false;
+  String? appUpdateStatus;
+  GhostBoxRelease? availableAppRelease;
+  final GitHubUpdater appUpdater = GitHubUpdater();
   static const int _defaultSubscriptionRefreshHours = 12;
   Timer? uptimeTicker;
   int? coreMemoryMb;
@@ -100,6 +115,7 @@ class _HomePageState extends State<HomePage>
   int? pingMs;
   List<int> pingSamples = [];
   final Map<String, int> profileLatencies = {};
+  final Map<String, String> latencyErrors = {};
   bool checkingPing = false;
   bool checkingAll = false;
   int pingAllDone = 0, pingAllTotal = 0;
@@ -183,7 +199,30 @@ class _HomePageState extends State<HomePage>
     'Ядро не найдено': 'Core not found',
     'Файл журнала': 'Log file',
     'Последние подключения': 'Recent connections',
+    '5 подключений': '5 sessions',
+    '10 подключений': '10 sessions',
+    '25 подключений': '25 sessions',
+    '50 подключений': '50 sessions',
+    '100 подключений': '100 sessions',
+    '1 МБ': '1 MB',
+    '2 МБ': '2 MB',
+    '5 МБ': '5 MB',
+    '10 МБ': '10 MB',
+    '25 МБ': '25 MB',
     'ПОДПИСКИ': 'SUBSCRIPTIONS',
+    'ЖУРНАЛ': 'JOURNAL',
+    'Хранить подключения': 'Keep sessions',
+    'Максимальный размер': 'Maximum size',
+    'Подробные логи ядра': 'Detailed core logs',
+    'В файл записываются сообщения Xray и sing-box':
+        'Record Xray and sing-box output to the file',
+    'В файле останутся события приложения': 'Keep app events only',
+    'Удалить записи из файла журнала': 'Delete journal file records',
+    'Принудительная установка': 'Force update',
+    'Повторно скачать и установить последнюю версию':
+        'Download and reinstall the latest release',
+    'Проверить обновления': 'Check for updates',
+    'Проверить версию на GitHub': 'Check GitHub for a newer version',
     'Источники': 'Sources',
     'Обновить все': 'Refresh all',
     'Автообновление': 'Auto refresh',
@@ -228,7 +267,9 @@ class _HomePageState extends State<HomePage>
     'ЗАЩИТА ТРАФИКА': 'TRAFFIC PROTECTION',
     'Журнал соединения': 'Connection log',
     'Скопировать журнал': 'Copy log',
-    'Очистить журнал': 'Clear log',
+    'Экспорт полного журнала': 'Export full journal',
+    'Проверка не прошла': 'Probe failed',
+    'Очистить журнал': 'Clear journal',
     'Закрыть': 'Close',
     'Записей пока нет': 'No log entries yet',
     'Попыток подключения пока нет': 'No connection attempts yet',
@@ -260,6 +301,14 @@ class _HomePageState extends State<HomePage>
     'Проверить задержку': 'Check latency',
     'Посмотреть JSON': 'View JSON',
     'Скопировать GhostBox-ссылку': 'Copy GhostBox link',
+    'Скопировать IP/домен': 'Copy IP/domain',
+    'Скопировать порт': 'Copy port',
+    'Скопировать адрес и порт': 'Copy address and port',
+    'Скопировано в буфер обмена': 'Copied to clipboard',
+    'Порт скопирован': 'Port copied',
+    'Пинг все': 'Ping all',
+    'Логи': 'Logs',
+    'История': 'History',
     'Удалить сервер': 'Delete server',
     'Свой DNS-резолвер': 'Custom DNS resolver',
     'Ссылка для Proxy GET': 'Proxy GET URL',
@@ -399,6 +448,9 @@ class _HomePageState extends State<HomePage>
         Platform.isWindows && p.getBool('windowsProxyDefaultMigrated') != true;
     setState(() {
       prefs = p;
+      logRetainedConnections = p.getInt('logRetainedConnections') ?? 10;
+      logMaxSizeMb = p.getInt('logMaxSizeMb') ?? 5;
+      logCoreOutput = p.getBool('logCoreOutput') ?? true;
       animatedBackground = p.getBool('animatedBackground') ?? true;
       english = p.getBool('appEnglish') ?? false;
       profiles = rows;
@@ -410,12 +462,13 @@ class _HomePageState extends State<HomePage>
             ..addAll((jsonDecode(savedHistory) as List)
                 .whereType<Map>()
                 .map((item) => Map<String, dynamic>.from(item))
-                .take(10));
+                .take(logRetainedConnections));
         } on Object {
           connectionHistory.clear();
         }
       }
       autoRefreshSubscriptions = p.getBool('autoRefreshSubscriptions') ?? true;
+      autoUpdateApp = p.getBool('autoUpdateApp') ?? true;
       selectedId = p.getString('selectedProfile') ?? rows.firstOrNull?.id;
       final rawCore = p.getString('coreSettings');
       coreSettings = rawCore == null
@@ -486,6 +539,11 @@ class _HomePageState extends State<HomePage>
     if (migrateWindowsProxy) {
       await p.setBool('windowsProxyDefaultMigrated', true);
     }
+    await GhostBoxLogStore.instance.configure(
+      retainedConnections: logRetainedConnections,
+      maxSizeMb: logMaxSizeMb,
+      includeCoreOutput: logCoreOutput,
+    );
     if (p.getBool('proxyGetPingMigrated') != true) {
       if (coreSettings.pingMode == 'tcp') {
         coreSettings = coreSettings.copyWith(pingMode: 'proxy');
@@ -532,6 +590,7 @@ class _HomePageState extends State<HomePage>
         backend.state == VpnState.disconnected) {
       await _toggle();
     }
+    if (mounted) unawaited(_checkAppUpdate(silent: true));
   }
 
   @override
@@ -850,20 +909,7 @@ class _HomePageState extends State<HomePage>
     final line = '$timestamp  $message';
     appLogs.add(line);
     if (appLogs.length > 100) appLogs.removeAt(0);
-    _logWriteQueue = _logWriteQueue.then((_) async {
-      try {
-        final file = await _resolveLogFile();
-        if (await file.exists() && await file.length() > 512 * 1024) {
-          final old = await file.readAsString();
-          final keepFrom =
-              old.length > 256 * 1024 ? old.length - 256 * 1024 : 0;
-          await file.writeAsString(old.substring(keepFrom), flush: true);
-        }
-        await file.writeAsString('$line\n', mode: FileMode.append, flush: true);
-      } on Object {
-        // Keep the in-app journal available even if the OS denies file access.
-      }
-    });
+    _logWriteQueue = GhostBoxLogStore.instance.append(line);
   }
 
   Future<void> _collectAndroidCoreLogs() async {
@@ -875,30 +921,7 @@ class _HomePageState extends State<HomePage>
   }
 
   Future<File> _resolveLogFile() async {
-    final env = Platform.environment;
-    final separator = Platform.pathSeparator;
-    String? base;
-    if (Platform.isLinux) {
-      base = env['XDG_STATE_HOME'];
-      if (base == null || base.isEmpty) {
-        final home = env['HOME'];
-        if (home != null && home.isNotEmpty)
-          base = '$home${separator}.local${separator}state';
-      }
-    } else if (Platform.isWindows) {
-      base = env['APPDATA'];
-      if (base == null || base.isEmpty) {
-        final home = env['USERPROFILE'];
-        if (home != null && home.isNotEmpty)
-          base = '$home${separator}AppData${separator}Roaming';
-      }
-    } else {
-      base = env['HOME'];
-    }
-    base ??= Directory.systemTemp.path;
-    final directory = Directory('$base${separator}GhostBox${separator}logs');
-    await directory.create(recursive: true);
-    final file = File('${directory.path}${separator}ghostbox.log');
+    final file = await GhostBoxLogStore.instance.file();
     logFilePath = file.path;
     return file;
   }
@@ -911,7 +934,7 @@ class _HomePageState extends State<HomePage>
     required bool success,
     required String message,
   }) async {
-    connectionHistory.insert(0, {
+    final record = <String, dynamic>{
       'at': started.toIso8601String(),
       'profile': profile,
       'core': core,
@@ -919,9 +942,15 @@ class _HomePageState extends State<HomePage>
       'success': success,
       'durationMs': DateTime.now().difference(started).inMilliseconds,
       'message': message,
-    });
-    if (connectionHistory.length > 10) {
-      connectionHistory.removeRange(10, connectionHistory.length);
+    };
+    if (connectionHistory.isNotEmpty &&
+        _isDuplicateConnectionRecord(connectionHistory.first, record)) {
+      return;
+    }
+    connectionHistory.insert(0, record);
+    if (connectionHistory.length > logRetainedConnections) {
+      connectionHistory.removeRange(
+          logRetainedConnections, connectionHistory.length);
     }
     final p = prefs ??= await SharedPreferences.getInstance();
     await p.setString('connectionHistory', jsonEncode(connectionHistory));
@@ -935,9 +964,16 @@ class _HomePageState extends State<HomePage>
     final file = await _resolveLogFile();
     final fileLines =
         await file.exists() ? await file.readAsLines() : <String>[];
-    final firstVisibleLine =
-        (fileLines.length - 500).clamp(0, fileLines.length);
-    var entries = <String>[...fileLines.skip(firstVisibleLine)];
+    final uniqueLines = <String>[];
+    for (final line in fileLines) {
+      if (uniqueLines.isNotEmpty && _sameLogMessage(uniqueLines.last, line))
+        continue;
+      uniqueLines.add(line);
+    }
+    var entries = <String>[
+      ...uniqueLines
+          .skip(uniqueLines.length > 100 ? uniqueLines.length - 100 : 0)
+    ];
     if (!mounted) return;
     showModalBottomSheet<void>(
         context: context,
@@ -977,19 +1013,13 @@ class _HomePageState extends State<HomePage>
                                 ClipboardData(text: entries.join('\n'))),
                             icon: const Icon(Icons.copy)),
                         IconButton(
+                            tooltip: _localized('Экспорт полного журнала'),
+                            onPressed: _exportFullLog,
+                            icon: const Icon(Icons.file_download_outlined)),
+                        IconButton(
                             tooltip: _localized('Очистить журнал'),
                             onPressed: () async {
-                              await _logWriteQueue;
-                              await core?.flushLogs();
-                              await tunnelBridgeBackend?.flushLogs();
-                              await file.writeAsString('', flush: true);
-                              appLogs.clear();
-                              if (backend is AndroidVpnBackend) {
-                                await (backend as AndroidVpnBackend)
-                                    .clearLogs();
-                              }
-                              core?.clearLogBuffer();
-                              tunnelBridgeBackend?.clearLogBuffer();
+                              await _clearJournal();
                               setSheetState(() => entries = <String>[]);
                             },
                             icon: const Icon(Icons.delete_sweep_outlined)),
@@ -1034,8 +1064,36 @@ class _HomePageState extends State<HomePage>
                     ])))));
   }
 
+  Future<void> _exportFullLog() async {
+    try {
+      await _logWriteQueue;
+      await process?.flushLogs();
+      await tunnelBridgeBackend?.flushLogs();
+      await GhostBoxLogStore.instance.flush();
+      final source = await _resolveLogFile();
+      final location = await getSaveLocation(
+        suggestedName: 'ghostbox-full-log.txt',
+        acceptedTypeGroups: const [
+          XTypeGroup(label: 'Text', extensions: ['txt', 'log'])
+        ],
+      );
+      if (location == null) return;
+      if (!await source.exists()) {
+        throw const FileSystemException('Журнал пока пуст');
+      }
+      await File(location.path)
+          .writeAsBytes(await source.readAsBytes(), flush: true);
+      if (mounted)
+        _message(_text('Полный журнал сохранён', 'Full log exported'));
+    } on Object catch (error) {
+      if (mounted)
+        _message(
+            '${_text('Не удалось экспортировать журнал', 'Could not export log')}: $error');
+    }
+  }
+
   void _showConnectionHistory() {
-    final history = List<Map<String, dynamic>>.of(connectionHistory);
+    final history = _deduplicatedHistory(connectionHistory);
     showModalBottomSheet<void>(
         context: context,
         isScrollControlled: true,
@@ -1066,7 +1124,7 @@ class _HomePageState extends State<HomePage>
                         child: Text(_localized('Последние подключения'),
                             style: TextStyle(
                                 fontSize: 17, fontWeight: FontWeight.w700))),
-                    Text('${history.length}/10',
+                    Text('${history.length}/$logRetainedConnections',
                         style: TextStyle(color: _muted, fontSize: 12)),
                     IconButton(
                         tooltip: _localized('Закрыть'),
@@ -1149,6 +1207,38 @@ class _HomePageState extends State<HomePage>
                                         ]));
                               })),
                 ]))));
+  }
+
+  bool _isDuplicateConnectionRecord(
+      Map<String, dynamic> previous, Map<String, dynamic> next) {
+    if (previous['profile'] != next['profile'] ||
+        previous['core'] != next['core'] ||
+        previous['mode'] != next['mode'] ||
+        previous['success'] != next['success'] ||
+        previous['message'] != next['message']) return false;
+    final previousAt = DateTime.tryParse('${previous['at'] ?? ''}');
+    final nextAt = DateTime.tryParse('${next['at'] ?? ''}');
+    return previousAt != null &&
+        nextAt != null &&
+        previousAt.difference(nextAt).abs() <= const Duration(seconds: 3);
+  }
+
+  List<Map<String, dynamic>> _deduplicatedHistory(
+      Iterable<Map<String, dynamic>> source) {
+    final result = <Map<String, dynamic>>[];
+    for (final record in source) {
+      if (result.isNotEmpty &&
+          _isDuplicateConnectionRecord(result.last, record)) continue;
+      result.add(record);
+    }
+    return result.take(logRetainedConnections).toList();
+  }
+
+  bool _sameLogMessage(String first, String second) {
+    final timestamp =
+        RegExp(r'^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?\s+');
+    return first.replaceFirst(timestamp, '').trim() ==
+        second.replaceFirst(timestamp, '').trim();
   }
 
   Future<void> _waitForTunInterface() async {
@@ -1556,24 +1646,28 @@ class _HomePageState extends State<HomePage>
     final samples = <int>[];
     CoreProcessBackend? probeBackend;
     var proxyPort = activeLocalPort ?? coreSettings.localPort;
-    if (mode == 'proxy' &&
-        !(backend.state == VpnState.connected &&
-            activeProfileId == profile.id &&
-            coreSettings.routing != 'direct')) {
-      final reservation =
-          await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
-      proxyPort = reservation.port;
-      await reservation.close();
-      final coreName = coreSettings.core == 'xray' ? 'xray' : 'sing-box';
-      probeBackend = CoreProcessBackend(
-        name: coreName,
-        executable: process?.executable ?? coreExecutable(coreName, 'vendor'),
-        configPath: 'vendor/config/$coreName.json',
-      )..settings =
-          coreSettings.copyWith(localPort: proxyPort, routing: 'proxy');
-      await probeBackend.connect(jsonEncode(profile.toJson()));
-    }
     try {
+      if (mode == 'proxy') {
+        // Probe through an isolated local proxy configured to send every request
+        // through this profile. The active connection may use split rules or a
+        // TUN router, so its local port can send a test request directly.
+        final reservation =
+            await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+        proxyPort = reservation.port;
+        await reservation.close();
+        final coreName = coreSettings.core == 'xray' ? 'xray' : 'sing-box';
+        probeBackend = CoreProcessBackend(
+          name: coreName,
+          executable: process?.executable ?? coreExecutable(coreName, 'vendor'),
+          configPath: 'vendor/config/$coreName.json',
+        )..settings = coreSettings.copyWith(
+            localPort: proxyPort,
+            routing: 'proxy',
+            connectionMode: 'proxy',
+            dnsThroughProxy: true);
+        await probeBackend.connect(jsonEncode(profile.toJson()));
+        await _waitForProxyListener(proxyPort, timeout);
+      }
       for (var i = 0; i < count; i++) {
         if (mode == 'proxy') {
           final watch = Stopwatch()..start();
@@ -1610,6 +1704,27 @@ class _HomePageState extends State<HomePage>
     } finally {
       await probeBackend?.disconnect();
     }
+  }
+
+  Future<void> _waitForProxyListener(int port, Duration timeout) async {
+    final deadline = DateTime.now().add(timeout);
+    Object? lastError;
+    while (DateTime.now().isBefore(deadline)) {
+      try {
+        final socket = await Socket.connect(
+          InternetAddress.loopbackIPv4,
+          port,
+          timeout: const Duration(milliseconds: 250),
+        );
+        socket.destroy();
+        return;
+      } on Object catch (error) {
+        lastError = error;
+        await Future<void>.delayed(const Duration(milliseconds: 60));
+      }
+    }
+    throw SocketException(
+        'Локальный прокси на порту $port не запустился: $lastError');
   }
 
   Future<void> _proxyHttpGet(int localPort, Duration timeout) async {
@@ -1709,16 +1824,20 @@ class _HomePageState extends State<HomePage>
           pingMs = samples[samples.length ~/ 2];
           profileLatencies[profile.id] = pingMs!;
           failedLatencies.remove(profile.id);
+          latencyErrors.remove(profile.id);
         });
-    } catch (_) {
+    } catch (error) {
       if (mounted && generation == _probeGeneration) {
         setState(() {
           failedLatencies.add(profile.id);
           profileLatencies.remove(profile.id);
+          latencyErrors[profile.id] = '$error';
         });
         _message(coreSettings.pingMode == 'icmp'
             ? 'ICMP не ответил. Попробуйте TCP в настройках.'
-            : 'Сервер не отвечает на выбранном порту.');
+            : coreSettings.pingMode == 'proxy'
+                ? 'Proxy GET: ${_compactError('$error')}'
+                : 'Сервер не отвечает на выбранном порту.');
       }
     } finally {
       if (mounted && generation == _probeGeneration)
@@ -1734,19 +1853,21 @@ class _HomePageState extends State<HomePage>
       setState(() {
         profileLatencies[profile.id] = latency;
         failedLatencies.remove(profile.id);
+        latencyErrors.remove(profile.id);
         if (selectedId == profile.id) {
           pingMs = latency;
           pingSamples = samples;
         }
       });
       _message('${profile.name}: $latency мс');
-    } catch (_) {
+    } catch (error) {
       if (!mounted) return;
       setState(() {
         profileLatencies.remove(profile.id);
         failedLatencies.add(profile.id);
+        latencyErrors[profile.id] = '$error';
       });
-      _message('${profile.name}: нет ответа');
+      _message('${profile.name}: ${_compactError('$error')}');
     }
   }
 
@@ -1768,7 +1889,9 @@ class _HomePageState extends State<HomePage>
         try {
           final samples = await _probeProfile(profile);
           latency = samples[samples.length ~/ 2];
-        } catch (_) {/* Per-server failure stays visible as a dash. */}
+        } catch (error) {
+          latencyErrors[profile.id] = '$error';
+        }
         if (!mounted) return;
         setState(() {
           if (latency == null) {
@@ -1776,6 +1899,7 @@ class _HomePageState extends State<HomePage>
             profileLatencies.remove(profile.id);
           } else {
             failedLatencies.remove(profile.id);
+            latencyErrors.remove(profile.id);
             profileLatencies[profile.id] = latency;
             if (selectedId == profile.id) pingMs = latency;
           }
@@ -1790,6 +1914,11 @@ class _HomePageState extends State<HomePage>
       setState(() => checkingAll = false);
       _message('Проверено серверов: $pingAllDone из $pingAllTotal');
     }
+  }
+
+  String _compactError(String error) {
+    final compact = error.replaceFirst(RegExp(r'^SocketException: '), '');
+    return compact.length > 150 ? '${compact.substring(0, 147)}…' : compact;
   }
 
   String _pingQuality(int value) {
@@ -1982,20 +2111,15 @@ class _HomePageState extends State<HomePage>
                                 TextButton.icon(
                                     onPressed: () async {
                                       try {
-                                        final result = await FilePicker.platform
-                                            .pickFiles(
-                                                type: FileType.custom,
-                                                allowedExtensions: const [
-                                                  'json'
-                                                ],
-                                                withData: true);
-                                        if (result == null ||
-                                            result.files.isEmpty) return;
-                                        final bytes = result.files.single.bytes;
-                                        if (bytes == null) {
-                                          throw const FormatException(
-                                              'Не удалось прочитать JSON-файл.');
-                                        }
+                                        final result = await openFile(
+                                            acceptedTypeGroups: const [
+                                              XTypeGroup(
+                                                  label: 'JSON',
+                                                  extensions: ['json'])
+                                            ]);
+                                        if (result == null) return;
+                                        final bytes =
+                                            await result.readAsBytes();
                                         if (!ctx.mounted) return;
                                         controller
                                           ..text = utf8.decode(bytes)
@@ -2393,50 +2517,61 @@ class _HomePageState extends State<HomePage>
             child: SafeArea(
                 child: Center(
                     child: ConstrainedBox(
-                        constraints: BoxConstraints(maxWidth: 1000),
+                        constraints: BoxConstraints(maxWidth: 1200),
                         child: Padding(
                             padding: EdgeInsets.fromLTRB(5, 12, 5, 12),
-                            child: Column(children: [
-                              _header(),
-                              SizedBox(height: 8),
-                              Expanded(
-                                  child: ClipRRect(
-                                      borderRadius: BorderRadius.circular(24),
-                                      child: AnimatedSwitcher(
-                                          duration:
-                                              const Duration(milliseconds: 190),
-                                          reverseDuration:
-                                              const Duration(milliseconds: 80),
-                                          switchInCurve: Curves.easeOutCubic,
-                                          switchOutCurve: Curves.linear,
-                                          layoutBuilder: (current, previous) =>
-                                              current ?? SizedBox.shrink(),
-                                          transitionBuilder: (child, animation) =>
-                                              FadeTransition(
-                                                  opacity: animation,
-                                                  child: ScaleTransition(
-                                                      scale: Tween<double>(
-                                                              begin: .985,
-                                                              end: 1)
-                                                          .animate(CurvedAnimation(
-                                                              parent: animation,
-                                                              curve: Curves
-                                                                  .easeOutCubic)),
-                                                      child: child)),
-                                          child: KeyedSubtree(
-                                              key: ValueKey(_tabIndex),
-                                              child: settings
-                                                  ? _scrollFrame(
-                                                      _settings(), settingsScroll)
-                                                  : routingTab
-                                                      ? _scrollFrame(
-                                                          _routingPage(),
-                                                          routingScroll)
-                                                      : _scrollFrame(_home(),
-                                                          homeScroll))))),
-                              SizedBox(height: 8),
-                              _nav(),
-                            ])))))),
+                            child: LayoutBuilder(builder: (context, bounds) {
+                              final wideLayout = bounds.maxWidth >= 800;
+                              final page = ClipRRect(
+                                  borderRadius: BorderRadius.circular(24),
+                                  child: AnimatedSwitcher(
+                                      duration:
+                                          const Duration(milliseconds: 190),
+                                      reverseDuration:
+                                          const Duration(milliseconds: 80),
+                                      switchInCurve: Curves.easeOutCubic,
+                                      switchOutCurve: Curves.linear,
+                                      layoutBuilder: (current, previous) =>
+                                          current ?? SizedBox.shrink(),
+                                      transitionBuilder: (child, animation) =>
+                                          FadeTransition(
+                                              opacity: animation,
+                                              child: ScaleTransition(
+                                                  scale: Tween<double>(
+                                                          begin: .985, end: 1)
+                                                      .animate(CurvedAnimation(
+                                                          parent: animation,
+                                                          curve: Curves
+                                                              .easeOutCubic)),
+                                                  child: child)),
+                                      child: KeyedSubtree(
+                                          key: ValueKey(_tabIndex),
+                                          child: settings
+                                              ? _scrollFrame(
+                                                  _settings(), settingsScroll)
+                                              : routingTab
+                                                  ? _scrollFrame(_routingPage(),
+                                                      routingScroll)
+                                                  : _scrollFrame(
+                                                      _home(), homeScroll))));
+                              return Column(children: [
+                                _header(),
+                                const SizedBox(height: 8),
+                                Expanded(
+                                    child: wideLayout
+                                        ? Row(children: [
+                                            SizedBox(
+                                                width: 120, child: _sideNav()),
+                                            const SizedBox(width: 10),
+                                            Expanded(child: page),
+                                          ])
+                                        : page),
+                                if (!wideLayout) ...[
+                                  const SizedBox(height: 8),
+                                  _nav(),
+                                ],
+                              ]);
+                            })))))),
       ]));
 
   Widget _scrollFrame(
@@ -4021,7 +4156,7 @@ class _HomePageState extends State<HomePage>
                   borderRadius: BorderRadius.circular(15)),
               child: Row(children: [
                 _countryBadge(profile),
-                SizedBox(width: 10),
+                SizedBox(width: 8),
                 Expanded(
                     child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
@@ -4033,14 +4168,45 @@ class _HomePageState extends State<HomePage>
                               fontWeight: FontWeight.w600,
                               color: _foreground,
                               fontSize: 13)),
-                      SizedBox(height: 2),
+                      SizedBox(height: 4),
                       Text(
                           '${profile.protocol.toUpperCase()} · ${_transportLabel(profile.network)}${profile.security == 'reality' ? ' · REALITY' : profile.security == 'tls' ? ' · TLS' : ''}',
                           style: TextStyle(
                               color: _muted, fontSize: 10, letterSpacing: .4)),
                     ])),
+                Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
+                    decoration: BoxDecoration(
+                        color: Colors.white.withValues(alpha: .055),
+                        borderRadius: BorderRadius.circular(8)),
+                    child: Text(':${profile.port}',
+                        style: TextStyle(
+                            color: _muted,
+                            fontSize: 10,
+                            fontFeatures: const [
+                              ui.FontFeature.tabularFigures()
+                            ]))),
+                IconButton(
+                    tooltip: _localized('Скопировать порт'),
+                    visualDensity: VisualDensity.compact,
+                    padding: EdgeInsets.zero,
+                    constraints:
+                        const BoxConstraints.tightFor(width: 28, height: 28),
+                    onPressed: () async {
+                      await Clipboard.setData(
+                          ClipboardData(text: '${profile.port}'));
+                      _message(_text('Порт скопирован', 'Port copied'));
+                    },
+                    icon: Icon(Icons.content_copy_rounded,
+                        size: 14, color: _muted)),
+                const SizedBox(width: 6),
                 if (failedLatencies.contains(profile.id))
-                  Text('—', style: TextStyle(color: _muted, fontSize: 12)),
+                  Tooltip(
+                      message: latencyErrors[profile.id] ??
+                          _localized('Проверка не прошла'),
+                      child: Text('—',
+                          style: TextStyle(color: _muted, fontSize: 12))),
                 if (profileLatencies[profile.id] != null)
                   Text('${profileLatencies[profile.id]} мс',
                       style: TextStyle(
@@ -4062,6 +4228,27 @@ class _HomePageState extends State<HomePage>
                       }
                       if (value == 'share') {
                         await _copyProfileLink(profile);
+                        return;
+                      }
+                      if (value == 'copy_host' ||
+                          value == 'copy_port' ||
+                          value == 'copy_endpoint') {
+                        final host = profile.address.startsWith('[') &&
+                                profile.address.endsWith(']')
+                            ? profile.address
+                                .substring(1, profile.address.length - 1)
+                            : profile.address;
+                        final endpoint = host.contains(':')
+                            ? '[$host]:${profile.port}'
+                            : '$host:${profile.port}';
+                        final text = switch (value) {
+                          'copy_host' => profile.address,
+                          'copy_port' => '${profile.port}',
+                          _ => endpoint,
+                        };
+                        await Clipboard.setData(ClipboardData(text: text));
+                        _message(_text('Скопировано в буфер обмена',
+                            'Copied to clipboard'));
                         return;
                       }
                       if (value == 'delete') {
@@ -4100,6 +4287,30 @@ class _HomePageState extends State<HomePage>
                                     size: 18, color: _accent),
                                 const SizedBox(width: 12),
                                 Text(_localized('Скопировать GhostBox-ссылку'))
+                              ])),
+                          PopupMenuItem(
+                              value: 'copy_host',
+                              child: Row(children: [
+                                Icon(Icons.dns_outlined,
+                                    size: 18, color: _accent),
+                                const SizedBox(width: 12),
+                                Text(_localized('Скопировать IP/домен'))
+                              ])),
+                          PopupMenuItem(
+                              value: 'copy_port',
+                              child: Row(children: [
+                                Icon(Icons.content_copy_rounded,
+                                    size: 18, color: _accent),
+                                const SizedBox(width: 12),
+                                Text(_localized('Скопировать порт'))
+                              ])),
+                          PopupMenuItem(
+                              value: 'copy_endpoint',
+                              child: Row(children: [
+                                Icon(Icons.content_copy_rounded,
+                                    size: 18, color: _accent),
+                                const SizedBox(width: 12),
+                                Text(_localized('Скопировать адрес и порт'))
                               ])),
                           PopupMenuItem(
                               value: 'delete',
@@ -4176,6 +4387,9 @@ class _HomePageState extends State<HomePage>
       'эстон': 'EE',
       'estonia': 'EE',
       'ee': 'EE',
+      'испан': 'ES',
+      'spain': 'ES',
+      'es': 'ES',
       'латв': 'LV',
       'latvia': 'LV',
       'lv': 'LV',
@@ -4212,7 +4426,14 @@ class _HomePageState extends State<HomePage>
         }
       }
     }
-    final isCountry = code.isNotEmpty;
+    if (code.isEmpty) {
+      for (final token in value.toUpperCase().split(RegExp(r'[^A-Z]+'))) {
+        if (_countryFlagCodes.contains(token)) {
+          code = token;
+          break;
+        }
+      }
+    }
     final colors = {
       'NL': Color(0xFFEF8F9B),
       'DE': Color(0xFFE5B86D),
@@ -4230,24 +4451,26 @@ class _HomePageState extends State<HomePage>
       'CA': Color(0xFFFF9B9B),
     };
     final tint = colors[code] ?? _accent;
+    final hasFlagAsset = _countryFlagCodes.contains(code);
     return Container(
-        width: 34,
-        height: 27,
-        alignment: Alignment.center,
+        width: 36,
+        height: 30,
         decoration: BoxDecoration(
-            gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [tint.withOpacity(.42), tint.withOpacity(.12)]),
+            color: hasFlagAsset
+                ? Colors.white.withValues(alpha: .035)
+                : Color.alphaBlend(tint.withValues(alpha: .15), _surface),
             borderRadius: BorderRadius.circular(8),
             border: Border.all(color: tint.withOpacity(.5))),
-        child: isCountry
-            ? Text(code,
-                style: TextStyle(
-                    fontSize: 10,
-                    letterSpacing: .4,
-                    color: _foreground,
-                    fontWeight: FontWeight.w800))
+        child: hasFlagAsset
+            ? Padding(
+                padding: const EdgeInsets.all(1),
+                child: ClipRRect(
+                    borderRadius: BorderRadius.circular(6),
+                    child: Image.asset('assets/flags/$code.png',
+                        width: 34,
+                        height: 28,
+                        fit: BoxFit.cover,
+                        filterQuality: FilterQuality.medium)))
             : Icon(_serverIcon(profile.protocol),
                 color: Colors.white, size: 15));
   }
@@ -4574,7 +4797,96 @@ class _HomePageState extends State<HomePage>
                     child: SizeTransition(sizeFactor: animation, child: child)),
                 child: advanced ? _advancedSettings() : _basicSettings()),
             SizedBox(height: 18),
+            _section('ЖУРНАЛ'),
+            _row(
+                Icons.history_rounded,
+                _text('Хранить подключения', 'Retain connection sessions'),
+                _text('Последние $logRetainedConnections',
+                    'Last $logRetainedConnections'),
+                _menu(
+                    '$logRetainedConnections',
+                    const {
+                      '5': '5 подключений',
+                      '10': '10 подключений',
+                      '25': '25 подключений',
+                      '50': '50 подключений',
+                      '100': '100 подключений',
+                    },
+                    (value) => _setLogRetainedConnections(int.parse(value)))),
+            _row(
+                Icons.storage_rounded,
+                _text('Максимальный размер', 'Maximum journal size'),
+                _text('$logMaxSizeMb МБ', '$logMaxSizeMb MB'),
+                _menu(
+                    '$logMaxSizeMb',
+                    const {
+                      '1': '1 МБ',
+                      '2': '2 МБ',
+                      '5': '5 МБ',
+                      '10': '10 МБ',
+                      '25': '25 МБ',
+                    },
+                    (value) => _setLogMaxSize(int.parse(value)))),
+            _row(
+                Icons.article_outlined,
+                _text('Подробные логи ядра', 'Detailed core logs'),
+                logCoreOutput
+                    ? _text('В файл записываются сообщения Xray и sing-box',
+                        'Record Xray and sing-box output to the file')
+                    : _text('В файле останутся события приложения',
+                        'Keep app events only'),
+                _compactSwitch(
+                    value: logCoreOutput, onChanged: _setLogCoreOutput)),
+            _row(
+                Icons.delete_sweep_outlined,
+                _text('Очистить журнал', 'Clear journal'),
+                _text('Удалить записи из файла журнала',
+                    'Delete all records from the journal file'),
+                IconButton(
+                    tooltip: _text('Очистить журнал', 'Clear journal'),
+                    onPressed: _clearJournal,
+                    icon: const Icon(Icons.delete_outline_rounded))),
+            const SizedBox(height: 12),
             _section('GHOSTBOX'),
+            _row(
+                Icons.system_update_alt_rounded,
+                _text('Автообновление приложения', 'App auto-update'),
+                autoUpdateApp
+                    ? _text('Скачать и установить при запуске',
+                        'Download and install at launch')
+                    : _text('Только сообщать о новой версии',
+                        'Notify when a new version is available'),
+                _compactSwitch(
+                    value: autoUpdateApp, onChanged: _setAutoUpdateApp)),
+            _row(
+                Icons.cloud_download_outlined,
+                _text('Версия приложения', 'App version'),
+                appUpdateStatus ??
+                    _text(
+                        'Установлена ${GitHubUpdater.displayVersion(GitHubUpdater.currentVersion)}',
+                        'Installed ${GitHubUpdater.displayVersion(GitHubUpdater.currentVersion)}'),
+                IconButton(
+                    tooltip: _text('Проверить обновления', 'Check for updates'),
+                    onPressed: checkingAppUpdate || installingAppUpdate
+                        ? null
+                        : () => _checkAppUpdate(),
+                    icon: checkingAppUpdate || installingAppUpdate
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2))
+                        : const Icon(Icons.refresh_rounded))),
+            _row(
+                Icons.system_update_alt_rounded,
+                _text('Принудительная установка', 'Force update'),
+                _text('Повторно скачать и установить последнюю версию',
+                    'Download and reinstall the latest release'),
+                IconButton(
+                    tooltip: _text('Принудительная установка', 'Force update'),
+                    onPressed: checkingAppUpdate || installingAppUpdate
+                        ? null
+                        : () => _checkAppUpdate(forceLatest: true),
+                    icon: const Icon(Icons.download_for_offline_rounded))),
             InkWell(
                 borderRadius: BorderRadius.circular(16),
                 onTap: _showAbout,
@@ -4584,6 +4896,170 @@ class _HomePageState extends State<HomePage>
                     'Сборка, ядра и устройство',
                     const Icon(Icons.chevron_right_rounded))),
           ]);
+
+  Future<void> _setAutoUpdateApp(bool enabled) async {
+    setState(() => autoUpdateApp = enabled);
+    final storage = prefs ??= await SharedPreferences.getInstance();
+    await storage.setBool('autoUpdateApp', enabled);
+    if (enabled && availableAppRelease != null) {
+      if (backend.state == VpnState.disconnected) {
+        await _installAppUpdate();
+      } else {
+        _message(_text('Обновление готово. Отключи VPN, чтобы установить его.',
+            'Update is ready. Disconnect the VPN to install it.'));
+      }
+    }
+  }
+
+  Future<void> _setLogRetainedConnections(int value) async {
+    setState(() => logRetainedConnections = value);
+    final storage = prefs ??= await SharedPreferences.getInstance();
+    await storage.setInt('logRetainedConnections', value);
+    if (connectionHistory.length > value) {
+      connectionHistory.removeRange(value, connectionHistory.length);
+      await storage.setString(
+          'connectionHistory', jsonEncode(connectionHistory));
+    }
+    await _configureLogStore();
+  }
+
+  Future<void> _setLogMaxSize(int value) async {
+    setState(() => logMaxSizeMb = value);
+    final storage = prefs ??= await SharedPreferences.getInstance();
+    await storage.setInt('logMaxSizeMb', value);
+    await _configureLogStore();
+  }
+
+  Future<void> _setLogCoreOutput(bool value) async {
+    setState(() => logCoreOutput = value);
+    final storage = prefs ??= await SharedPreferences.getInstance();
+    await storage.setBool('logCoreOutput', value);
+    await _configureLogStore();
+  }
+
+  Future<void> _configureLogStore() async {
+    await GhostBoxLogStore.instance.configure(
+      retainedConnections: logRetainedConnections,
+      maxSizeMb: logMaxSizeMb,
+      includeCoreOutput: logCoreOutput,
+    );
+    final file = await _resolveLogFile();
+    if (mounted) setState(() => logFilePath = file.path);
+  }
+
+  Future<void> _clearJournal() async {
+    await _logWriteQueue;
+    await process?.flushLogs();
+    await tunnelBridgeBackend?.flushLogs();
+    await GhostBoxLogStore.instance.clear();
+    appLogs.clear();
+    if (backend is AndroidVpnBackend) {
+      await (backend as AndroidVpnBackend).clearLogs();
+    }
+    process?.clearLogBuffer();
+    tunnelBridgeBackend?.clearLogBuffer();
+    if (mounted) _message(_text('Журнал очищен', 'Journal cleared'));
+  }
+
+  Future<void> _checkAppUpdate(
+      {bool silent = false, bool forceLatest = false}) async {
+    if (checkingAppUpdate || installingAppUpdate) return;
+    setState(() => checkingAppUpdate = true);
+    try {
+      final release = await appUpdater.check(includeCurrent: forceLatest);
+      if (!mounted) return;
+      setState(() {
+        availableAppRelease = release;
+        appUpdateStatus = release == null
+            ? _text(
+                'Обновлений нет · ${GitHubUpdater.displayVersion(GitHubUpdater.currentVersion)}',
+                'Up to date · ${GitHubUpdater.displayVersion(GitHubUpdater.currentVersion)}')
+            : _text(
+                'Доступна версия ${GitHubUpdater.displayVersion(release.version)}',
+                'Version ${GitHubUpdater.displayVersion(release.version)} is available');
+      });
+      if (release == null) {
+        if (!silent)
+          _message(_text(
+              'Установлена последняя версия', 'You have the latest version'));
+      } else if ((forceLatest || autoUpdateApp) &&
+          backend.state == VpnState.disconnected) {
+        await _installAppUpdate();
+      } else if (!silent) {
+        _message(_text(
+            'Доступно обновление GhostBox ${GitHubUpdater.displayVersion(release.version)}',
+            'GhostBox ${GitHubUpdater.displayVersion(release.version)} is available'));
+      }
+    } on Object catch (error) {
+      if (mounted) {
+        setState(() {
+          appUpdateStatus = _text('Проверка не удалась', 'Check failed');
+        });
+        if (!silent)
+          _message(_text('Не удалось проверить обновления: $error',
+              'Could not check for updates: $error'));
+      }
+    } finally {
+      if (mounted) setState(() => checkingAppUpdate = false);
+    }
+  }
+
+  Future<void> _installAppUpdate() async {
+    final release = availableAppRelease;
+    if (release == null || installingAppUpdate) return;
+    if (backend.state != VpnState.disconnected) {
+      _message(_text('Перед обновлением отключи VPN',
+          'Disconnect the VPN before updating'));
+      return;
+    }
+    setState(() => installingAppUpdate = true);
+    try {
+      final assetName = await appUpdater.platformAssetName(release);
+      if (assetName == null) {
+        _message(_text(
+            'Для этой платформы скачай обновление со страницы релиза',
+            'Download the update for this platform from the releases page'));
+        await _openReleasePage();
+        return;
+      }
+      final asset = release.asset(assetName);
+      if (asset == null) {
+        throw FileSystemException(
+            'Файл $assetName не найден в релизе ${release.version}');
+      }
+      setState(() => appUpdateStatus = _text(
+          'Загружаю ${GitHubUpdater.displayVersion(release.version)}…',
+          'Downloading ${GitHubUpdater.displayVersion(release.version)}…'));
+      await appUpdater.apply(release, asset);
+    } on Object catch (error) {
+      if (mounted) {
+        setState(() =>
+            appUpdateStatus = _text('Обновление не удалось', 'Update failed'));
+        _message(_text('Не удалось установить обновление: $error',
+            'Could not install update: $error'));
+      }
+    } finally {
+      if (mounted) setState(() => installingAppUpdate = false);
+    }
+  }
+
+  Future<void> _openReleasePage() async {
+    final uri =
+        Uri.parse(availableAppRelease?.pageUrl ?? GitHubUpdater.releasesPage);
+    try {
+      if (Platform.isWindows) {
+        await Process.start('cmd.exe', ['/c', 'start', '', uri.toString()],
+            mode: ProcessStartMode.detached);
+      } else {
+        await Process.start(
+            Platform.isMacOS ? 'open' : 'xdg-open', [uri.toString()],
+            mode: ProcessStartMode.detached);
+      }
+    } on Object catch (error) {
+      _message(_text('Не удалось открыть страницу релизов: $error',
+          'Could not open releases page: $error'));
+    }
+  }
 
   Future<String> _coreVersion(String name) async {
     try {
@@ -4641,7 +5117,8 @@ class _HomePageState extends State<HomePage>
     final singBox = await _coreVersion('sing-box');
     if (!mounted) return;
 
-    const appVersion = '0.1.0-alpha.1';
+    final appVersion =
+        GitHubUpdater.displayVersion(GitHubUpdater.currentVersion);
     const buildNumber = '1';
     final buildMode = kReleaseMode
         ? 'Release'
@@ -4652,7 +5129,7 @@ class _HomePageState extends State<HomePage>
         RegExp(r'^\d+\.\d+\.\d+').firstMatch(Platform.version)?.group(0) ??
             'Неизвестно';
     final details = <(String, String)>[
-      ('GhostBox', 'Alpha v$appVersion'),
+      ('GhostBox', appVersion),
       ('Номер сборки', buildNumber),
       ('Тип сборки', buildMode),
       (
@@ -4739,12 +5216,18 @@ class _HomePageState extends State<HomePage>
                   child: OutlinedButton.icon(
                     onPressed: () => _openProviderUrl(
                         'https://github.com/Krakva1337/GhostBox'),
-                    icon: const Icon(Icons.open_in_new_rounded, size: 16),
-                    label: const Text(
-                      'GitHub.com/Krakva1337/GhostBox',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
+                    icon: const Icon(Icons.code_rounded, size: 16),
+                    label: const Text('GitHub.com/Krakva1337/GhostBox'),
+                  ),
+                ),
+                const SizedBox(height: 6),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: () =>
+                        _openProviderUrl('https://ghostbox.krakva1337.ru'),
+                    icon: const Icon(Icons.language_rounded, size: 16),
+                    label: const Text('ghostbox.krakva1337.ru'),
                   ),
                 ),
                 const SizedBox(height: 6),
@@ -5371,7 +5854,7 @@ class _HomePageState extends State<HomePage>
                             onPressed: _showConnectionHistory,
                             icon: const Icon(Icons.history_rounded, size: 16),
                             label: Text(
-                                'Подключения ${connectionHistory.length}/10')),
+                                'Подключения ${connectionHistory.length}/$logRetainedConnections')),
                         const Spacer(),
                         TextButton.icon(
                             onPressed: _showLogs,
@@ -5544,11 +6027,13 @@ class _HomePageState extends State<HomePage>
     await storage.setBool('appEnglish', false);
     await storage.setBool('animatedBackground', true);
     await storage.setBool('autoRefreshSubscriptions', true);
+    await storage.setBool('autoUpdateApp', true);
     if (mounted) {
       setState(() {
         english = false;
         animatedBackground = true;
         autoRefreshSubscriptions = true;
+        autoUpdateApp = true;
       });
       ambientMotion.repeat();
     }
@@ -5831,6 +6316,131 @@ class _HomePageState extends State<HomePage>
           ]),
         ]);
       }));
+  Widget _sideNav() => Container(
+      padding: const EdgeInsets.all(6),
+      decoration: BoxDecoration(
+          color: _surface,
+          borderRadius: BorderRadius.circular(25),
+          border: Border.all(color: Colors.white.withOpacity(.15)),
+          boxShadow: [
+            BoxShadow(
+                color: Colors.black.withOpacity(.18),
+                blurRadius: 24,
+                offset: const Offset(0, 8))
+          ]),
+      child: LayoutBuilder(builder: (context, _) {
+        const itemHeight = 80.0;
+        const itemGap = 8.0;
+        const selectedHeight = 72.0;
+        return Stack(children: [
+          AnimatedPositioned(
+              duration: const Duration(milliseconds: 280),
+              curve: Curves.easeOutCubic,
+              top: (itemHeight + itemGap) * _tabIndex +
+                  (itemHeight - selectedHeight) / 2,
+              left: 0,
+              right: 0,
+              height: selectedHeight,
+              child: Container(
+                  decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                          colors: [_accent.withValues(alpha: .20), _surface],
+                          begin: Alignment.centerLeft,
+                          end: Alignment.centerRight),
+                      borderRadius: BorderRadius.circular(19),
+                      border: Border.all(color: _accent.withOpacity(.38))))),
+          Column(children: [
+            SizedBox(
+                height: itemHeight,
+                child: _sideNavItem(
+                    Icons.shield_outlined, _text('Подключение', 'Connect'), 0)),
+            const SizedBox(height: itemGap),
+            SizedBox(
+                height: itemHeight,
+                child: _sideNavItem(
+                    Icons.alt_route_rounded, _text('Маршрут', 'Routing'), 1)),
+            const SizedBox(height: itemGap),
+            SizedBox(
+                height: itemHeight,
+                child: _sideNavItem(
+                    Icons.tune_rounded, _text('Настройки', 'Settings'), 2)),
+            const Spacer(),
+            Divider(
+                height: 16,
+                thickness: 1,
+                indent: 10,
+                endIndent: 10,
+                color: Colors.white.withValues(alpha: .10)),
+            _sideActionItem(Icons.speed_rounded, _text('Пинг все', 'Ping all'),
+                () => _checkAllProfiles(List.of(profiles))),
+            _sideActionItem(
+                Icons.article_outlined, _text('Логи', 'Logs'), _showLogs),
+            _sideActionItem(Icons.history_rounded, _text('История', 'History'),
+                _showConnectionHistory),
+            const SizedBox(height: 4),
+          ]),
+        ]);
+      }));
+
+  Widget _sideActionItem(IconData icon, String label, VoidCallback onTap) =>
+      SizedBox(
+          height: 62,
+          child: Tooltip(
+              message: label,
+              child: Material(
+                  color: Colors.transparent,
+                  child: InkWell(
+                      borderRadius: BorderRadius.circular(16),
+                      onTap: onTap,
+                      child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(icon, size: 19, color: _muted),
+                            const SizedBox(height: 4),
+                            SizedBox(
+                                width: double.infinity,
+                                child: Text(label,
+                                    textAlign: TextAlign.center,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                        color: _muted, fontSize: 9.5)))
+                          ])))));
+
+  Widget _sideNavItem(IconData icon, String label, int index) =>
+      GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: () => _openTab(index),
+          child: AnimatedContainer(
+              duration: const Duration(milliseconds: 240),
+              decoration: BoxDecoration(
+                  color: Colors.transparent,
+                  borderRadius: BorderRadius.circular(19)),
+              child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    AnimatedScale(
+                        scale: _tabIndex == index ? 1.08 : 1,
+                        duration: const Duration(milliseconds: 220),
+                        child: Icon(icon,
+                            size: 23,
+                            color: _tabIndex == index ? _foreground : _muted)),
+                    const SizedBox(height: 6),
+                    SizedBox(
+                        width: double.infinity,
+                        child: Text(label,
+                            textAlign: TextAlign.center,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                                color:
+                                    _tabIndex == index ? _foreground : _muted,
+                                fontSize: 10.5,
+                                fontWeight: _tabIndex == index
+                                    ? FontWeight.w600
+                                    : FontWeight.w400)))
+                  ])));
+
   Widget _navItem(IconData icon, String label, int index) => Expanded(
       child: GestureDetector(
           onTap: () => _openTab(index),

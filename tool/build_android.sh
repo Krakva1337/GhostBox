@@ -11,7 +11,8 @@ install -m 0644 "$project_dir/dist/cores/android/libbox.aar" \
   "$project_dir/android/app/libs/libbox.aar"
 cd "$project_dir"
 flutter pub get
-flutter build apk --release
+ghostbox_version="$(awk '/^version:/ {split($2,v,"+"); print v[1]}' pubspec.yaml)"
+flutter build apk --release --dart-define="GHOSTBOX_VERSION=$ghostbox_version"
 mkdir -p "$project_dir/dist/android"
 install -m 0644 build/app/outputs/flutter-apk/app-release.apk \
   "$project_dir/dist/android/GhostBox-Android-universal.apk"

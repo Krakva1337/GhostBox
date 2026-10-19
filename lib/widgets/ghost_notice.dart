@@ -8,6 +8,9 @@ class GhostNotice {
   GhostNotice._();
 
   static OverlayEntry? _active;
+  static VoidCallback? _dismissActive;
+  static bool _transitioning = false;
+  static int _generation = 0;
 
   static void show(BuildContext context, String message,
       {bool error = false, IconData? icon}) {
@@ -15,37 +18,89 @@ class GhostNotice {
     final overlay = Overlay.maybeOf(context, rootOverlay: true);
     if (overlay == null) return;
     final themes = InheritedTheme.capture(from: context, to: overlay.context);
-    hide();
+    final generation = ++_generation;
+    final replaceActive = _active != null;
+    if (replaceActive) hide();
+    final waitForExit = replaceActive || _transitioning;
+    if (waitForExit) {
+      _transitioning = true;
+      final delay = MediaQuery.maybeOf(context)?.disableAnimations == true
+          ? Duration.zero
+          : const Duration(milliseconds: 330);
+      unawaited(Future<void>.delayed(delay, () {
+        if (generation != _generation) return;
+        _transitioning = false;
+        if (context.mounted) {
+          _insert(overlay, themes, context, message, error, icon);
+        }
+      }));
+      return;
+    }
+    _insert(overlay, themes, context, message, error, icon);
+  }
 
+  static void _insert(OverlayState overlay, CapturedThemes themes,
+      BuildContext context, String message, bool error, IconData? icon) {
+    final key = GlobalKey<_NoticeState>();
+    var removed = false;
     late final OverlayEntry entry;
+    void removeEntry() {
+      if (removed) return;
+      removed = true;
+      if (identical(_active, entry)) {
+        _active = null;
+        _dismissActive = null;
+      }
+      entry.remove();
+      entry.dispose();
+    }
+
     entry = OverlayEntry(
       builder: (overlayContext) => themes.wrap(
         _Notice(
+          key: key,
           message: message,
           error: error,
           icon: icon,
-          onDismissed: () {
-            if (identical(_active, entry)) hide();
-          },
+          onDismissed: removeEntry,
         ),
       ),
     );
     _active = entry;
+    _dismissActive = () {
+      final state = key.currentState;
+      if (state == null) {
+        removeEntry();
+      } else {
+        state.dismiss();
+      }
+    };
     overlay.insert(entry);
   }
 
   /// Removes the current notice, including its animation and dismissal timer.
   static void hide() {
     final entry = _active;
+    final dismiss = _dismissActive;
     _active = null;
+    _dismissActive = null;
     if (entry == null) return;
-    entry.remove();
-    entry.dispose();
+    _transitioning = true;
+    Timer(const Duration(milliseconds: 330), () {
+      if (_active == null) _transitioning = false;
+    });
+    if (dismiss != null) {
+      dismiss();
+    } else {
+      entry.remove();
+      entry.dispose();
+    }
   }
 }
 
 class _Notice extends StatefulWidget {
   const _Notice({
+    super.key,
     required this.message,
     required this.error,
     required this.icon,
@@ -73,8 +128,8 @@ class _NoticeState extends State<_Notice> with SingleTickerProviderStateMixin {
     super.initState();
     _controller = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 360),
-      reverseDuration: const Duration(milliseconds: 240),
+      duration: const Duration(milliseconds: 420),
+      reverseDuration: const Duration(milliseconds: 320),
     );
     _animation = CurvedAnimation(
       parent: _controller,
@@ -119,6 +174,8 @@ class _NoticeState extends State<_Notice> with SingleTickerProviderStateMixin {
     if (mounted) widget.onDismissed();
   }
 
+  void dismiss() => _dismiss();
+
   @override
   void dispose() {
     _timer?.cancel();
@@ -141,71 +198,73 @@ class _NoticeState extends State<_Notice> with SingleTickerProviderStateMixin {
           opacity: _animation,
           child: SlideTransition(
             position: Tween<Offset>(
-              begin: const Offset(0, -.25),
+              begin: const Offset(0, -.16),
               end: Offset.zero,
             ).animate(_animation),
-            child: Semantics(
-              liveRegion: true,
-              container: true,
-              child: Material(
-                color: Color.alphaBlend(
-                  accent.withValues(alpha: .05),
-                  colors.surface,
-                ),
-                elevation: 16,
-                shadowColor: Colors.black.withValues(alpha: .35),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(22),
-                  side: BorderSide(color: accent.withValues(alpha: .25)),
-                ),
-                clipBehavior: Clip.antiAlias,
-                child: ConstrainedBox(
-                  constraints: BoxConstraints(
-                    maxWidth: 480,
-                    maxHeight: MediaQuery.sizeOf(context).height * .42,
-                  ),
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 17, 12, 16),
-                        child: Icon(
-                          widget.icon ??
-                              (widget.error
-                                  ? Icons.warning_amber_rounded
-                                  : Icons.check_circle_outline_rounded),
-                          color: accent,
-                          size: 21,
-                        ),
+            child: ScaleTransition(
+                scale: Tween<double>(begin: .97, end: 1).animate(_animation),
+                child: Semantics(
+                  liveRegion: true,
+                  container: true,
+                  child: Material(
+                    color: Color.alphaBlend(
+                      accent.withValues(alpha: .05),
+                      colors.surface,
+                    ),
+                    elevation: 16,
+                    shadowColor: Colors.black.withValues(alpha: .35),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(22),
+                      side: BorderSide(color: accent.withValues(alpha: .25)),
+                    ),
+                    clipBehavior: Clip.antiAlias,
+                    child: ConstrainedBox(
+                      constraints: BoxConstraints(
+                        maxWidth: 480,
+                        maxHeight: MediaQuery.sizeOf(context).height * .42,
                       ),
-                      Expanded(
-                        child: SingleChildScrollView(
-                          padding: const EdgeInsets.symmetric(vertical: 17),
-                          child: Text(
-                            widget.message,
-                            style: theme.textTheme.bodySmall?.copyWith(
-                              color: colors.onSurface,
-                              fontSize: 13,
-                              height: 1.45,
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Padding(
+                            padding: const EdgeInsets.fromLTRB(16, 17, 12, 16),
+                            child: Icon(
+                              widget.icon ??
+                                  (widget.error
+                                      ? Icons.warning_amber_rounded
+                                      : Icons.check_circle_outline_rounded),
+                              color: accent,
+                              size: 21,
                             ),
                           ),
-                        ),
+                          Expanded(
+                            child: SingleChildScrollView(
+                              padding: const EdgeInsets.symmetric(vertical: 17),
+                              child: Text(
+                                widget.message,
+                                style: theme.textTheme.bodySmall?.copyWith(
+                                  color: colors.onSurface,
+                                  fontSize: 13,
+                                  height: 1.45,
+                                ),
+                              ),
+                            ),
+                          ),
+                          Padding(
+                            padding: const EdgeInsets.only(top: 4, right: 4),
+                            child: IconButton(
+                              onPressed: _dismiss,
+                              tooltip: 'Закрыть уведомление',
+                              iconSize: 18,
+                              color: colors.onSurfaceVariant,
+                              icon: const Icon(Icons.close),
+                            ),
+                          ),
+                        ],
                       ),
-                      Padding(
-                        padding: const EdgeInsets.only(top: 4, right: 4),
-                        child: IconButton(
-                          onPressed: _dismiss,
-                          tooltip: 'Закрыть уведомление',
-                          iconSize: 18,
-                          color: colors.onSurfaceVariant,
-                          icon: const Icon(Icons.close),
-                        ),
-                      ),
-                    ],
+                    ),
                   ),
-                ),
-              ),
-            ),
+                )),
           ),
         ),
       ),

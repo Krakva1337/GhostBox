@@ -17,6 +17,7 @@ APP_PATH="$APP_DIR/GhostBox.AppImage"
 RELEASES_DIR="$APP_DIR/releases"
 BIN_DIR="${HOME}/.local/bin"
 LAUNCHER="$BIN_DIR/ghostbox"
+UPDATER="$BIN_DIR/ghostbox-update"
 DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
 VENDOR_DIR="$DATA_HOME/ghostbox-appimage/vendor/bin"
 ICON_DIR="$DATA_HOME/icons/hicolor/scalable/apps"
@@ -26,6 +27,8 @@ cleanup() { rm -rf -- "$TMP_DIR"; }
 trap cleanup EXIT
 
 mkdir -p "$APP_DIR" "$RELEASES_DIR" "$BIN_DIR" "$ICON_DIR" "$DESKTOP_DIR" "$VENDOR_DIR"
+project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+install -m 0755 "$project_dir/tool/ghostbox-update.sh" "$UPDATER"
 install -m 0755 "$SOURCE" "$APP_PATH"
 
 (cd "$TMP_DIR" && "$APP_PATH" --appimage-extract >/dev/null)
@@ -37,14 +40,16 @@ if [[ ! -x "$RELEASE_DIR/AppRun" ]]; then
 fi
 # Older AppImages may contain only the Flutter "GhostBox" binary even though
 # their bundled AppRun looks for the lowercase "ghostbox" name.
-project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 install -m 0755 "$project_dir/packaging/appimage/AppRun" "$RELEASE_DIR/AppRun"
 ln -sfn "$RELEASE_DIR" "$APP_DIR/AppDir.new"
 mv -Tf "$APP_DIR/AppDir.new" "$APP_DIR/AppDir"
 
 install -m 0644 "$RELEASE_DIR/ghostbox.svg" "$ICON_DIR/ghostbox.svg"
 for core in sing-box xray; do
-  install -m 0755 "$RELEASE_DIR/vendor/bin/$core" "$VENDOR_DIR/$core"
+  # Avoid replacing an unchanged core: that would discard a user's CAP_NET_ADMIN xattr.
+  if [[ ! -f "$VENDOR_DIR/$core" ]] || ! cmp -s "$RELEASE_DIR/vendor/bin/$core" "$VENDOR_DIR/$core"; then
+    install -m 0755 "$RELEASE_DIR/vendor/bin/$core" "$VENDOR_DIR/$core"
+  fi
 done
 if [[ -f "$RELEASE_DIR/vendor/bin/BUILD-INFO.txt" ]]; then
   install -m 0644 "$RELEASE_DIR/vendor/bin/BUILD-INFO.txt" "$VENDOR_DIR/BUILD-INFO.txt"
@@ -57,7 +62,7 @@ chmod 0755 "$LAUNCHER"
 
 cat > "$DESKTOP_DIR/ghostbox.desktop" <<EOF
 [Desktop Entry]
-Name=GhostBox Alpha
+Name=GhostBox v1.0-pre-alpha
 Comment=Linux VPN client powered by Xray and sing-box
 Exec="$LAUNCHER" %U
 TryExec=$LAUNCHER
@@ -73,7 +78,7 @@ if command -v update-desktop-database >/dev/null 2>&1; then
   update-desktop-database "$DESKTOP_DIR" >/dev/null 2>&1 || true
 fi
 
-echo "Installed GhostBox Alpha to $APP_PATH"
+echo "Installed GhostBox v1.0-pre-alpha to $APP_PATH"
 echo "Rofi application mode: rofi -show drun"
 echo "Rofi command mode: ghostbox"
 echo "Enable TUN once with: sudo setcap cap_net_admin+ep '$VENDOR_DIR/sing-box'"

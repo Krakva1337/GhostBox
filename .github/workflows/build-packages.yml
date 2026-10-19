@@ -94,11 +94,18 @@ jobs:
           } finally {
             $archive.Dispose()
           }
+      - name: Create Windows installer checksum
+        shell: pwsh
+        run: |
+          $installer = 'dist/GhostBox-Setup-x64.exe'
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $installer).Hash.ToLowerInvariant()
+          "$hash *GhostBox-Setup-x64.exe" | Set-Content -NoNewline -Encoding ascii "$installer.sha256"
       - uses: actions/upload-artifact@v4
         with:
           name: GhostBox-Windows-x64
           path: |
             dist/GhostBox-Setup-x64.exe
+            dist/GhostBox-Setup-x64.exe.sha256
             dist/GhostBox-Windows-x64.zip
           if-no-files-found: error
           retention-days: 14

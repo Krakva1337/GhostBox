@@ -102,14 +102,38 @@ try {
   }
 
   Invoke-Checked 'flutter' @('pub', 'get')
+  $version = (Select-String -Path (Join-Path $ProjectRoot 'pubspec.yaml') -Pattern '^version:\s*(\S+)' | ForEach-Object { $_.Matches[0].Groups[1].Value.Split('+')[0] })
   # Flutter selects the Windows target architecture from the Windows runner.
   # `--target-platform` is not a supported option for `flutter build windows`.
-  Invoke-Checked 'flutter' @('build', 'windows', '--release')
+  Invoke-Checked 'flutter' @('build', 'windows', '--release', "--dart-define=GHOSTBOX_VERSION=$version")
 
   $releaseDirectory = Join-Path $ProjectRoot 'build/windows/x64/runner/Release'
   $application = Join-Path $releaseDirectory 'GhostBox.exe'
   if (-not (Test-Path $application)) {
     throw "Windows build completed without expected app: $application"
+  }
+
+  # Flutter's Windows runner dynamically links the Microsoft VC runtime.
+  # Ship the redistributable app-local CRT so a clean Windows machine does not
+  # fail at startup with VCRUNTIME140.dll / MSVCP140.dll missing.
+  $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+  if (Test-Path $vswhere) {
+    $vsPath = (& $vswhere -latest -products '*' -property installationPath | Select-Object -First 1).Trim()
+    $crtRoot = Join-Path $vsPath 'VC/Redist/MSVC'
+    $crt = Get-ChildItem -Path $crtRoot -Directory -ErrorAction SilentlyContinue |
+      Sort-Object Name -Descending |
+      ForEach-Object { Get-ChildItem -Path (Join-Path $_.FullName 'x64/Microsoft.VC143.CRT') -Filter '*.dll' -File -ErrorAction SilentlyContinue } |
+      Select-Object -First 1
+    if ($crt) {
+      $crtDirectory = $crt.Directory.FullName
+      Get-ChildItem -Path $crtDirectory -Filter '*.dll' -File |
+        Copy-Item -Destination $releaseDirectory -Force
+      Write-Host "Bundled app-local Visual C++ runtime from $crtDirectory"
+    } else {
+      throw 'The x64 Visual C++ 14.3 runtime DLLs were not found in the Visual Studio toolchain.'
+    }
+  } else {
+    throw 'Visual Studio vswhere.exe was not found; cannot bundle the Visual C++ runtime.'
   }
 
   $releaseCoreDirectory = Join-Path $releaseDirectory 'vendor/bin'
@@ -137,7 +161,6 @@ try {
     if (Test-Path $defaultCompiler) { $compilerPath = $defaultCompiler }
   }
   if ($compilerPath) {
-    $version = (Select-String -Path (Join-Path $ProjectRoot 'pubspec.yaml') -Pattern '^version:\s*(\S+)' | ForEach-Object { $_.Matches[0].Groups[1].Value.Split('+')[0] })
     $installer = Join-Path $packageDirectory 'GhostBox-Setup-x64.exe'
     Invoke-Checked $compilerPath @(
       "/DAppVersion=$version",

@@ -43,7 +43,9 @@ build_linux() {
 
   cd "$project_dir"
   flutter pub get
-  flutter build linux --release
+  local ghostbox_version
+  ghostbox_version="$(awk '/^version:/ {split($2,v,"+"); print v[1]}' pubspec.yaml)"
+  flutter build linux --release --dart-define="GHOSTBOX_VERSION=$ghostbox_version"
 
   local appdir="$project_dir/build/appimage/GhostBox.AppDir"
   local bundle_arch=x64
@@ -93,7 +95,7 @@ build_linux() {
         runtime_sha256=b4ff0030242d0c3bb12ce40541828303cf167493f4793456f0436edd6255c39d
         ;;
     esac
-    runtime_url="https://github.com/AppImage/type2-runtime/releases/download/20260928/runtime-$appimage_arch"
+    runtime_url="https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-$appimage_arch"
     echo 'Downloading AppImage runtime…'
     curl --fail --location --retry 3 "$runtime_url" --output "$runtime"
     printf '%s  %s\n' "$runtime_sha256" "$runtime" | sha256sum --check --status || {

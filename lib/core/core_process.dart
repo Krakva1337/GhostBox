@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import '../services/log_store.dart';
 import '../models/server_profile.dart';
 import '../models/core_settings.dart';
 
@@ -455,45 +456,9 @@ class CoreProcessBackend implements VpnBackend {
   }
 
   Future<void> _appendPersistentLog(String line) async {
-    try {
-      final env = Platform.environment;
-      final separator = Platform.pathSeparator;
-      String? base;
-      if (Platform.isLinux) {
-        base = env['XDG_STATE_HOME'];
-        if (base == null || base.isEmpty) {
-          final home = env['HOME'];
-          if (home != null && home.isNotEmpty) {
-            base = '$home${separator}.local${separator}state';
-          }
-        }
-      } else if (Platform.isWindows) {
-        base = env['APPDATA'];
-        if (base == null || base.isEmpty) {
-          final home = env['USERPROFILE'];
-          if (home != null && home.isNotEmpty) {
-            base = '$home${separator}AppData${separator}Roaming';
-          }
-        }
-      } else {
-        base = env['HOME'];
-      }
-      base ??= Directory.systemTemp.path;
-      final directory = Directory('$base${separator}GhostBox${separator}logs');
-      await directory.create(recursive: true);
-      final file = File('${directory.path}${separator}ghostbox.log');
-      final timestamp = DateTime.now().toLocal().toIso8601String();
-      final existingLength = await file.exists() ? await file.length() : 0;
-      if (existingLength > 512 * 1024) {
-        final old = await file.readAsString();
-        final keepFrom = old.length > 256 * 1024 ? old.length - 256 * 1024 : 0;
-        await file.writeAsString(old.substring(keepFrom));
-      }
-      await file.writeAsString('$timestamp  [$name] $line\n',
-          mode: FileMode.append, flush: true);
-    } on Object {
-      // A read-only or unavailable home directory must not stop the VPN core.
-    }
+    final timestamp = DateTime.now().toLocal().toIso8601String();
+    await GhostBoxLogStore.instance
+        .append('$timestamp  [$name] $line', core: true);
   }
 
   Map<String, dynamic> makeConfig(ServerProfile p) {
