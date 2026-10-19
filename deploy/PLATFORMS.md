@@ -1,72 +1,133 @@
-# Android and Windows build preparation
+# Cross-platform build preparation
 
-## Prepared in this workspace
+## Build artifacts
 
-- Official Flutter Android and Windows runner projects.
-- Android release manifest includes network access for subscriptions and server checks.
-- Flutter Android debug/profile/release engine artifacts have been downloaded.
-- Official Google command line tools are in `.toolchains/android-sdk/cmdline-tools/latest`.
-  The archive is SHA-256 verified against Google's published checksum.
-- Windows x64 Xray 26.3.27 and sing-box 1.14.3 executables were compiled from official
-  Go module sources into `vendor/windows/bin/`. sing-box includes QUIC and uTLS.
-- Windows CMake packages cores into `vendor/bin` beside the application. The Dart
-  backend resolves cores from the app bundle and uses `.exe` on Windows.
+Core versions are pinned in the build scripts so desktop and mobile artifacts can
+be rebuilt from the same revisions:
 
-Local SDK downloads and generated binaries are ignored by source control. They
-are not part of the Flutter asset bundle; neither are `.env` or server secrets.
+- Xray `v1.260327.0` and sing-box `v1.14.3` desktop CLI cores for Windows and
+  macOS. The sing-box build includes QUIC and uTLS.
+- sing-box `libbox` for Android (`libbox.aar` and the upstream legacy AAR) and
+  Apple (`Libbox.xcframework`). The official Apple gomobile build applies
+  `with_low_memory` to iOS targets while excluding macOS.
+- Windows x64 and ARM64 builds are stored separately under `vendor/windows/`;
+  generated core files
+  and mobile libraries remain ignored build artifacts.
 
-## Android (Linux host)
+Run the core workflow from GitHub Actions → **Build platform cores** to produce
+Windows/macOS architecture variants, Android AARs and the Apple XCFramework.
+Artifacts are retained for 14 days. Locally, desktop cores can be built with Go:
 
-Java 17+ and Flutter are required. Java 21 is available on this machine.
-Complete SDK setup with:
+```bash
+./tool/build_desktop_cores.sh windows amd64
+./tool/build_desktop_cores.sh windows arm64
+./tool/build_desktop_cores.sh macos amd64
+./tool/build_desktop_cores.sh macos arm64
+```
+
+The equivalent one-command entry points are `./tool/build_platform_cores.sh desktop`,
+`./tool/build_platform_cores.sh android` or `./tool/build_platform_cores.sh apple`. On a Mac with all toolchains installed,
+`./tool/build_platform_cores.sh all` builds the complete core matrix.
+
+Windows outputs go to `vendor/windows/<arch>/bin/` and are selected by the
+Windows CMake build before being copied into Flutter's release directory.
+macOS outputs go
+to `vendor/macos/<arch>/bin/`; after building the Flutter app, copy the matching
+pair into the `.app` bundle:
+
+```bash
+flutter build macos --release
+./tool/package_macos_cores.sh build/macos/Build/Products/Release/Runner.app arm64
+```
+
+The `.app` must be code-signed again after copying the nested core executables.
+
+## Mobile core libraries
+
+Build Android `libbox` on Linux or macOS with Go, JDK 17, Android SDK and NDK:
 
 ```bash
 ./tool/setup_android.sh
-ANDROID_HOME="$PWD/.toolchains/android-sdk" flutter build apk --debug
+export JAVA_HOME=/path/to/jdk-17
+export ANDROID_HOME="$PWD/.toolchains/android-sdk"
+./tool/build_mobile_cores.sh android
 ```
 
-The script asks Google's SDK manager to show its license terms and installs API
-36, Build Tools 36, NDK 28.2.13676358, CMake 3.22.1 and platform-tools. These SDK/NDK
-packages are not yet installed; only the command line tools and Flutter engine
-artifacts are downloaded. SDK versions match the installed Flutter 3.47.7.
-
-The Android runner currently builds the client UI. It is **not an Android VPN**:
-the existing backend launches desktop subprocesses. A working Android tunnel
-requires a native VpnService, foreground-service lifecycle, core library JNI/AAR
-bindings and TUN file descriptor integration. Linux executables must not be
-copied into Android assets. Android background behavior and permissions need
-real-device testing once that native adapter exists. Generated release signing
-uses the development debug key; configure a private release keystore before
-publishing.
-
-## Windows
-
-Build the pinned native cores from Linux/macOS with Go:
+The AAR files are placed in `dist/cores/android/`. Apple libraries must be built
+on macOS with Xcode and the iOS Simulator runtime installed:
 
 ```bash
-./tool/build_windows_cores.sh
+./tool/build_mobile_cores.sh apple
 ```
 
-On a Windows host, install Flutter and Visual Studio with the **Desktop
-development with C++** workload and Windows SDK. Copy `vendor/windows/bin/` from
-the prepared workspace, then run in PowerShell:
+This produces `dist/cores/apple/Libbox.xcframework/` for iOS devices,
+iOS Simulator and macOS. The iOS variant is built with upstream's
+`with_low_memory` option to reduce footprint. Apple's packet tunnel memory
+budget is OS/device dependent; the commonly cited ~50 MiB figure is not a
+permanent guarantee. Measure the packet tunnel extension on supported devices
+and keep it lean (one core runtime, no Flutter engine or UI assets in the
+extension). sing-box's compile option is a starting point, not a hard memory
+cap.
+
+## Runtime status and remaining integration
+
+These scripts prepare native core binaries/libraries and Flutter runner
+projects. They do not yet make the mobile apps functional VPN clients:
+
+- Android still needs a native `VpnService`, foreground-service lifecycle,
+  permission flow, libbox platform callbacks, TUN file-descriptor handoff and a
+  Flutter method-channel backend.
+- iOS still needs a `PacketTunnelProvider` app-extension target, a
+  `NETunnelProviderManager` setup flow, Network Extension entitlements and a
+  Flutter-to-extension configuration channel. Build/sign with an Apple team.
+- macOS still needs a supported VPN/TUN adapter and the required Network
+  Extension or system-extension entitlements. The generated Flutter runner and
+  desktop core binaries alone provide the UI and local core processes.
+- Windows has a Flutter desktop build path, bundled Xray/sing-box cores and a
+  per-user WinINET system-proxy adapter. TUN mode still needs its Windows
+  privilege/adapter lifecycle before it can be treated as a reliable default.
+
+The native mobile build currently prepares sing-box as the mobile engine. Do not
+link independent sing-box and Xray Go libraries into the same app/extension
+process: each contains a Go runtime and can conflict at link or startup. If
+Xray is selected for mobile later, make it the sole Go core in that process or
+run it in a separate process where the OS permits it.
+
+## Flutter runner builds
+
+Run platform app builds on their native hosts after `flutter pub get`:
+
+```text
+Windows: flutter build windows --release
+macOS:   flutter build macos --release
+iOS:     flutter build ios --no-codesign
+Android: flutter build apk --release
+```
+
+Windows requires Visual Studio's Desktop development with C++ workload. Apple
+targets require Xcode; iOS distribution additionally needs valid signing and
+Network Extension entitlements. Android release distribution needs a private
+release keystore instead of the debug key currently configured in Gradle.
+
+On Windows, the simplest complete x64 package build is:
 
 ```powershell
-flutter pub get
-flutter doctor -v
-flutter build windows --release
+Set-ExecutionPolicy -Scope Process Bypass
+./tool/build_windows.ps1
 ```
 
-Distribute the entire `build/windows/x64/runner/Release` directory, including
-`vendor/bin`, Flutter DLLs and `data`. Native Windows Flutter builds cannot run
-on this Linux host. The Windows core executables are built, but have not been
-executed on Windows. The current core adapter exposes a local proxy, with no
-Windows TUN or automatic system proxy installation.
+Install Flutter stable, Go 1.27+, and Visual Studio 2022 with the Desktop
+development with C++ workload first. The script builds the pinned core binaries,
+the Flutter release app and `dist/GhostBox-Windows-x64.zip`. The GitHub Actions
+workflow **Build GhostBox for Windows** runs the same script and publishes a
+downloadable artifact.
 
-## Sources
+## References
 
-- https://developer.android.com/studio#command-tools
-- https://docs.flutter.dev/platform-integration/android/setup
-- https://docs.flutter.dev/platform-integration/windows/setup
-- https://github.com/XTLS/Xray-core
-- https://github.com/SagerNet/sing-box
+- [Amnezia split-tunneling implementation](https://github.com/amnezia-vpn/amnezia-client/blob/dev/client/vpnConnection.cpp#L1772-L1910) resolves listed hosts to IPs and installs address routes.
+- [Amnezia split-tunneling guide](https://docs.amnezia.org/documentation/instructions/vpn-split-tunneling/) notes that domain-only lists can be unreliable for large/CDN-backed sites and recommends IP/CIDR lists for predictable routing.
+- [sing-box mobile library builder](https://github.com/SagerNet/sing-box/blob/v1.14.3/cmd/internal/build_libbox/main.go)
+- [Xray Android/iOS TUN integration](https://github.com/XTLS/Xray-core/blob/main/proxy/tun/README.md)
+- [Apple Network Extension memory discussion](https://developer.apple.com/forums/thread/73148)
+- [Android SDK command line tools](https://developer.android.com/studio#command-tools)
+- [Flutter platform setup](https://docs.flutter.dev/platform-integration)

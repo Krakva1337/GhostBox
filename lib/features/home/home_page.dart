@@ -66,7 +66,7 @@ class _HomePageState extends State<HomePage>
   CoreSettings coreSettings = CoreSettings();
   final DnsAdBlocklist dnsAdBlocklist = DnsAdBlocklist();
   bool loadingAdBlocklist = false;
-  final LinuxSystemProxy systemProxy = LinuxSystemProxy();
+  final DesktopSystemProxy systemProxy = DesktopSystemProxy();
   bool pendingReconnect = false;
   bool switchingServer = false;
   String? activeProfileId;
@@ -112,6 +112,7 @@ class _HomePageState extends State<HomePage>
 
   Future<void> _load() async {
     final p = await SharedPreferences.getInstance();
+    if (Platform.isWindows) await systemProxy.restore();
     final saved = p.getString('profiles');
     final rows = saved == null
         ? <ServerProfile>[]
@@ -120,6 +121,8 @@ class _HomePageState extends State<HomePage>
                 ServerProfile.fromJson(Map<String, dynamic>.from(e as Map)))
             .toList();
     if (!mounted) return;
+    final migrateWindowsProxy =
+        Platform.isWindows && p.getBool('windowsProxyDefaultMigrated') != true;
     setState(() {
       prefs = p;
       profiles = rows;
@@ -152,7 +155,11 @@ class _HomePageState extends State<HomePage>
         coreSettings = coreSettings.copyWith(core: 'xray');
       }
       if (p.getBool('tunDefaultMigrated') != true) {
-        coreSettings = coreSettings.copyWith(connectionMode: 'tun');
+        coreSettings = coreSettings.copyWith(
+            connectionMode: Platform.isWindows ? 'system' : 'tun');
+      }
+      if (migrateWindowsProxy) {
+        coreSettings = coreSettings.copyWith(connectionMode: 'system');
       }
       backend = coreSettings.core == 'xray' ? XrayBackend() : SingBoxBackend();
       process?.settings = coreSettings;
@@ -170,10 +177,14 @@ class _HomePageState extends State<HomePage>
       }
     });
     if (p.getBool('xrayDefaultMigrated') != true ||
-        p.getBool('tunDefaultMigrated') != true) {
+        p.getBool('tunDefaultMigrated') != true ||
+        migrateWindowsProxy) {
       await p.setString('coreSettings', jsonEncode(coreSettings.toJson()));
       await p.setBool('xrayDefaultMigrated', true);
       await p.setBool('tunDefaultMigrated', true);
+    }
+    if (migrateWindowsProxy) {
+      await p.setBool('windowsProxyDefaultMigrated', true);
     }
     if (p.getBool('proxyGetPingMigrated') != true) {
       if (coreSettings.pingMode == 'tcp') {
@@ -304,19 +315,20 @@ class _HomePageState extends State<HomePage>
             'Подключение: ${attemptProfile.name} · $attemptCore · $attemptMode');
         _recordAppLog(
             'Профиль: ${attemptProfile.protocol}/${attemptProfile.network}${attemptProfile.security == null ? '' : ' · ${attemptProfile.security}'}');
+        final runtimeRouting = await _expandSplitRouteIps(coreSettings);
         final usesXrayTunnelBridge = Platform.isLinux &&
             attemptCore == 'xray' &&
             (attemptMode == 'tun' || attemptMode == 'mixed');
         var runtimeProfile = attemptProfile;
         if (usesXrayTunnelBridge) {
           runtimeProfile = await _resolveXrayTunnelProfile(attemptProfile);
-          process?.settings = coreSettings.copyWith(
+          process?.settings = runtimeRouting.copyWith(
               connectionMode: 'proxy', localPort: runtimeLocalPort);
           _recordAppLog(
               'TUN запускается через sing-box маршрутизатор и Xray upstream');
         } else {
           process?.settings =
-              coreSettings.copyWith(localPort: runtimeLocalPort);
+              runtimeRouting.copyWith(localPort: runtimeLocalPort);
         }
         runtimeProfile = await _withDeviceMetadata(runtimeProfile);
         final activeCore = process;
@@ -327,7 +339,7 @@ class _HomePageState extends State<HomePage>
         _recordAppLog(
             'Процесс ядра запущен; проверяю маршрут и доступность сервера');
         if (usesXrayTunnelBridge) {
-          await _startXrayTunnelBridge(runtimeProfile);
+          await _startXrayTunnelBridge(runtimeProfile, runtimeRouting);
           xrayTunnelBridgeActive = true;
           _recordAppLog('Системный TUN-маршрут активен через sing-box');
         }
@@ -794,7 +806,47 @@ class _HomePageState extends State<HomePage>
     );
   }
 
-  Future<void> _startXrayTunnelBridge(ServerProfile profile) async {
+  Future<CoreSettings> _expandSplitRouteIps(CoreSettings settings) async {
+    if (settings.routing != 'rules' && settings.routing != 'exclude') {
+      return settings;
+    }
+    final entries = settings.routing == 'exclude'
+        ? settings.directDomains
+        : settings.proxyDomains;
+    final hostnames = entries
+        .where((entry) =>
+            !CoreSettings.isIpRoute(entry) && !entry.startsWith('*.'))
+        .toSet()
+        .take(64)
+        .toList();
+    if (hostnames.isEmpty) return settings;
+
+    Future<List<InternetAddress>> lookup(String hostname) async {
+      try {
+        return await InternetAddress.lookup(hostname)
+            .timeout(const Duration(seconds: 4));
+      } on Object {
+        return const <InternetAddress>[];
+      }
+    }
+
+    final resolved = await Future.wait(hostnames.map(lookup));
+    final addresses = resolved
+        .expand((result) => result)
+        .map((address) => address.address.toLowerCase())
+        .toSet();
+    _recordAppLog(
+        'Split routing: разрешено доменов ${hostnames.length}, получено IP ${addresses.length}; IP-маршруты будут обновлены на это подключение');
+    if (addresses.isEmpty) return settings;
+
+    final merged = {...entries, ...addresses}.toList();
+    return settings.routing == 'exclude'
+        ? settings.copyWith(directDomains: merged)
+        : settings.copyWith(proxyDomains: merged);
+  }
+
+  Future<void> _startXrayTunnelBridge(
+      ServerProfile profile, CoreSettings routingSettings) async {
     final reservation =
         await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
     final bridgePort = reservation.port;
@@ -814,7 +866,7 @@ class _HomePageState extends State<HomePage>
       name: 'sing-box',
       executable: coreExecutable('sing-box', 'vendor'),
       configPath: 'vendor/config/sing-box-tun-bridge.json',
-    )..settings = coreSettings.copyWith(
+    )..settings = routingSettings.copyWith(
         core: 'sing-box',
         connectionMode: coreSettings.connectionMode,
         localPort: bridgePort,
@@ -2079,15 +2131,15 @@ class _HomePageState extends State<HomePage>
                   coreSettings.routing == 'rules'
                       ? 'Сайты через VPN'
                       : 'Исключения из VPN',
-                  '${(coreSettings.routing == 'rules' ? coreSettings.proxyDomains : coreSettings.directDomains).length} доменов',
+                  '${(coreSettings.routing == 'rules' ? coreSettings.proxyDomains : coreSettings.directDomains).length} правил',
                   IconButton(
-                      tooltip: 'Открыть список доменов',
+                      tooltip: 'Открыть список правил',
                       onPressed: () => _openRouteList(coreSettings.routing),
                       icon: const Icon(Icons.chevron_right_rounded))),
               Padding(
                   padding: const EdgeInsets.only(top: 3, left: 2),
                   child: Text(
-                      'Подойдут example.com и маски *.ru, *.example.org. Маска охватывает домен и его поддомены. Можно вставить JSON-список.',
+                      'Домены (*.ru) и IP-сети (203.0.113.0/24). Для IP-списков маршрутизация работает без TLS sniffing. Принимается JSON Amnezia.',
                       style:
                           TextStyle(color: _muted, fontSize: 11, height: 1.4))),
             ],
@@ -2111,27 +2163,32 @@ class _HomePageState extends State<HomePage>
     final trimmed = raw.trim();
     if (trimmed.isEmpty) return <String>[];
     List<String>? fromJson(dynamic value) {
-      if (value is List) return value.whereType<String>().toList();
-      if (value is Map) {
-        for (final key in [
-          'domains',
-          'domain',
-          'domain_suffix',
-          'proxyDomains',
-          'directDomains'
-        ]) {
-          if (value[key] is List) {
-            return (value[key] as List).whereType<String>().toList();
+      final found = <String>{};
+      void collect(dynamic node) {
+        if (node is String) {
+          for (final token in node.split(RegExp(r'[\s,;]+'))) {
+            final candidate = CoreSettings.normalizeRoutePattern(token);
+            if (CoreSettings.isValidRoutePattern(candidate))
+              found.add(candidate);
+          }
+        } else if (node is List) {
+          for (final entry in node) {
+            collect(entry);
+          }
+        } else if (node is Map) {
+          for (final entry in node.entries) {
+            final key = entry.key.toString();
+            final candidate = CoreSettings.normalizeRoutePattern(key);
+            if (CoreSettings.isValidRoutePattern(candidate)) {
+              found.add(candidate);
+            }
+            collect(entry.value);
           }
         }
-        if (value['rules'] is List) {
-          return (value['rules'] as List)
-              .whereType<Map>()
-              .expand((rule) => fromJson(rule) ?? const <String>[])
-              .toList();
-        }
       }
-      return null;
+
+      collect(value);
+      return found.isEmpty ? null : found.toList();
     }
 
     if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
@@ -2150,8 +2207,7 @@ class _HomePageState extends State<HomePage>
   Future<void> _saveRouteList() async {
     final values = _readRouteDomains(routeListController.text);
     if (values == null) {
-      _message(
-          'JSON должен быть массивом доменов или объектом с полем domains');
+      _message('JSON должен содержать домены или IP-сети');
       return;
     }
     final normalized = values
@@ -2185,7 +2241,7 @@ class _HomePageState extends State<HomePage>
                   const TextStyle(fontSize: 23, fontWeight: FontWeight.w700)),
           const SizedBox(height: 6),
           Text(
-              'Домен или маска на строку. Подойдут *.ru и *.example.org; можно вставить JSON.',
+              'Домен, маска или IP-сеть на строку. Подойдут *.ru, 10.0.0.0/8 и JSON-списки Amnezia.',
               style: TextStyle(color: _muted, fontSize: 12)),
           const SizedBox(height: 16),
           Container(
@@ -2203,7 +2259,7 @@ class _HomePageState extends State<HomePage>
               style: const TextStyle(fontSize: 13, height: 1.5),
               decoration: const InputDecoration(
                   hintText:
-                      'example.com\n*.ru\n*.media.example.org\n\nили JSON: ["*.ru"]',
+                      'example.com\n*.ru\n203.0.113.0/24\n\nили JSON Amnezia',
                   border: InputBorder.none,
                   counterText: ''),
             ),
@@ -3994,7 +4050,9 @@ class _HomePageState extends State<HomePage>
                 Icons.power_rounded,
                 'Способ подключения',
                 switch (coreSettings.connectionMode) {
-                  'system' => 'Прокси для GTK-приложений',
+                  'system' => Platform.isWindows
+                      ? 'Прокси Windows для поддерживаемых приложений'
+                      : 'Системный прокси для приложений окружения',
                   'tun' => 'Весь трафик · нужны права сети',
                   'mixed' => 'TUN + локальный SOCKS/HTTP',
                   _ => 'Локальный SOCKS/HTTP прокси',
@@ -4313,7 +4371,7 @@ class _HomePageState extends State<HomePage>
                 coreSettings.routing == 'rules'
                     ? 'Сайты через VPN'
                     : 'Исключения из VPN',
-                '${(coreSettings.routing == 'rules' ? coreSettings.proxyDomains : coreSettings.directDomains).length} доменов',
+                '${(coreSettings.routing == 'rules' ? coreSettings.proxyDomains : coreSettings.directDomains).length} правил',
                 IconButton(
                     onPressed: () {
                       _openTab(1);

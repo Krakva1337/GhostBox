@@ -1,3 +1,5 @@
+import 'dart:io';
+
 class CoreSettings {
   const CoreSettings({
     this.core = 'xray',
@@ -198,14 +200,14 @@ class CoreSettings {
           r'^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$')
       .hasMatch(value.trim().toLowerCase());
 
-  /// Route lists accept DNS suffix patterns such as `*.ru` and
-  /// `*.media.example.org`. Core routing engines receive the suffix without
-  /// `*.` and match both the apex and its subdomains.
+  /// Route lists accept DNS suffix patterns such as `*.ru`, IP addresses and
+  /// CIDR networks. Core routing engines receive DNS suffixes without `*.`.
   static String normalizeRoutePattern(String value) =>
       value.trim().toLowerCase().replaceFirst(RegExp(r'\.$'), '');
 
   static bool isValidRoutePattern(String value) {
     final pattern = normalizeRoutePattern(value);
+    if (_isIpOrCidr(pattern)) return true;
     if (pattern.startsWith('*.')) {
       final suffix = pattern.substring(2);
       return _isValidDomainName(suffix, allowSingleLabel: true);
@@ -215,6 +217,29 @@ class CoreSettings {
 
   static String routeSuffix(String value) =>
       normalizeRoutePattern(value).replaceFirst(RegExp(r'^\*\.'), '');
+
+  static bool isIpRoute(String value) =>
+      _isIpOrCidr(normalizeRoutePattern(value));
+
+  static String routeIp(String value) {
+    final pattern = normalizeRoutePattern(value);
+    if (pattern.contains('/')) return pattern;
+    final address = InternetAddress.tryParse(pattern);
+    if (address == null) return pattern;
+    return '$pattern/${address.type == InternetAddressType.IPv4 ? 32 : 128}';
+  }
+
+  static bool _isIpOrCidr(String value) {
+    final parts = value.split('/');
+    if (parts.length > 2) return false;
+    final address = InternetAddress.tryParse(parts.first);
+    if (address == null) return false;
+    if (parts.length == 1) return true;
+    final prefix = int.tryParse(parts.last);
+    if (prefix == null) return false;
+    final maxPrefix = address.type == InternetAddressType.IPv4 ? 32 : 128;
+    return prefix >= 0 && prefix <= maxPrefix;
+  }
 
   static bool _isValidDomainName(String value,
       {required bool allowSingleLabel}) {

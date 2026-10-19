@@ -4,7 +4,7 @@ project(ghostbox LANGUAGES CXX)
 
 # The name of the executable created for the application. Change this to change
 # the on-disk name of your application.
-set(BINARY_NAME "ghostbox")
+set(BINARY_NAME "GhostBox")
 
 # Explicitly opt in to modern CMake behaviors to avoid warnings with recent
 # versions of CMake.
@@ -109,7 +109,12 @@ install(FILES "${AOT_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}"
 
 # The native cores live next to the app; no dependency on the launch directory.
 foreach(CORE_NAME xray sing-box)
-  set(CORE_EXE "${CMAKE_CURRENT_SOURCE_DIR}/../vendor/windows/bin/${CORE_NAME}.exe")
+  set(GHOSTBOX_CORE_ARCH "amd64")
+  if(CMAKE_GENERATOR_PLATFORM MATCHES "ARM64|arm64" OR
+     CMAKE_SYSTEM_PROCESSOR MATCHES "^(ARM64|aarch64)$")
+    set(GHOSTBOX_CORE_ARCH "arm64")
+  endif()
+  set(CORE_EXE "${CMAKE_CURRENT_SOURCE_DIR}/../vendor/windows/${GHOSTBOX_CORE_ARCH}/bin/${CORE_NAME}.exe")
   if(EXISTS "${CORE_EXE}")
     install(FILES "${CORE_EXE}" DESTINATION "${CMAKE_INSTALL_PREFIX}/vendor/bin" COMPONENT Runtime)
   else()

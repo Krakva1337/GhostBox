@@ -1,0 +1,82 @@
+name: Build platform cores
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  desktop:
+    name: ${{ matrix.target }}-${{ matrix.arch }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: windows
+            arch: amd64
+          - target: windows
+            arch: arm64
+          - target: macos
+            arch: amd64
+          - target: macos
+            arch: arm64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.2'
+      - name: Build Xray and sing-box
+        run: ./tool/build_desktop_cores.sh '${{ matrix.target }}' '${{ matrix.arch }}'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ghostbox-cores-${{ matrix.target }}-${{ matrix.arch }}
+          path: vendor/${{ matrix.target }}/${{ matrix.arch }}/
+          if-no-files-found: error
+          retention-days: 14
+
+  android:
+    name: Android libbox
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.2'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Install Android NDK
+        run: |
+          yes | sdkmanager --licenses
+          sdkmanager 'platforms;android-36' 'ndk;28.2.13676358'
+      - name: Build libbox AARs
+        run: ./tool/build_mobile_cores.sh android
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ghostbox-libbox-android
+          path: dist/cores/android/
+          if-no-files-found: error
+          retention-days: 14
+
+  apple:
+    name: Apple Libbox XCFramework
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.2'
+      - name: Select Xcode
+        run: sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
+      - name: Build iOS and macOS Libbox
+        run: ./tool/build_mobile_cores.sh apple
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ghostbox-libbox-apple
+          path: dist/cores/apple/
+          if-no-files-found: error
+          retention-days: 14

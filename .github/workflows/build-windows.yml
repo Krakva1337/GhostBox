@@ -1,0 +1,29 @@
+name: Build GhostBox for Windows
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-x64:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.2'
+      - name: Build GhostBox and bundled cores
+        shell: pwsh
+        run: ./tool/build_windows.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GhostBox-Windows-x64
+          path: dist/GhostBox-Windows-x64.zip
+          if-no-files-found: error
+          retention-days: 14

@@ -14,4 +14,10 @@ vendor/src/
 
 .toolchains/
 vendor/windows/
+vendor/macos/
+vendor/cores/
 /squashfs-root/
+ios/Pods/
+macos/Pods/
+DerivedData/
+**/xcuserdata/

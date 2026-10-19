@@ -4,7 +4,7 @@
 
 ## Русский
 
-GhostBox — настольный VPN-клиент для Linux. Он импортирует серверы и подписки, запускает Xray или sing-box и показывает диагностику соединения. Текущая альфа ориентирована на Linux; Windows будет следующим этапом. Android-папка пока содержит только заготовку интерфейса.
+GhostBox — VPN-клиент на Flutter с ядрами Xray и sing-box. Полноценный VPN backend сейчас готов для Linux. Windows, macOS, iOS и Android runner-проекты и сборка ядер подготовлены; мобильные платформы пока требуют нативной интеграции VPN-службы.
 
 ### Возможности
 
@@ -12,9 +12,13 @@ GhostBox — настольный VPN-клиент для Linux. Он импор
 - Режимы TUN, локальный прокси, системный прокси и Mixed.
 - Xray по умолчанию; Xray XHTTP/REALITY и Linux TUN через sing-box-маршрутизатор.
 - Настройки DNS, маршрутов, DNS-блоклистов, локального порта, журналов и мягкого лимита памяти ядра.
+- Split tunneling по доменам и IP/CIDR; поддерживается импорт JSON-списков Amnezia.
 - Проверка серверов, журнал в файл, история последних подключений и просмотр сгенерированных конфигов.
 - Необязательный индикатор RAM ядер на главном экране.
 - Данные подписки — трафик, срок действия, устройства, сайт и поддержка — отображаются, только если их прислал провайдер.
+- Скрипты сборки Xray/sing-box для Windows и macOS, sing-box libbox для Android и Apple.
+
+Windows-сборка включает системный прокси текущего пользователя; Windows TUN ещё требует отдельного системного адаптера и прав. Сборка и статус платформ описаны в [deploy/PLATFORMS.md](deploy/PLATFORMS.md).
 
 Поддержка протоколов и транспортов зависит от ядра и его параметров сборки. Для XHTTP и REALITY выбирай Xray: поставляемая сборка sing-box может не содержать дополнительных тегов XHTTP/uTLS.
 
@@ -71,7 +75,7 @@ flutter build linux --release
 
 ## English
 
-GhostBox is a Linux desktop VPN client for importing servers and subscriptions, running Xray or sing-box, and diagnosing connections. This alpha targets Linux; Windows is planned next. The Android directory currently contains a UI scaffold only.
+GhostBox is a Flutter VPN client powered by Xray and sing-box. The complete VPN backend currently targets Linux. Windows, macOS, iOS and Android runner projects and core build preparation are in place; mobile platforms still need native VPN service integration.
 
 ### Features
 
@@ -79,9 +83,13 @@ GhostBox is a Linux desktop VPN client for importing servers and subscriptions, 
 - TUN, local proxy, system proxy and Mixed connection modes.
 - Xray is the default core. Xray supports XHTTP/REALITY; Linux TUN can route through a sing-box bridge.
 - DNS, routing, DNS blocklists, local port, logging and a soft core memory budget.
+- Domain and IP/CIDR split tunneling, including Amnezia JSON route lists.
 - Server checks, file-based logs, recent connection history and generated-config viewer.
 - Optional live core RAM usage on the main screen.
 - Provider metadata such as traffic, expiry, device limit, website and support is shown only when supplied by the provider.
+- Build scripts for Windows/macOS Xray and sing-box, Android libbox, and the Apple Libbox XCFramework.
+
+The Windows build includes the current user's system proxy; Windows TUN still needs a separate system adapter and privilege lifecycle. See [deploy/PLATFORMS.md](deploy/PLATFORMS.md) for build commands and platform status.
 
 Protocol and transport support depends on the selected core and its build options. Choose Xray for XHTTP and REALITY; the bundled sing-box build may not include optional XHTTP/uTLS tags.
 

@@ -107,6 +107,16 @@ class CoreProcessBackend implements VpnBackend {
           'Эта сборка sing-box не поддерживает uTLS. Отпечаток браузера не применяется; для него выберите Xray.');
     }
     final config = makeConfig(serverProfile);
+    final splitEntries = settings.routing == 'exclude'
+        ? settings.directDomains
+        : settings.proxyDomains;
+    if (settings.routing == 'exclude' || settings.routing == 'rules') {
+      final domainCount =
+          splitEntries.where((value) => !CoreSettings.isIpRoute(value)).length;
+      final networkCount = splitEntries.where(CoreSettings.isIpRoute).length;
+      _logs.add(
+          'Split routing: ${settings.routing}, $domainCount domain rules, $networkCount IP/CIDR rules. Domain rules use HTTP/TLS/QUIC sniffing; CIDRs match destination addresses directly.');
+    }
     await _cleanupConfig();
     _runtimeDirectory = await Directory.systemTemp.createTemp('ghostbox-core-');
     _runtimeConfig = File('${_runtimeDirectory!.path}/config.json');
@@ -629,26 +639,40 @@ class CoreProcessBackend implements VpnBackend {
         };
       if (p.network == 'quic') outbound['transport'] = {'type': 'quic'};
       final blocked = settings.effectiveBlockedDomains;
+      final routeDomains = (settings.routing == 'exclude'
+              ? settings.directDomains
+              : settings.proxyDomains)
+          .where((value) => !CoreSettings.isIpRoute(value))
+          .map(CoreSettings.routeSuffix)
+          .toList();
+      final routeIps = (settings.routing == 'exclude'
+              ? settings.directDomains
+              : settings.proxyDomains)
+          .where(CoreSettings.isIpRoute)
+          .map(CoreSettings.routeIp)
+          .toList();
       final rawExclusions = p.raw['_tunExcludeAddresses'];
       final routeExclusions = rawExclusions is List
           ? rawExclusions.map((value) => value.toString()).toList()
           : <String>[];
       final rules = <Map<String, dynamic>>[
         if (blocked.isNotEmpty) {'domain_suffix': blocked, 'action': 'reject'},
-        if (settings.routing == 'exclude' && settings.directDomains.isNotEmpty)
+        if (settings.routing == 'exclude' && routeDomains.isNotEmpty)
           {
-            'domain_suffix':
-                settings.directDomains.map(CoreSettings.routeSuffix).toList(),
+            'domain_suffix': routeDomains,
             'action': 'route',
             'outbound': 'direct'
           },
-        if (settings.routing == 'rules' && settings.proxyDomains.isNotEmpty)
+        if (settings.routing == 'exclude' && routeIps.isNotEmpty)
+          {'ip_cidr': routeIps, 'action': 'route', 'outbound': 'direct'},
+        if (settings.routing == 'rules' && routeDomains.isNotEmpty)
           {
-            'domain_suffix':
-                settings.proxyDomains.map(CoreSettings.routeSuffix).toList(),
+            'domain_suffix': routeDomains,
             'action': 'route',
             'outbound': 'proxy'
           },
+        if (settings.routing == 'rules' && routeIps.isNotEmpty)
+          {'ip_cidr': routeIps, 'action': 'route', 'outbound': 'proxy'},
       ];
       final dnsConfig = _singBoxDnsConfig();
       return {
@@ -690,10 +714,8 @@ class CoreProcessBackend implements VpnBackend {
             if (settings.connectionMode == 'tun' ||
                 settings.connectionMode == 'mixed')
               {'protocol': 'dns', 'action': 'hijack-dns'},
-            if ((settings.routing == 'rules' &&
-                    settings.proxyDomains.isNotEmpty) ||
-                (settings.routing == 'exclude' &&
-                    settings.directDomains.isNotEmpty))
+            if ((settings.routing == 'rules' && routeDomains.isNotEmpty) ||
+                (settings.routing == 'exclude' && routeDomains.isNotEmpty))
               {'action': 'sniff'},
             ...rules,
           ],
@@ -835,6 +857,17 @@ class CoreProcessBackend implements VpnBackend {
       };
     }
     final blocked = settings.effectiveBlockedDomains;
+    final routeEntries = settings.routing == 'exclude'
+        ? settings.directDomains
+        : settings.proxyDomains;
+    final routeDomains = routeEntries
+        .where((value) => !CoreSettings.isIpRoute(value))
+        .map(CoreSettings.routeSuffix)
+        .toList();
+    final routeIps = routeEntries
+        .where(CoreSettings.isIpRoute)
+        .map(CoreSettings.routeIp)
+        .toList();
     final rules = <Map<String, dynamic>>[
       if (settings.connectionMode == 'tun' ||
           settings.connectionMode == 'mixed')
@@ -850,22 +883,22 @@ class CoreProcessBackend implements VpnBackend {
           'domain': blocked.map((e) => 'domain:$e').toList(),
           'outboundTag': 'block'
         },
-      if (settings.routing == 'exclude' && settings.directDomains.isNotEmpty)
+      if (settings.routing == 'exclude' && routeDomains.isNotEmpty)
         {
           'type': 'field',
-          'domain': settings.directDomains
-              .map((e) => 'domain:${CoreSettings.routeSuffix(e)}')
-              .toList(),
+          'domain': routeDomains.map((e) => 'domain:$e').toList(),
           'outboundTag': 'direct'
         },
-      if (settings.routing == 'rules' && settings.proxyDomains.isNotEmpty)
+      if (settings.routing == 'exclude' && routeIps.isNotEmpty)
+        {'type': 'field', 'ip': routeIps, 'outboundTag': 'direct'},
+      if (settings.routing == 'rules' && routeDomains.isNotEmpty)
         {
           'type': 'field',
-          'domain': settings.proxyDomains
-              .map((e) => 'domain:${CoreSettings.routeSuffix(e)}')
-              .toList(),
+          'domain': routeDomains.map((e) => 'domain:$e').toList(),
           'outboundTag': 'proxy'
         },
+      if (settings.routing == 'rules' && routeIps.isNotEmpty)
+        {'type': 'field', 'ip': routeIps, 'outboundTag': 'proxy'},
       {
         'type': 'field',
         'network': 'tcp,udp',
@@ -954,18 +987,20 @@ class CoreProcessBackend implements VpnBackend {
           {'tag': 'dns-out', 'protocol': 'dns'},
       ],
       'routing': {
-        'domainStrategy': 'AsIs',
+        'domainStrategy': routeIps.isNotEmpty ? 'IPIfNonMatch' : 'AsIs',
         'rules': rules,
       }
     };
   }
 
   Map<String, dynamic> _singBoxDnsConfig() {
-    final splitDomains = settings.routing == 'exclude'
+    final splitEntries = settings.routing == 'exclude'
         ? settings.directDomains
         : settings.routing == 'rules'
             ? settings.proxyDomains
             : const <String>[];
+    final splitDomains =
+        splitEntries.where((value) => !CoreSettings.isIpRoute(value)).toList();
     final splitIsProxy = settings.routing == 'rules';
     final hasSplit = splitDomains.isNotEmpty;
     final defaultDetour = hasSplit

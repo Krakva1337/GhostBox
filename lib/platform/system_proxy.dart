@@ -1,4 +1,23 @@
+import 'dart:convert';
 import 'dart:io';
+
+/// Uses the desktop's per-user proxy setting and restores it on disconnect.
+class DesktopSystemProxy {
+  final LinuxSystemProxy _linux = LinuxSystemProxy();
+  final WindowsSystemProxy _windows = WindowsSystemProxy();
+
+  Future<void> enable(int port) async {
+    if (Platform.isLinux) return _linux.enable(port);
+    if (Platform.isWindows) return _windows.enable(port);
+    throw const ProcessException(
+        'system proxy', [], 'System proxy integration is unavailable.');
+  }
+
+  Future<void> restore() async {
+    if (Platform.isLinux) return _linux.restore();
+    if (Platform.isWindows) return _windows.restore();
+  }
+}
 
 /// Applies the per-user GNOME/GTK proxy preference and restores its exact
 /// previous values when the VPN stops. This does not claim to proxy apps that
@@ -87,6 +106,154 @@ class LinuxSystemProxy {
           ? 'org.gnome.system.proxy'
           : 'org.gnome.system.proxy.${parts.first}';
       await Process.run('gsettings', ['set', schema, parts.last, entry.value]);
+    }
+  }
+}
+
+/// Configures only the current Windows user's WinINET proxy values.
+class WindowsSystemProxy {
+  static const _key =
+      r'HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings';
+  static const _values = ['ProxyEnable', 'ProxyServer', 'ProxyOverride'];
+  Map<String, (String, String)?>? _previous;
+
+  File? get _snapshotFile {
+    final root = Platform.environment['APPDATA'];
+    if (root == null || root.isEmpty) return null;
+    return File(
+        '$root${Platform.pathSeparator}GhostBox${Platform.pathSeparator}proxy-restore.json');
+  }
+
+  Future<void> enable(int port) async {
+    if (!Platform.isWindows) return;
+    if (_previous == null) {
+      _previous = await _readValues();
+      await _persistPrevious(_previous!);
+    }
+    try {
+      await _setDword('ProxyEnable', 1);
+      await _setString('ProxyServer', 'socks=127.0.0.1:$port');
+      await _setString('ProxyOverride', 'localhost;127.*;<local>');
+      await _notifyWinInet();
+      final enabled = await _query('ProxyEnable');
+      final server = await _query('ProxyServer');
+      if (enabled?.$2 != '0x1' || server?.$2 != 'socks=127.0.0.1:$port') {
+        throw const ProcessException(
+            'reg.exe', [], 'Windows proxy preference did not persist.');
+      }
+    } on Object {
+      await restore();
+      rethrow;
+    }
+  }
+
+  Future<Map<String, (String, String)?>> _readValues() async => {
+        for (final name in _values) name: await _query(name),
+      };
+
+  Future<(String, String)?> _query(String name) async {
+    final result = await Process.run('reg.exe', ['query', _key, '/v', name]);
+    if (result.exitCode != 0) return null;
+    final match = RegExp(
+            '^\\s*${RegExp.escape(name)}' r'\s+(REG_SZ|REG_DWORD)\s+(.*)\s*$',
+            multiLine: true)
+        .firstMatch('${result.stdout}');
+    if (match == null) return null;
+    return (match.group(1)!, match.group(2)!.trim());
+  }
+
+  Future<void> _setDword(String name, int value) =>
+      _set(name, 'REG_DWORD', '$value');
+
+  Future<void> _setString(String name, String value) =>
+      _set(name, 'REG_SZ', value);
+
+  Future<void> _set(String name, String type, String value) async {
+    final result = await Process.run(
+        'reg.exe', ['add', _key, '/v', name, '/t', type, '/d', value, '/f']);
+    if (result.exitCode != 0) {
+      throw ProcessException(
+          'reg.exe', ['add', _key, name], '${result.stderr} ${result.stdout}');
+    }
+  }
+
+  Future<void> restore() async {
+    if (!Platform.isWindows) return;
+    final previous = _previous ?? await _readPrevious();
+    _previous = null;
+    if (previous == null) return;
+    for (final name in _values.reversed) {
+      final old = previous[name];
+      if (old == null) {
+        await Process.run('reg.exe', ['delete', _key, '/v', name, '/f']);
+      } else {
+        await _set(name, old.$1, old.$2);
+      }
+    }
+    await _notifyWinInet();
+    final snapshot = _snapshotFile;
+    if (snapshot != null && await snapshot.exists()) {
+      await snapshot.delete();
+    }
+  }
+
+  Future<void> _persistPrevious(Map<String, (String, String)?> previous) async {
+    final file = _snapshotFile;
+    if (file == null) return;
+    await file.parent.create(recursive: true);
+    await file.writeAsString(jsonEncode({
+      for (final entry in previous.entries)
+        entry.key: entry.value == null
+            ? null
+            : {'type': entry.value!.$1, 'value': entry.value!.$2},
+    }));
+  }
+
+  Future<Map<String, (String, String)?>?> _readPrevious() async {
+    final file = _snapshotFile;
+    if (file == null || !await file.exists()) return null;
+    try {
+      final saved = Map<String, dynamic>.from(
+          jsonDecode(await file.readAsString()) as Map);
+      return {
+        for (final name in _values)
+          name: saved[name] is Map
+              ? (
+                  (saved[name] as Map)['type'].toString(),
+                  (saved[name] as Map)['value'].toString()
+                )
+              : null,
+      };
+    } on Object {
+      return null;
+    }
+  }
+
+  Future<void> _notifyWinInet() async {
+    const script = r'''
+$source = @"
+using System;
+using System.Runtime.InteropServices;
+public static class GhostBoxWinInet {
+  [DllImport("wininet.dll", SetLastError=true)]
+  public static extern bool InternetSetOption(IntPtr h, int option, IntPtr b, int n);
+}
+"@
+if (-not ('GhostBoxWinInet' -as [type])) { Add-Type -TypeDefinition $source }
+[GhostBoxWinInet]::InternetSetOption([IntPtr]::Zero, 39, [IntPtr]::Zero, 0) | Out-Null
+[GhostBoxWinInet]::InternetSetOption([IntPtr]::Zero, 37, [IntPtr]::Zero, 0) | Out-Null
+''';
+    final result = await Process.run('powershell.exe', [
+      '-NoProfile',
+      '-NonInteractive',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-Command',
+      script,
+    ]);
+    if (result.exitCode != 0) {
+      throw ProcessException('powershell.exe', const ['-Command'],
+          '${result.stderr} ${result.stdout}');
     }
   }
 }

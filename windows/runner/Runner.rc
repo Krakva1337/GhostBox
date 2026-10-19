@@ -89,13 +89,13 @@ BEGIN
     BEGIN
         BLOCK "040904e4"
         BEGIN
-            VALUE "CompanyName", "app.ghostbox" "\0"
-            VALUE "FileDescription", "ghostbox" "\0"
+            VALUE "CompanyName", "GhostBox" "\0"
+            VALUE "FileDescription", "GhostBox VPN" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
-            VALUE "InternalName", "ghostbox" "\0"
-            VALUE "LegalCopyright", "Copyright (C) 2026 app.ghostbox. All rights reserved." "\0"
-            VALUE "OriginalFilename", "ghostbox.exe" "\0"
-            VALUE "ProductName", "ghostbox" "\0"
+            VALUE "InternalName", "GhostBox" "\0"
+            VALUE "LegalCopyright", "Copyright (C) 2026 GhostBox. All rights reserved." "\0"
+            VALUE "OriginalFilename", "GhostBox.exe" "\0"
+            VALUE "ProductName", "GhostBox" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
     END
