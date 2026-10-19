@@ -3,6 +3,8 @@ name: Build GhostBox packages
 on:
   workflow_dispatch:
   push:
+    branches:
+      - main
     tags:
       - 'v*'
 
@@ -11,6 +13,7 @@ permissions:
 
 jobs:
   linux-appimage:
+    if: github.event_name != 'push' || startsWith(github.ref, 'refs/tags/v')
     name: Linux ${{ matrix.label }} AppImage
     strategy:
       fail-fast: false
