@@ -91,6 +91,7 @@ class Win32Window {
   static void UpdateTheme(HWND const window);
 
   bool quit_on_close_ = false;
+  bool tray_icon_added_ = false;
 
   // window handle for top level window.
   HWND window_handle_ = nullptr;

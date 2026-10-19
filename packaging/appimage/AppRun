@@ -15,6 +15,9 @@ for core in sing-box xray; do
     install -m 0755 "$source" "$target"
   fi
 done
+if [ -f "$HERE/vendor/bin/BUILD-INFO.txt" ]; then
+  install -m 0644 "$HERE/vendor/bin/BUILD-INFO.txt" "$VENDOR_DIR/bin/BUILD-INFO.txt"
+fi
 
 export GHOSTBOX_VENDOR_DIR="$VENDOR_DIR"
 export LD_LIBRARY_PATH="$HERE/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"

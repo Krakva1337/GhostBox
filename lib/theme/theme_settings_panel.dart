@@ -2,16 +2,20 @@ import 'package:flutter/material.dart';
 import 'theme_controller.dart';
 
 class ThemeSettingsPanel extends StatelessWidget {
-  const ThemeSettingsPanel({super.key});
+  const ThemeSettingsPanel({super.key, this.english = false});
+  final bool english;
+  String _s(String ru, String en) => english ? en : ru;
 
   @override
   Widget build(BuildContext context) {
     final controller = ThemeScope.of(context);
     final theme = Theme.of(context);
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Text('Оформление', style: theme.textTheme.titleMedium),
+      Text(_s('Оформление', 'Appearance'), style: theme.textTheme.titleMedium),
       const SizedBox(height: 6),
-      Text('Тёмные оттенки, мягкий свет и ваш акцент.',
+      Text(
+          _s('Тёмные и светлые темы с настраиваемым акцентом.',
+              'Dark and light themes with a custom accent.'),
           style: theme.textTheme.bodySmall),
       const SizedBox(height: 16),
       SizedBox(
@@ -76,6 +80,35 @@ class ThemeSettingsPanel extends StatelessWidget {
                 width: 88,
                 child: _preset(context, controller, ThemePreset.ruby, 'Рубин',
                     const Color(0xFF1A1018), const Color(0xFFFF8295))),
+            for (final entry in const [
+              (
+                ThemePreset.lavender,
+                'Лаванда',
+                Color(0xFF171326),
+                Color(0xFFC7B5FF)
+              ),
+              (ThemePreset.forest, 'Лес', Color(0xFF0D1B15), Color(0xFF8BCF9B)),
+              (ThemePreset.sand, 'Песок', Color(0xFF201A12), Color(0xFFE5BF8C)),
+              (
+                ThemePreset.daylight,
+                'Светлая',
+                Color(0xFFF1F5FC),
+                Color(0xFF355FBB)
+              ),
+              (
+                ThemePreset.paper,
+                'Бумага',
+                Color(0xFFF6F2EB),
+                Color(0xFF6857B8)
+              ),
+              (ThemePreset.mist, 'Туман', Color(0xFFEDF5F5), Color(0xFF347F8A)),
+            ]) ...[
+              const SizedBox(width: 8),
+              SizedBox(
+                  width: 88,
+                  child: _preset(context, controller, entry.$1, entry.$2,
+                      entry.$3, entry.$4)),
+            ],
             const SizedBox(width: 8),
             SizedBox(
                 width: 88,
@@ -88,7 +121,7 @@ class ThemeSettingsPanel extends StatelessWidget {
           child: OutlinedButton.icon(
               onPressed: () => controller.select(ThemePreset.custom),
               icon: const Icon(Icons.palette_outlined, size: 18),
-              label: const Text('Настроить свою тему'))),
+              label: Text(_s('Настроить свою тему', 'Customize theme')))),
       AnimatedSize(
           duration: const Duration(milliseconds: 320),
           curve: Curves.easeInOutCubic,
@@ -99,7 +132,8 @@ class ThemeSettingsPanel extends StatelessWidget {
                   child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text('Цвет акцента', style: theme.textTheme.bodySmall),
+                        Text(_s('Цвет акцента', 'Accent color'),
+                            style: theme.textTheme.bodySmall),
                         const SizedBox(height: 10),
                         Wrap(spacing: 10, runSpacing: 10, children: [
                           for (final color in const [
@@ -114,15 +148,26 @@ class ThemeSettingsPanel extends StatelessWidget {
                             Color(0xFFB9A0FF),
                             Color(0xFFFF7A9E),
                             Color(0xFFFFC857),
-                            Color(0xFF45D7C4)
+                            Color(0xFF45D7C4),
+                            Color(0xFFEF6A5B),
+                            Color(0xFF6FCE72),
+                            Color(0xFF3E9BE8),
+                            Color(0xFFDB6DD2),
+                            Color(0xFFB6D947),
+                            Color(0xFF42B8A6),
+                            Color(0xFFFFA64D)
                           ])
                             _swatch(context, color, controller.accent,
                                 () => controller.setCustom(accent: color)),
-                          _customButton(context, 'Свой акцент',
-                              controller.customAccent, false),
+                          _customButton(
+                              context,
+                              _s('Свой акцент', 'Custom accent'),
+                              controller.customAccent,
+                              false),
                         ]),
                         const SizedBox(height: 18),
-                        Text('Фон', style: theme.textTheme.bodySmall),
+                        Text(_s('Фон', 'Background'),
+                            style: theme.textTheme.bodySmall),
                         const SizedBox(height: 10),
                         Wrap(spacing: 10, runSpacing: 10, children: [
                           for (final color in const [
@@ -139,8 +184,11 @@ class ThemeSettingsPanel extends StatelessWidget {
                           ])
                             _swatch(context, color, controller.background,
                                 () => controller.setCustom(background: color)),
-                          _customButton(context, 'Свой фон',
-                              controller.customBackground, true),
+                          _customButton(
+                              context,
+                              _s('Свой фон', 'Custom background'),
+                              controller.customBackground,
+                              true),
                         ]),
                       ]),
                 )),
@@ -150,10 +198,29 @@ class ThemeSettingsPanel extends StatelessWidget {
   Widget _preset(BuildContext context, ThemeController controller,
       ThemePreset preset, String name, Color background, Color accent) {
     final selected = controller.preset == preset;
+    final displayName = !english
+        ? name
+        : const {
+              'Полночь': 'Midnight',
+              'Графит': 'Graphite',
+              'Океан': 'Ocean',
+              'Изумруд': 'Emerald',
+              'Аметист': 'Amethyst',
+              'Сапфир': 'Sapphire',
+              'Рубин': 'Ruby',
+              'Лаванда': 'Lavender',
+              'Лес': 'Forest',
+              'Песок': 'Sand',
+              'Светлая': 'Daylight',
+              'Бумага': 'Paper',
+              'Туман': 'Mist',
+              'Своя': 'Custom',
+            }[name] ??
+            name;
     return Semantics(
         selected: selected,
         button: true,
-        label: 'Тема $name',
+        label: 'Theme $displayName',
         child: InkWell(
           borderRadius: BorderRadius.circular(18),
           onTap: () => controller.select(preset),
@@ -178,10 +245,10 @@ class ThemeSettingsPanel extends StatelessWidget {
                       shape: BoxShape.circle),
                   child: Icon(Icons.circle, size: 10, color: accent)),
               const SizedBox(height: 10),
-              Text(name,
+              Text(displayName,
                   style: TextStyle(
                       fontSize: 11,
-                      color: const Color(0xFFE8ECF4),
+                      color: Theme.of(context).colorScheme.onSurface,
                       fontWeight:
                           selected ? FontWeight.w700 : FontWeight.w400)),
             ]),

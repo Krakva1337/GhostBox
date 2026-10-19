@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build pinned Xray and sing-box CLI cores for Windows or macOS.
+# Build pinned Xray and sing-box CLI cores for Linux, Windows or macOS.
 set -euo pipefail
 
 project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -9,9 +9,10 @@ xray_version="${GHOSTBOX_XRAY_VERSION:-v1.260327.0}"
 sing_box_version="${GHOSTBOX_SING_BOX_VERSION:-v1.14.3}"
 
 case "$target" in
+  linux) goos=linux; extension=; output_dir="$project_dir/vendor/linux/$arch/bin" ;;
   windows) goos=windows; extension=.exe; output_dir="$project_dir/vendor/windows/$arch/bin" ;;
   macos) goos=darwin; extension=; output_dir="$project_dir/vendor/macos/$arch/bin" ;;
-  *) echo "Usage: $0 windows|macos [amd64|arm64]" >&2; exit 2 ;;
+  *) echo "Usage: $0 linux|windows|macos [amd64|arm64]" >&2; exit 2 ;;
 esac
 case "$arch" in amd64|arm64) ;; *) echo "Unsupported architecture: $arch" >&2; exit 2 ;; esac
 command -v go >/dev/null || { echo 'Go is required.' >&2; exit 1; }
@@ -31,13 +32,14 @@ echo "Building Xray $xray_version for $goos/$arch"
 echo "Building sing-box $sing_box_version for $goos/$arch"
 (cd "$sing_box_source" && GOOS="$goos" GOARCH="$arch" CGO_ENABLED=0 \
   go build -tags='with_quic,with_utls' -trimpath -buildvcs=false \
-  -ldflags='-s -w -buildid=' -o "$output_dir/sing-box$extension" ./cmd/sing-box)
+  -ldflags="-s -w -buildid= -X github.com/sagernet/sing-box/constant.Version=${sing_box_version#v}" \
+  -o "$output_dir/sing-box$extension" ./cmd/sing-box)
 
 cat > "$output_dir/BUILD-INFO.txt" <<EOF
 GhostBox desktop cores
 Xray: $xray_version
 sing-box: $sing_box_version
-Target: $goos/$arch
 sing-box tags: with_quic,with_utls
+Target: $goos/$arch
 EOF
 echo "Built cores: $output_dir"

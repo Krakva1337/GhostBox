@@ -2,6 +2,7 @@
 
 #include <dwmapi.h>
 #include <flutter_windows.h>
+#include <shellapi.h>
 
 #include "resource.h"
 
@@ -17,6 +18,8 @@ namespace {
 #endif
 
 constexpr const wchar_t kWindowClassName[] = L"FLUTTER_RUNNER_WIN32_WINDOW";
+constexpr UINT kTrayMessage = WM_APP + 37;
+constexpr UINT kTrayIconId = 1;
 
 /// Registry key for app theme preference.
 ///
@@ -179,7 +182,69 @@ Win32Window::MessageHandler(HWND hwnd,
                             WPARAM const wparam,
                             LPARAM const lparam) noexcept {
   switch (message) {
+    case WM_CLOSE: {
+      // Keep the VPN core and its TUN/proxy state alive when the user closes
+      // the window. The tray menu still offers an explicit Exit command.
+      NOTIFYICONDATAW tray{};
+      tray.cbSize = sizeof(tray);
+      tray.hWnd = hwnd;
+      tray.uID = kTrayIconId;
+      tray.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+      tray.uCallbackMessage = kTrayMessage;
+      tray.hIcon = LoadIcon(GetModuleHandle(nullptr),
+                            MAKEINTRESOURCE(IDI_APP_ICON));
+      wcscpy_s(tray.szTip, L"GhostBox is running");
+      if (!Shell_NotifyIconW(NIM_ADD, &tray)) {
+        return DefWindowProc(hwnd, message, wparam, lparam);
+      }
+      tray_icon_added_ = true;
+      ShowWindow(hwnd, SW_HIDE);
+      return 0;
+    }
+    case kTrayMessage:
+      if (lparam == WM_LBUTTONDBLCLK || lparam == WM_LBUTTONUP) {
+        ShowWindow(hwnd, SW_RESTORE);
+        SetForegroundWindow(hwnd);
+        return 0;
+      }
+      if (lparam == WM_RBUTTONUP || lparam == WM_CONTEXTMENU) {
+        POINT point{};
+        GetCursorPos(&point);
+        HMENU menu = CreatePopupMenu();
+        AppendMenuW(menu, MF_STRING, 1, L"Open GhostBox");
+        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(menu, MF_STRING, 2, L"Exit");
+        SetForegroundWindow(hwnd);
+        const UINT selected = TrackPopupMenu(
+            menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, point.x, point.y, 0, hwnd,
+            nullptr);
+        DestroyMenu(menu);
+        if (selected == 1) {
+          ShowWindow(hwnd, SW_RESTORE);
+          SetForegroundWindow(hwnd);
+        } else if (selected == 2) {
+          if (tray_icon_added_) {
+            NOTIFYICONDATAW tray{};
+            tray.cbSize = sizeof(tray);
+            tray.hWnd = hwnd;
+            tray.uID = kTrayIconId;
+            Shell_NotifyIconW(NIM_DELETE, &tray);
+            tray_icon_added_ = false;
+          }
+          DestroyWindow(hwnd);
+        }
+        return 0;
+      }
+      break;
     case WM_DESTROY:
+      if (tray_icon_added_) {
+        NOTIFYICONDATAW tray{};
+        tray.cbSize = sizeof(tray);
+        tray.hWnd = hwnd;
+        tray.uID = kTrayIconId;
+        Shell_NotifyIconW(NIM_DELETE, &tray);
+        tray_icon_added_ = false;
+      }
       window_handle_ = nullptr;
       Destroy();
       if (quit_on_close_) {

@@ -69,29 +69,34 @@ and keep it lean (one core runtime, no Flutter engine or UI assets in the
 extension). sing-box's compile option is a starting point, not a hard memory
 cap.
 
-## Runtime status and remaining integration
+## Runtime status
 
-These scripts prepare native core binaries/libraries and Flutter runner
-projects. They do not yet make the mobile apps functional VPN clients:
+Current platform integration:
 
-- Android still needs a native `VpnService`, foreground-service lifecycle,
-  permission flow, libbox platform callbacks, TUN file-descriptor handoff and a
-  Flutter method-channel backend.
+- Android uses the system VPN permission flow, a foreground `VpnService`,
+  sing-box `libbox`, platform callbacks and the Android TUN file descriptor.
+  `./tool/build_android.sh` builds the AAR and a universal APK. The GitHub
+  workflow produces the same APK without requiring a local Android SDK/NDK.
+- Windows bundles Xray/sing-box and the per-user WinINET system proxy. Selecting
+  TUN requests elevation through the normal Windows UAC prompt and resumes the
+  pending connection in the elevated app. The Windows workflow publishes an
+  Inno Setup installer and a portable zip.
 - iOS still needs a `PacketTunnelProvider` app-extension target, a
   `NETunnelProviderManager` setup flow, Network Extension entitlements and a
   Flutter-to-extension configuration channel. Build/sign with an Apple team.
 - macOS still needs a supported VPN/TUN adapter and the required Network
   Extension or system-extension entitlements. The generated Flutter runner and
   desktop core binaries alone provide the UI and local core processes.
-- Windows has a Flutter desktop build path, bundled Xray/sing-box cores and a
-  per-user WinINET system-proxy adapter. TUN mode still needs its Windows
-  privilege/adapter lifecycle before it can be treated as a reliable default.
 
-The native mobile build currently prepares sing-box as the mobile engine. Do not
-link independent sing-box and Xray Go libraries into the same app/extension
-process: each contains a Go runtime and can conflict at link or startup. If
-Xray is selected for mobile later, make it the sole Go core in that process or
-run it in a separate process where the OS permits it.
+Android and Windows builds have not yet been device/VM validated in this
+workspace. Run the workflows and smoke-test VPN permission, connect/disconnect,
+DNS, split routing and system recovery before distributing a release build.
+
+Android currently uses sing-box as its native mobile engine. Do not link
+independent sing-box and Xray Go libraries into the same app/extension process:
+each contains a Go runtime and can conflict at link or startup. Android forces
+the sing-box engine for TUN connections; Xray remains available on Linux and
+Windows desktop.
 
 ## Flutter runner builds
 
@@ -101,7 +106,7 @@ Run platform app builds on their native hosts after `flutter pub get`:
 Windows: flutter build windows --release
 macOS:   flutter build macos --release
 iOS:     flutter build ios --no-codesign
-Android: flutter build apk --release
+Android: ./tool/build_android.sh
 ```
 
 Windows requires Visual Studio's Desktop development with C++ workload. Apple
@@ -109,7 +114,7 @@ targets require Xcode; iOS distribution additionally needs valid signing and
 Network Extension entitlements. Android release distribution needs a private
 release keystore instead of the debug key currently configured in Gradle.
 
-On Windows, the simplest complete x64 package build is:
+On Windows, build the x64 package with:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
@@ -118,9 +123,9 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 Install Flutter stable, Go 1.27+, and Visual Studio 2022 with the Desktop
 development with C++ workload first. The script builds the pinned core binaries,
-the Flutter release app and `dist/GhostBox-Windows-x64.zip`. The GitHub Actions
-workflow **Build GhostBox for Windows** runs the same script and publishes a
-downloadable artifact.
+the Flutter release app and `dist/GhostBox-Windows-x64.zip`. When Inno Setup is
+installed, it also writes `dist/GhostBox-Setup-x64.exe`. The GitHub Actions
+workflow installs Inno Setup and publishes both files.
 
 ## References
 

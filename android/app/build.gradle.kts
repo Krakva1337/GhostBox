@@ -38,6 +38,17 @@ android {
     }
 }
 
+dependencies {
+    val libbox = file("libs/libbox.aar")
+    if (libbox.exists()) {
+        implementation(files(libbox))
+    } else {
+        throw GradleException(
+            "Android sing-box core is missing. Run tool/build_android.sh to build it."
+        )
+    }
+}
+
 kotlin {
     compilerOptions {
         jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17

@@ -47,7 +47,11 @@ try {
         $env:GOARCH = 'amd64'
         $env:CGO_ENABLED = '0'
         $output = Join-Path $coreDirectory $module.Name
-        $buildArgs = @('build', '-trimpath', '-buildvcs=false', '-ldflags=-s -w -buildid=')
+        $ldflags = '-s -w -buildid='
+        if ($module.Path -eq 'github.com/sagernet/sing-box') {
+          $ldflags += " -X github.com/sagernet/sing-box/constant.Version=$($SingBoxVersion.TrimStart('v'))"
+        }
+        $buildArgs = @('build', '-trimpath', '-buildvcs=false', "-ldflags=$ldflags")
         if ($module.Tags) { $buildArgs += @("-tags=$($module.Tags)") }
         $buildArgs += @('-o', $output, $module.Package)
         Push-Location $moduleInfo.Dir
@@ -76,12 +80,41 @@ try {
     throw "Windows build completed without expected app: $application"
   }
 
+  $releaseCoreDirectory = Join-Path $releaseDirectory 'vendor/bin'
+  New-Item -ItemType Directory -Force -Path $releaseCoreDirectory | Out-Null
+  foreach ($core in @('xray.exe', 'sing-box.exe', 'BUILD-INFO.txt')) {
+    $source = Join-Path $coreDirectory $core
+    if (-not (Test-Path $source)) { throw "Built core artifact is missing: $source" }
+    Copy-Item -Force $source (Join-Path $releaseCoreDirectory $core)
+  }
+
   $packageDirectory = Join-Path $ProjectRoot 'dist'
   New-Item -ItemType Directory -Force -Path $packageDirectory | Out-Null
   $archive = Join-Path $packageDirectory 'GhostBox-Windows-x64.zip'
   Remove-Item -Force $archive -ErrorAction SilentlyContinue
   Compress-Archive -Path (Join-Path $releaseDirectory '*') -DestinationPath $archive
   Write-Host "Built package: $archive"
+
+  $compiler = Get-Command 'ISCC.exe' -ErrorAction SilentlyContinue
+  $compilerPath = if ($compiler) { $compiler.Source } else { $null }
+  if (-not $compilerPath) {
+    $defaultCompiler = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6/ISCC.exe'
+    if (Test-Path $defaultCompiler) { $compilerPath = $defaultCompiler }
+  }
+  if ($compilerPath) {
+    $version = (Select-String -Path (Join-Path $ProjectRoot 'pubspec.yaml') -Pattern '^version:\s*(\S+)' | ForEach-Object { $_.Matches[0].Groups[1].Value.Split('+')[0] })
+    $installer = Join-Path $packageDirectory 'GhostBox-Setup-x64.exe'
+    Invoke-Checked $compilerPath @(
+      "/DAppVersion=$version",
+      "/DSourceDir=$releaseDirectory",
+      "/O$packageDirectory",
+      "/FGhostBox-Setup-x64",
+      (Join-Path $ProjectRoot 'installer/GhostBox.iss')
+    )
+    Write-Host "Built installer: $installer"
+  } else {
+    Write-Warning 'Inno Setup is unavailable; only the portable zip was built.'
+  }
 } finally {
   Pop-Location
 }

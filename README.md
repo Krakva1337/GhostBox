@@ -4,7 +4,7 @@
 
 ## Русский
 
-GhostBox — VPN-клиент на Flutter с ядрами Xray и sing-box. Полноценный VPN backend сейчас готов для Linux. Windows, macOS, iOS и Android runner-проекты и сборка ядер подготовлены; мобильные платформы пока требуют нативной интеграции VPN-службы.
+GhostBox — VPN-клиент на Flutter с ядрами Xray и sing-box. Linux поддерживает оба ядра. На Android подключение выполняется через системный `VpnService` и sing-box libbox; Windows поддерживает системный прокси и TUN с запросом прав администратора. macOS и iOS пока находятся на этапе подготовки ядер и runner-проектов.
 
 ### Возможности
 
@@ -18,11 +18,24 @@ GhostBox — VPN-клиент на Flutter с ядрами Xray и sing-box. П�
 - Данные подписки — трафик, срок действия, устройства, сайт и поддержка — отображаются, только если их прислал провайдер.
 - Скрипты сборки Xray/sing-box для Windows и macOS, sing-box libbox для Android и Apple.
 
-Windows-сборка включает системный прокси текущего пользователя; Windows TUN ещё требует отдельного системного адаптера и прав. Сборка и статус платформ описаны в [deploy/PLATFORMS.md](deploy/PLATFORMS.md).
+Windows-сборка включает установщик и системный прокси текущего пользователя. При выборе TUN приложение запросит права администратора Windows. Для Android есть отдельный workflow, который собирает APK вместе с libbox. Сборка и статус платформ описаны в [deploy/PLATFORMS.md](deploy/PLATFORMS.md).
 
 Поддержка протоколов и транспортов зависит от ядра и его параметров сборки. Для XHTTP и REALITY выбирай Xray: поставляемая сборка sing-box может не содержать дополнительных тегов XHTTP/uTLS.
 
 ### Установка
+
+Для локальной сборки выбери платформу одной командой:
+
+```bash
+./tool/build.sh
+```
+
+Или укажи `linux`, `android`, `windows`, `macos` либо `ios`. Скрипт скачает
+Go/Flutter зависимости и ядра, соберёт доступный для текущей ОС пакет; Android
+SDK можно установить через `tool/setup_android.sh`. Linux создаёт AppImage и
+предлагает установить его и один раз выдать ядрам право TUN. Windows и Apple
+приложения собираются на Windows и macOS соответственно; для Windows на Linux
+используй GitHub Actions.
 
 Скачай `GhostBox-0.1.0-alpha.1-linux-x86_64.AppImage` из GitHub Releases и запусти:
 
@@ -50,6 +63,10 @@ getcap "$HOME/.local/share/ghostbox-appimage/vendor/bin/sing-box"
 
 На Void Linux, если `setcap` не найден: `sudo xbps-install -S libcap-progs`. Если переменная `XDG_DATA_HOME` задана, путь будет `$XDG_DATA_HOME/ghostbox-appimage/vendor/bin/sing-box`. При ошибке прав приложение покажет команду для текущего пути и кнопку копирования. `sudo` нужен только для однократной выдачи capability; сам GhostBox и VPN затем работают от твоего пользователя. После обновления AppImage эту команду может потребоваться повторить. Устройство `/dev/net/tun` должно существовать.
 
+### Windows и Android
+
+В GitHub Actions запусти workflow **Build GhostBox for Windows** или **Build GhostBox for Android**. Windows workflow выдаёт `GhostBox-Setup-x64.exe`; Android workflow — `GhostBox-Android-universal.apk`. APK подписан тестовым ключом сборки и подходит для установки вручную. При подключении Android запросит системное разрешение VPN.
+
 ### Сборка из исходников
 
 Нужны Flutter 3.19+ и системные инструменты сборки Linux. В этой рабочей копии используется Flutter 3.47.7.
@@ -61,7 +78,7 @@ flutter build linux --release
 ```
 
 
-Инструкции подготовки Android и Windows находятся в [deploy/PLATFORMS.md](deploy/PLATFORMS.md); эти платформы пока не входят в альфа-релиз.
+Для локальной сборки Android установи Flutter, Go 1.27+, JDK 17, Android SDK и NDK, затем запусти `./tool/build_android.sh`. Скрипт соберёт libbox, добавит AAR в Android проект и выпустит APK. Детали Windows, Android, macOS и iOS — в [deploy/PLATFORMS.md](deploy/PLATFORMS.md).
 
 ### Приватность и диагностика
 
@@ -75,7 +92,7 @@ flutter build linux --release
 
 ## English
 
-GhostBox is a Flutter VPN client powered by Xray and sing-box. The complete VPN backend currently targets Linux. Windows, macOS, iOS and Android runner projects and core build preparation are in place; mobile platforms still need native VPN service integration.
+GhostBox is a Flutter VPN client powered by Xray and sing-box. Linux supports both cores. Android connects through the system `VpnService` and sing-box libbox; Windows supports the current user's system proxy and TUN with a Windows administrator prompt. macOS and iOS currently have core and runner build preparation only.
 
 ### Features
 
@@ -89,11 +106,24 @@ GhostBox is a Flutter VPN client powered by Xray and sing-box. The complete VPN 
 - Provider metadata such as traffic, expiry, device limit, website and support is shown only when supplied by the provider.
 - Build scripts for Windows/macOS Xray and sing-box, Android libbox, and the Apple Libbox XCFramework.
 
-The Windows build includes the current user's system proxy; Windows TUN still needs a separate system adapter and privilege lifecycle. See [deploy/PLATFORMS.md](deploy/PLATFORMS.md) for build commands and platform status.
+The Windows build includes an installer and the current user's system proxy. Selecting TUN prompts for administrator rights. Android has a separate workflow that builds the APK with libbox. See [deploy/PLATFORMS.md](deploy/PLATFORMS.md) for build commands and platform status.
 
 Protocol and transport support depends on the selected core and its build options. Choose Xray for XHTTP and REALITY; the bundled sing-box build may not include optional XHTTP/uTLS tags.
 
 ### Install
+
+Build locally with an interactive platform picker:
+
+```bash
+./tool/build.sh
+```
+
+You can also pass `linux`, `android`, `windows`, `macos`, or `ios`. The script
+fetches Go/Flutter dependencies and core binaries, then builds what the current
+host can produce. Android SDK setup is available through
+`tool/setup_android.sh`. Linux creates an AppImage and offers to install it and
+grant the core binaries TUN capability once. Windows and Apple app builds need
+their native operating systems; use GitHub Actions for Windows from Linux.
 
 Download `GhostBox-0.1.0-alpha.1-linux-x86_64.AppImage` from GitHub Releases and run:
 
@@ -121,6 +151,10 @@ getcap "$HOME/.local/share/ghostbox-appimage/vendor/bin/sing-box"
 
 On Void Linux, install `libcap-progs` if `setcap` is missing: `sudo xbps-install -S libcap-progs`. If `XDG_DATA_HOME` is set, use `$XDG_DATA_HOME/ghostbox-appimage/vendor/bin/sing-box`. On a permissions error, the app shows the exact command for the current path with a copy button. `sudo` is needed only once to grant the capability; GhostBox and the VPN then run as your normal user. Repeat the command after an AppImage update if its core binary changes. `/dev/net/tun` must exist.
 
+### Windows and Android
+
+Run **Build GhostBox for Windows** or **Build GhostBox for Android** from GitHub Actions. The Windows workflow publishes `GhostBox-Setup-x64.exe`; the Android workflow publishes `GhostBox-Android-universal.apk`. The APK uses the build's test signing key for sideloading and requests Android's VPN permission when connecting.
+
 ### Build from source
 
 Requirements: Flutter 3.19+ and the Linux desktop build toolchain. This workspace uses Flutter 3.47.7.
@@ -132,7 +166,7 @@ flutter build linux --release
 ```
 
 
-Android and Windows preparation notes are in [deploy/PLATFORMS.md](deploy/PLATFORMS.md); these platforms are not part of the alpha release yet.
+To build Android locally, install Flutter, Go 1.27+, JDK 17, Android SDK and NDK, then run `./tool/build_android.sh`. It builds libbox, copies the AAR into the Android project and builds the APK. See [deploy/PLATFORMS.md](deploy/PLATFORMS.md) for Windows, Android, macOS and iOS build details.
 
 ### Privacy and diagnostics
 

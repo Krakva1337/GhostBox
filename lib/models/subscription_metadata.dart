@@ -41,6 +41,7 @@ class SubscriptionMetadata {
   DateTime? get expiresAt => expire == null || expire == 0
       ? null
       : DateTime.fromMillisecondsSinceEpoch(expire! * 1000);
+  bool get neverExpires => expire == 0;
 
   factory SubscriptionMetadata.fromJson(Map<String, dynamic> json) =>
       SubscriptionMetadata(

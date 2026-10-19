@@ -10,6 +10,12 @@ enum ThemePreset {
   amethyst,
   sapphire,
   ruby,
+  lavender,
+  forest,
+  sand,
+  daylight,
+  paper,
+  mist,
   custom
 }
 
@@ -29,6 +35,12 @@ class ThemeController extends ChangeNotifier {
         ThemePreset.amethyst => const Color(0xFFB9A0FF),
         ThemePreset.sapphire => const Color(0xFF78A9FF),
         ThemePreset.ruby => const Color(0xFFFF8295),
+        ThemePreset.lavender => const Color(0xFFC7B5FF),
+        ThemePreset.forest => const Color(0xFF8BCF9B),
+        ThemePreset.sand => const Color(0xFFE5BF8C),
+        ThemePreset.daylight => const Color(0xFF355FBB),
+        ThemePreset.paper => const Color(0xFF6857B8),
+        ThemePreset.mist => const Color(0xFF347F8A),
         ThemePreset.custom => _customAccent,
       };
   Color get background => switch (_preset) {
@@ -39,11 +51,29 @@ class ThemeController extends ChangeNotifier {
         ThemePreset.amethyst => const Color(0xFF120D20),
         ThemePreset.sapphire => const Color(0xFF091426),
         ThemePreset.ruby => const Color(0xFF1A1018),
+        ThemePreset.lavender => const Color(0xFF171326),
+        ThemePreset.forest => const Color(0xFF0D1B15),
+        ThemePreset.sand => const Color(0xFF201A12),
+        ThemePreset.daylight => const Color(0xFFF1F5FC),
+        ThemePreset.paper => const Color(0xFFF6F2EB),
+        ThemePreset.mist => const Color(0xFFEDF5F5),
         ThemePreset.custom => _customBackground,
       };
+  Brightness get brightness => switch (_preset) {
+        ThemePreset.daylight ||
+        ThemePreset.paper ||
+        ThemePreset.mist =>
+          Brightness.light,
+        _ => Brightness.dark,
+      };
+  Color get foreground => brightness == Brightness.dark
+      ? const Color(0xFFE8ECF4)
+      : const Color(0xFF172033);
   Color get surface =>
       Color.alphaBlend(Colors.white.withValues(alpha: .045), background);
-  Color get muted => const Color(0xFF929DAD);
+  Color get muted => brightness == Brightness.dark
+      ? const Color(0xFF929DAD)
+      : const Color(0xFF596477);
   Color get customAccent => _customAccent;
   Color get customBackground => _customBackground;
 
@@ -84,18 +114,19 @@ class ThemeController extends ChangeNotifier {
 
   ThemeData get theme {
     final scheme =
-        ColorScheme.fromSeed(seedColor: accent, brightness: Brightness.dark)
+        ColorScheme.fromSeed(seedColor: accent, brightness: brightness)
             .copyWith(
       primary: accent,
       onPrimary: background,
       surface: surface,
-      onSurface: const Color(0xFFE8ECF4),
+      onSurface: foreground,
       onSurfaceVariant: muted,
-      outline: Colors.white.withValues(alpha: .12),
+      outline: (brightness == Brightness.dark ? Colors.white : Colors.black)
+          .withValues(alpha: .14),
     );
     final base = ThemeData(
         useMaterial3: true,
-        brightness: Brightness.dark,
+        brightness: brightness,
         fontFamily: 'SF Pro Display',
         fontFamilyFallback: const [
           'SF Pro Text',
@@ -198,8 +229,9 @@ class ThemeController extends ChangeNotifier {
       scrollbarTheme: ScrollbarThemeData(
           thickness: const WidgetStatePropertyAll(3),
           radius: const Radius.circular(10),
-          crossAxisMargin: 2,
-          thumbColor: WidgetStatePropertyAll(accent.withValues(alpha: .35))),
+          crossAxisMargin: 4,
+          mainAxisMargin: 5,
+          thumbColor: WidgetStatePropertyAll(accent.withValues(alpha: .45))),
       snackBarTheme: SnackBarThemeData(
           behavior: SnackBarBehavior.floating,
           backgroundColor: surface,

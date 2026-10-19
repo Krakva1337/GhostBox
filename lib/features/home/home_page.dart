@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:async';
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart'
@@ -12,6 +13,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../backends/sing_box_backend.dart';
+import '../../backends/android_vpn_backend.dart';
 import '../../backends/xray_backend.dart';
 import '../../backends/core_path.dart';
 import '../../core/core_process.dart';
@@ -20,10 +22,12 @@ import '../../models/server_profile.dart';
 import '../../models/core_settings.dart';
 import '../../models/subscription_metadata.dart';
 import '../../platform/system_proxy.dart';
+import '../../platform/windows_elevation.dart';
 import '../../services/profile_parser.dart';
 import '../../services/device_identity.dart';
 import '../../services/dns_ad_blocklist.dart';
 import '../../theme/theme_settings_panel.dart';
+import '../../theme/theme_controller.dart';
 import '../../widgets/ghost_notice.dart';
 
 class HomePage extends StatefulWidget {
@@ -33,7 +37,7 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage>
-    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
+    with TickerProviderStateMixin, WidgetsBindingObserver {
   final homeScroll = ScrollController();
   final settingsScroll = ScrollController();
   final routingScroll = ScrollController();
@@ -45,10 +49,14 @@ class _HomePageState extends State<HomePage>
   Color get _subscriptionInfoSurface =>
       Color.alphaBlend(Colors.white.withValues(alpha: .035), _surface);
   Color get _accent => Theme.of(context).colorScheme.primary;
+  Color get _foreground => Theme.of(context).colorScheme.onSurface;
   Color get _line => Theme.of(context).colorScheme.outlineVariant;
   Color get _muted => Theme.of(context).colorScheme.onSurfaceVariant;
   Color get _mint => Color(0xFF77D6B0);
   late final AnimationController glow;
+  late final AnimationController ambientMotion;
+  bool animatedBackground = true;
+  bool english = false;
   bool powerHovered = false;
   VpnBackend backend = XrayBackend();
   CoreProcessBackend? tunnelBridgeBackend;
@@ -68,6 +76,7 @@ class _HomePageState extends State<HomePage>
   bool loadingAdBlocklist = false;
   final DesktopSystemProxy systemProxy = DesktopSystemProxy();
   bool pendingReconnect = false;
+  bool applyingReconnect = false;
   bool switchingServer = false;
   String? activeProfileId;
   String? connectionIssue;
@@ -100,6 +109,123 @@ class _HomePageState extends State<HomePage>
       backend is CoreProcessBackend ? backend as CoreProcessBackend : null;
   ServerProfile? get selected =>
       profiles.where((p) => p.id == selectedId).firstOrNull;
+  String _text(String ru, String en) => english ? en : ru;
+  String _localized(String value) =>
+      english ? (_englishLabels[value] ?? value) : value;
+
+  static const _englishLabels = <String, String>{
+    'Подключение': 'Connection',
+    'Настройки': 'Settings',
+    'Маршрут': 'Routing',
+    'Список доменов': 'Domain list',
+    'Основные': 'Basic',
+    'Для профи': 'Advanced',
+    'Управление локальным прокси и ядром': 'Manage the local proxy and core',
+    'Соединение': 'Connection',
+    'ЯДРО': 'CORE',
+    'Движок подключения': 'Core engine',
+    'Xray · рекомендуется': 'Xray · recommended',
+    'Способ подключения': 'Connection mode',
+    'Режим маршрутизации': 'Routing mode',
+    'Поиск адресов (DNS)': 'DNS resolver',
+    'Системный DNS': 'System DNS',
+    'Системный': 'System',
+    'Свой резолвер': 'Custom resolver',
+    'Блокировка доменов': 'Domain blocking',
+    'Список блокировки': 'Block list',
+    'Домены и их поддомены': 'Domains and subdomains',
+    'ПРИЛОЖЕНИЕ': 'APP',
+    'Автоподключение': 'Connect on launch',
+    'К выбранному серверу при открытии':
+        'Connect to the selected server when opened',
+    'Анимированный фон': 'Animated background',
+    'Мягкое движение цветового свечения': 'Subtle ambient color animation',
+    'Выключен · меньше графической нагрузки': 'Off · lower graphics usage',
+    'Язык интерфейса': 'Language',
+    'Показывать расход RAM': 'Show RAM usage',
+    'Память ядра': 'Core memory',
+    'Мягкий бюджет': 'Soft memory budget',
+    'Уровень журнала': 'Log level',
+    'Ошибки': 'Errors',
+    'Предупреждения': 'Warnings',
+    'Подробно': 'Verbose',
+    'Локальный порт': 'Local port',
+    'Автовыбор': 'Automatic',
+    'Вручную': 'Manual',
+    'ПРАВИЛА МАРШРУТИЗАЦИИ': 'ROUTING RULES',
+    'Всё через VPN': 'All traffic through VPN',
+    'Только из списка': 'Only listed domains',
+    'Всё, кроме списка': 'Everything except listed domains',
+    'Сайты через VPN': 'Domains through VPN',
+    'Исключения из VPN': 'VPN exclusions',
+    'DNS И ФИЛЬТРАЦИЯ': 'DNS & FILTERING',
+    'Резолвер': 'Resolver',
+    'Cloudflare DoH': 'Cloudflare DoH',
+    'Google DoH': 'Google DoH',
+    'Cloudflare + Google': 'Cloudflare + Google',
+    'DoH через прокси': 'DoH through proxy',
+    'Использовать прокси для DNS-запросов': 'Route DNS requests through proxy',
+    'DNS blacklist': 'DNS block list',
+    'Нет': 'Off',
+    'Блок рекламы': 'Ad blocking',
+    'Кастом': 'Custom',
+    'Список рекламы': 'Ad block list',
+    'ПРОВЕРКА ЗАДЕРЖКИ': 'LATENCY CHECK',
+    'Тип проверки': 'Check type',
+    'Proxy GET': 'Proxy GET',
+    'TCP': 'TCP',
+    'ICMP': 'ICMP',
+    'Ссылка для GET': 'GET test URL',
+    'Таймаут': 'Timeout',
+    'Число проб': 'Number of probes',
+    'ДИАГНОСТИКА': 'DIAGNOSTICS',
+    'Ядро найдено': 'Core found',
+    'Ядро не найдено': 'Core not found',
+    'Файл журнала': 'Log file',
+    'Последние подключения': 'Recent connections',
+    'ПОДПИСКИ': 'SUBSCRIPTIONS',
+    'Источники': 'Sources',
+    'Обновить все': 'Refresh all',
+    'Автообновление': 'Auto refresh',
+    'ДАННЫЕ ПРИЛОЖЕНИЯ': 'APP DATA',
+    'JSON настроек ядра': 'Core settings JSON',
+    'Посмотреть или изменить полный набор параметров':
+        'View or edit all core parameters',
+    'Сбросить настройки': 'Reset settings',
+    'Сбросить ядро, тему и поведение приложения':
+        'Reset core, theme and app preferences',
+    'Вернуть параметры ядра к исходным': 'Restore default core parameters',
+    'Удалить все серверы': 'Delete all servers',
+    'Удалить профили и подписки с этого устройства':
+        'Remove profiles and subscriptions from this device',
+    'Оформление': 'Appearance',
+    'Настроить свою тему': 'Customize theme',
+    'Поддержка': 'Support',
+    'Сайт': 'Website',
+    'Сохранить': 'Save',
+    'Отмена': 'Cancel',
+    'Проверено серверов': 'Servers checked',
+    'Скрыть серверы': 'Hide servers',
+    'Показать серверы': 'Show servers',
+    'Добавить подписку или сервер': 'Add subscription or server',
+    'Проверить текущую задержку': 'Check connection',
+    'ПЕРЕКЛЮЧАЕМ': 'SWITCHING',
+    'ПОДКЛЮЧАЕМ': 'CONNECTING',
+    'НАЖМИТЕ': 'TAP TO CONNECT',
+    'Переключение сервера': 'Switching server',
+    'Локальный прокси запущен': 'Local proxy is running',
+    'Выберите сервер': 'Choose a server',
+    'Пока нет серверов': 'No servers yet',
+    'Добавьте ссылку или подписку, чтобы начать':
+        'Add a server link or subscription to get started',
+    'Новый выбор ждёт переподключения':
+        'Your new server selection is waiting to reconnect',
+    'Применить': 'Apply',
+    'Домен, маска или IP-сеть на строку. Подойдут *.ru, 10.0.0.0/8 и JSON-списки Amnezia.':
+        'One domain pattern or IP network per line. Supports *.ru, 10.0.0.0/8 and Amnezia JSON lists.',
+    'ИЗМЕНЕНИЯ': 'CHANGES',
+    'СОЕДИНЕНИЕ': 'CONNECTION',
+  };
 
   @override
   void initState() {
@@ -107,11 +233,17 @@ class _HomePageState extends State<HomePage>
     WidgetsBinding.instance.addObserver(this);
     glow = AnimationController(
         vsync: this, duration: const Duration(milliseconds: 2200));
+    ambientMotion =
+        AnimationController(vsync: this, duration: const Duration(seconds: 18))
+          ..repeat();
     _load();
   }
 
   Future<void> _load() async {
     final p = await SharedPreferences.getInstance();
+    final resumeAfterElevation =
+        Platform.isWindows && (p.getBool('connectAfterElevation') ?? false);
+    if (resumeAfterElevation) await p.setBool('connectAfterElevation', false);
     if (Platform.isWindows) await systemProxy.restore();
     final saved = p.getString('profiles');
     final rows = saved == null
@@ -125,6 +257,8 @@ class _HomePageState extends State<HomePage>
         Platform.isWindows && p.getBool('windowsProxyDefaultMigrated') != true;
     setState(() {
       prefs = p;
+      animatedBackground = p.getBool('animatedBackground') ?? true;
+      english = p.getBool('appEnglish') ?? false;
       profiles = rows;
       final savedHistory = p.getString('connectionHistory');
       if (savedHistory != null) {
@@ -154,6 +288,13 @@ class _HomePageState extends State<HomePage>
       if (p.getBool('xrayDefaultMigrated') != true) {
         coreSettings = coreSettings.copyWith(core: 'xray');
       }
+      if (Platform.isAndroid) {
+        coreSettings = coreSettings.copyWith(
+          core: 'sing-box',
+          connectionMode: 'tun',
+          pingMode: 'tcp',
+        );
+      }
       if (p.getBool('tunDefaultMigrated') != true) {
         coreSettings = coreSettings.copyWith(
             connectionMode: Platform.isWindows ? 'system' : 'tun');
@@ -161,7 +302,14 @@ class _HomePageState extends State<HomePage>
       if (migrateWindowsProxy) {
         coreSettings = coreSettings.copyWith(connectionMode: 'system');
       }
-      backend = coreSettings.core == 'xray' ? XrayBackend() : SingBoxBackend();
+      backend = Platform.isAndroid
+          ? AndroidVpnBackend()
+          : coreSettings.core == 'xray'
+              ? XrayBackend()
+              : SingBoxBackend();
+      if (backend is AndroidVpnBackend) {
+        (backend as AndroidVpnBackend).settings = coreSettings;
+      }
       process?.settings = coreSettings;
       subscriptionUrl = p.getString('subscriptionUrl');
       subscriptionProfileIds = p.getStringList('subscriptionProfileIds') ?? [];
@@ -176,12 +324,19 @@ class _HomePageState extends State<HomePage>
         ];
       }
     });
+    if (!animatedBackground) {
+      ambientMotion.stop();
+      ambientMotion.value = .12;
+    }
     if (p.getBool('xrayDefaultMigrated') != true ||
         p.getBool('tunDefaultMigrated') != true ||
         migrateWindowsProxy) {
       await p.setString('coreSettings', jsonEncode(coreSettings.toJson()));
       await p.setBool('xrayDefaultMigrated', true);
       await p.setBool('tunDefaultMigrated', true);
+    }
+    if (Platform.isAndroid) {
+      await p.setString('coreSettings', jsonEncode(coreSettings.toJson()));
     }
     if (migrateWindowsProxy) {
       await p.setBool('windowsProxyDefaultMigrated', true);
@@ -212,7 +367,7 @@ class _HomePageState extends State<HomePage>
       unawaited(_refreshAllSubscriptions(quiet: true));
     }
     if (mounted &&
-        coreSettings.autoConnect &&
+        (coreSettings.autoConnect || resumeAfterElevation) &&
         selected != null &&
         backend.state == VpnState.disconnected) {
       await _toggle();
@@ -275,6 +430,7 @@ class _HomePageState extends State<HomePage>
     subscriptionRefreshTimer?.cancel();
     uptimeTicker?.cancel();
     glow.dispose();
+    ambientMotion.dispose();
     unawaited(_disconnectActive());
     super.dispose();
   }
@@ -289,10 +445,27 @@ class _HomePageState extends State<HomePage>
       activeProfileId = null;
       pendingReconnect = false;
     } else if (selected != null) {
+      if (Platform.isWindows &&
+          (coreSettings.connectionMode == 'tun' ||
+              coreSettings.connectionMode == 'mixed')) {
+        try {
+          if (!await WindowsElevation.isElevated()) {
+            await prefs?.setBool('connectAfterElevation', true);
+            await WindowsElevation.relaunchElevated();
+            await SystemNavigator.pop();
+            return;
+          }
+        } on Object catch (error) {
+          await prefs?.setBool('connectAfterElevation', false);
+          _message('Windows запрос прав администратора отменён: $error');
+          return;
+        }
+      }
       final attemptProfile = selected!;
       final attemptStarted = DateTime.now();
-      final attemptCore = coreSettings.core;
-      final attemptMode = coreSettings.connectionMode;
+      final attemptCore = Platform.isAndroid ? 'sing-box' : coreSettings.core;
+      final attemptMode =
+          Platform.isAndroid ? 'tun' : coreSettings.connectionMode;
       glow
         ..stop()
         ..value = 0;
@@ -316,6 +489,13 @@ class _HomePageState extends State<HomePage>
         _recordAppLog(
             'Профиль: ${attemptProfile.protocol}/${attemptProfile.network}${attemptProfile.security == null ? '' : ' · ${attemptProfile.security}'}');
         final runtimeRouting = await _expandSplitRouteIps(coreSettings);
+        if (backend is AndroidVpnBackend) {
+          (backend as AndroidVpnBackend).settings = runtimeRouting.copyWith(
+            core: 'sing-box',
+            connectionMode: 'tun',
+            localPort: runtimeLocalPort,
+          );
+        }
         final usesXrayTunnelBridge = Platform.isLinux &&
             attemptCore == 'xray' &&
             (attemptMode == 'tun' || attemptMode == 'mixed');
@@ -336,6 +516,7 @@ class _HomePageState extends State<HomePage>
         final connection = backend.connect(jsonEncode(runtimeProfile.toJson()));
         if (mounted) setState(() {});
         await connection;
+        await _collectAndroidCoreLogs();
         _recordAppLog(
             'Процесс ядра запущен; проверяю маршрут и доступность сервера');
         if (usesXrayTunnelBridge) {
@@ -402,6 +583,9 @@ class _HomePageState extends State<HomePage>
       if (!glow.isAnimating) glow.forward(from: 0);
       uptimeTicker = Timer.periodic(Duration(seconds: 1), (_) {
         if (!mounted) return;
+        if (backend is AndroidVpnBackend) {
+          unawaited((backend as AndroidVpnBackend).refreshState());
+        }
         if ((backend.state == VpnState.error ||
                 backend.state == VpnState.disconnected) &&
             activeProfileId != null &&
@@ -425,10 +609,39 @@ class _HomePageState extends State<HomePage>
           uptimeTicker?.cancel();
         }
         if (coreSettings.showRamUsage) unawaited(_refreshCoreMemoryUsage());
+        if (backend is AndroidVpnBackend) {
+          unawaited(_collectAndroidCoreLogs());
+        }
         setState(() {});
       });
     } else {
       glow.stop();
+    }
+  }
+
+  Future<void> _applyPendingReconnect() async {
+    if (!pendingReconnect || applyingReconnect) return;
+    if (backend.state == VpnState.connecting) {
+      _message('Подождите завершения подключения');
+      return;
+    }
+    setState(() {
+      pendingReconnect = false;
+      applyingReconnect = true;
+    });
+    try {
+      if (backend.state == VpnState.connected) await _disconnectActive();
+      await _toggle();
+      if (backend.state != VpnState.connected) {
+        throw StateError(connectionIssue ?? 'Не удалось переподключиться');
+      }
+    } on Object catch (error) {
+      if (mounted) {
+        setState(() => pendingReconnect = true);
+        _message('Не удалось применить изменения: $error');
+      }
+    } finally {
+      if (mounted) setState(() => applyingReconnect = false);
     }
   }
 
@@ -452,6 +665,14 @@ class _HomePageState extends State<HomePage>
         // Keep the in-app journal available even if the OS denies file access.
       }
     });
+  }
+
+  Future<void> _collectAndroidCoreLogs() async {
+    final mobileBackend = backend;
+    if (mobileBackend is! AndroidVpnBackend) return;
+    for (final line in await mobileBackend.readNewLogs()) {
+      _recordAppLog('[sing-box] $line');
+    }
   }
 
   Future<File> _resolveLogFile() async {
@@ -564,6 +785,10 @@ class _HomePageState extends State<HomePage>
                               await tunnelBridgeBackend?.flushLogs();
                               await file.writeAsString('', flush: true);
                               appLogs.clear();
+                              if (backend is AndroidVpnBackend) {
+                                await (backend as AndroidVpnBackend)
+                                    .clearLogs();
+                              }
                               core?.clearLogBuffer();
                               tunnelBridgeBackend?.clearLogBuffer();
                               setSheetState(() => entries = <String>[]);
@@ -821,22 +1046,67 @@ class _HomePageState extends State<HomePage>
         .toList();
     if (hostnames.isEmpty) return settings;
 
-    Future<List<InternetAddress>> lookup(String hostname) async {
-      try {
-        return await InternetAddress.lookup(hostname)
-            .timeout(const Duration(seconds: 4));
-      } on Object {
-        return const <InternetAddress>[];
+    // Exact domain -> IP expansion is only a fallback for destinations that
+    // arrive as an IP before SNI/Host sniffing can classify them. Keep recent
+    // results across app launches and bound cold DNS lookups so a large rules
+    // list does not hold up VPN startup for several seconds.
+    const cacheKey = 'splitRouteDnsCache';
+    const cacheTtl = Duration(seconds: 60);
+    const lookupDeadline = Duration(milliseconds: 900);
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final savedCache = <String, dynamic>{};
+    try {
+      final rawCache = prefs?.getString(cacheKey);
+      if (rawCache != null) {
+        savedCache.addAll(jsonDecode(rawCache) as Map<String, dynamic>);
+      }
+    } on Object {
+      savedCache.clear();
+    }
+
+    final addresses = <String>{};
+    final toResolve = <String>[];
+    for (final hostname in hostnames) {
+      final item = savedCache[hostname];
+      if (item is Map && (item['expires'] as int? ?? 0) > now) {
+        addresses.addAll((item['ips'] as List? ?? const [])
+            .map((value) => value.toString().toLowerCase()));
+      } else {
+        toResolve.add(hostname);
       }
     }
 
-    final resolved = await Future.wait(hostnames.map(lookup));
-    final addresses = resolved
-        .expand((result) => result)
-        .map((address) => address.address.toLowerCase())
-        .toSet();
+    final refreshed = <String, dynamic>{};
+    await Future.wait(toResolve.map((hostname) async {
+      try {
+        final result =
+            await InternetAddress.lookup(hostname).timeout(lookupDeadline);
+        final ips =
+            result.map((address) => address.address.toLowerCase()).toSet();
+        addresses.addAll(ips);
+        refreshed[hostname] = {
+          'expires': now + cacheTtl.inMilliseconds,
+          'ips': ips.toList(),
+        };
+      } on Object {
+        refreshed[hostname] = {
+          'expires': now + const Duration(seconds: 15).inMilliseconds,
+          'ips': const <String>[],
+        };
+      }
+    }));
+    if (refreshed.isNotEmpty) {
+      final nextCache = <String, dynamic>{
+        for (final entry in savedCache.entries)
+          if (entry.value is Map &&
+              ((entry.value as Map)['expires'] as int? ?? 0) > now)
+            entry.key: entry.value,
+        ...refreshed,
+      };
+      await prefs?.setString(cacheKey, jsonEncode(nextCache));
+    }
     _recordAppLog(
-        'Split routing: разрешено доменов ${hostnames.length}, получено IP ${addresses.length}; IP-маршруты будут обновлены на это подключение');
+        'Split routing: доменов ${hostnames.length}, DNS из кэша ${hostnames.length - toResolve.length}, новых запросов ${toResolve.length}, IP ${addresses.length}');
     if (addresses.isEmpty) return settings;
 
     final merged = {...entries, ...addresses}.toList();
@@ -971,6 +1241,10 @@ class _HomePageState extends State<HomePage>
   }
 
   Future<void> _setConnectionMode(String mode) async {
+    if (Platform.isAndroid && mode != 'tun') {
+      _message('Android подключает приложения через системный VPN (TUN)');
+      return;
+    }
     final reconnect = backend.state == VpnState.connected;
     if (backend.state == VpnState.connecting) {
       _message('Подождите завершения подключения');
@@ -1697,6 +1971,10 @@ class _HomePageState extends State<HomePage>
   }
 
   Future<void> _selectCore(String value) async {
+    if (Platform.isAndroid && value == 'Xray') {
+      _message('На Android системный TUN работает через sing-box');
+      return;
+    }
     final next = value == 'Xray' ? 'xray' : 'sing-box';
     if (coreSettings.core == next) return;
     if (backend.state == VpnState.connecting) {
@@ -1708,7 +1986,11 @@ class _HomePageState extends State<HomePage>
     await _saveCore(coreSettings.copyWith(core: next));
     if (!mounted) return;
     setState(() {
-      backend = next == 'xray' ? XrayBackend() : SingBoxBackend();
+      backend = Platform.isAndroid
+          ? AndroidVpnBackend()
+          : next == 'xray'
+              ? XrayBackend()
+              : SingBoxBackend();
       activeProfileId = null;
       pendingReconnect = false;
       pingMs = null;
@@ -1720,62 +2002,75 @@ class _HomePageState extends State<HomePage>
   @override
   Widget build(BuildContext context) => Scaffold(
       backgroundColor: Theme.of(context).scaffoldBackgroundColor,
-      body: Container(
-          decoration: BoxDecoration(
-              gradient: LinearGradient(
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                  colors: [
-                _surface,
-                Theme.of(context).scaffoldBackgroundColor,
-                Theme.of(context).scaffoldBackgroundColor
-              ])),
-          child: SafeArea(
-              child: Center(
-                  child: ConstrainedBox(
-                      constraints: BoxConstraints(maxWidth: 1000),
-                      child: Padding(
-                          padding: EdgeInsets.fromLTRB(5, 12, 5, 12),
-                          child: Column(children: [
-                            _header(),
-                            SizedBox(height: 8),
-                            Expanded(
-                                child: ClipRRect(
-                                    borderRadius: BorderRadius.circular(24),
-                                    child: AnimatedSwitcher(
-                                        duration:
-                                            const Duration(milliseconds: 190),
-                                        reverseDuration:
-                                            const Duration(milliseconds: 80),
-                                        switchInCurve: Curves.easeOutCubic,
-                                        switchOutCurve: Curves.linear,
-                                        layoutBuilder: (current, previous) =>
-                                            current ?? SizedBox.shrink(),
-                                        transitionBuilder: (child, animation) =>
-                                            FadeTransition(
-                                                opacity: animation,
-                                                child: ScaleTransition(
-                                                    scale: Tween<double>(
-                                                            begin: .985, end: 1)
-                                                        .animate(CurvedAnimation(
-                                                            parent: animation,
-                                                            curve: Curves
-                                                                .easeOutCubic)),
-                                                    child: child)),
-                                        child: KeyedSubtree(
-                                            key: ValueKey(_tabIndex),
-                                            child: settings
-                                                ? _scrollFrame(
-                                                    _settings(), settingsScroll)
-                                                : routingTab
-                                                    ? _scrollFrame(
-                                                        _routingPage(),
-                                                        routingScroll)
-                                                    : _scrollFrame(_home(),
-                                                        homeScroll))))),
-                            SizedBox(height: 8),
-                            _nav(),
-                          ])))))));
+      body: Stack(children: [
+        Positioned.fill(
+            child: IgnorePointer(
+                child: AnimatedBuilder(
+                    animation: ambientMotion,
+                    builder: (context, _) => CustomPaint(
+                        painter: _AmbientBackgroundPainter(
+                            progress:
+                                animatedBackground ? ambientMotion.value : .12,
+                            color: _accent,
+                            enabled: animatedBackground))))),
+        Container(
+            decoration: BoxDecoration(
+                gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [
+                  _surface,
+                  Theme.of(context).scaffoldBackgroundColor,
+                  Theme.of(context).scaffoldBackgroundColor
+                ])),
+            child: SafeArea(
+                child: Center(
+                    child: ConstrainedBox(
+                        constraints: BoxConstraints(maxWidth: 1000),
+                        child: Padding(
+                            padding: EdgeInsets.fromLTRB(5, 12, 5, 12),
+                            child: Column(children: [
+                              _header(),
+                              SizedBox(height: 8),
+                              Expanded(
+                                  child: ClipRRect(
+                                      borderRadius: BorderRadius.circular(24),
+                                      child: AnimatedSwitcher(
+                                          duration:
+                                              const Duration(milliseconds: 190),
+                                          reverseDuration:
+                                              const Duration(milliseconds: 80),
+                                          switchInCurve: Curves.easeOutCubic,
+                                          switchOutCurve: Curves.linear,
+                                          layoutBuilder: (current, previous) =>
+                                              current ?? SizedBox.shrink(),
+                                          transitionBuilder: (child, animation) =>
+                                              FadeTransition(
+                                                  opacity: animation,
+                                                  child: ScaleTransition(
+                                                      scale: Tween<double>(
+                                                              begin: .985,
+                                                              end: 1)
+                                                          .animate(CurvedAnimation(
+                                                              parent: animation,
+                                                              curve: Curves
+                                                                  .easeOutCubic)),
+                                                      child: child)),
+                                          child: KeyedSubtree(
+                                              key: ValueKey(_tabIndex),
+                                              child: settings
+                                                  ? _scrollFrame(
+                                                      _settings(), settingsScroll)
+                                                  : routingTab
+                                                      ? _scrollFrame(
+                                                          _routingPage(),
+                                                          routingScroll)
+                                                      : _scrollFrame(_home(),
+                                                          homeScroll))))),
+                              SizedBox(height: 8),
+                              _nav(),
+                            ])))))),
+      ]));
 
   Widget _scrollFrame(
           Widget child, ScrollController controller) =>
@@ -1790,7 +2085,7 @@ class _HomePageState extends State<HomePage>
               thickness: 3,
               radius: Radius.circular(8),
               child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 5),
+                  padding: const EdgeInsets.fromLTRB(5, 0, 9, 0),
                   child: child)));
 
   Future<void> _openActionsMenu(BuildContext anchorContext) async {
@@ -1907,11 +2202,11 @@ class _HomePageState extends State<HomePage>
                 padding: const EdgeInsets.symmetric(horizontal: 64),
                 child: Text(
                     routeListOpen
-                        ? 'Список доменов'
+                        ? _localized('Список доменов')
                         : settings
-                            ? 'Настройки'
+                            ? _localized('Настройки')
                             : routingTab
-                                ? 'Маршрут'
+                                ? _localized('Маршрут')
                                 : 'GhostBox',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
@@ -1939,8 +2234,8 @@ class _HomePageState extends State<HomePage>
                         padding: EdgeInsets.zero,
                         constraints: const BoxConstraints.tightFor(
                             width: 44, height: 44),
-                        icon: const Icon(Icons.more_horiz_rounded,
-                            color: Colors.white, size: 25))))),
+                        icon: Icon(Icons.more_horiz_rounded,
+                            color: _foreground, size: 25))))),
       ]));
 
   PopupMenuItem<String> _menuItem(String value, IconData icon, String label) =>
@@ -1963,7 +2258,7 @@ class _HomePageState extends State<HomePage>
 
   Widget _topButton(IconData icon, VoidCallback onTap) => IconButton(
       onPressed: onTap,
-      icon: Icon(icon, size: 25, color: Colors.white),
+      icon: Icon(icon, size: 25, color: _foreground),
       padding: EdgeInsets.zero,
       constraints: const BoxConstraints.tightFor(width: 44, height: 44),
       style: IconButton.styleFrom(shape: const CircleBorder()));
@@ -2022,7 +2317,8 @@ class _HomePageState extends State<HomePage>
                           size: 17),
                   label: AnimatedSwitcher(
                       duration: Duration(milliseconds: 260),
-                      child: Text(_pingLabel(), key: ValueKey(_pingLabel()))),
+                      child: Text(_localized(_pingLabel()),
+                          key: ValueKey(_pingLabel()))),
                   style: TextButton.styleFrom(
                       foregroundColor: pingMs == null
                           ? _muted
@@ -2040,7 +2336,8 @@ class _HomePageState extends State<HomePage>
               onPressed: () => setState(() => hideProfiles = !hideProfiles),
               style: TextButton.styleFrom(
                   foregroundColor: _muted, textStyle: TextStyle(fontSize: 12)),
-              child: Text(hideProfiles ? 'Показать серверы' : 'Скрыть серверы'))
+              child: Text(_localized(
+                  hideProfiles ? 'Показать серверы' : 'Скрыть серверы')))
         ]),
         if (pendingReconnect)
           Padding(
@@ -2055,14 +2352,12 @@ class _HomePageState extends State<HomePage>
                     Icon(Icons.auto_awesome_rounded, size: 17, color: _accent),
                     SizedBox(width: 9),
                     Expanded(
-                        child: Text('Новый выбор ждёт переподключения',
+                        child: Text(
+                            _localized('Новый выбор ждёт переподключения'),
                             style: TextStyle(fontSize: 12))),
                     TextButton(
-                        onPressed: () async {
-                          await _disconnectActive();
-                          await _toggle();
-                        },
-                        child: Text('Применить')),
+                        onPressed: _applyPendingReconnect,
+                        child: Text(_localized('Применить'))),
                   ]))),
         AnimatedSize(
             duration: Duration(milliseconds: 420),
@@ -2082,7 +2377,7 @@ class _HomePageState extends State<HomePage>
                     shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(22))),
                 icon: Icon(Icons.add_rounded, size: 23),
-                label: Text('Добавить подписку или сервер',
+                label: Text(_localized('Добавить подписку или сервер'),
                     style: TextStyle(fontSize: 12)))),
         SizedBox(height: 18),
       ]));
@@ -2094,27 +2389,35 @@ class _HomePageState extends State<HomePage>
           key: const PageStorageKey('routing'),
           padding: const EdgeInsets.only(top: 14, bottom: 24),
           children: [
-            Text('Как пускать трафик',
+            Text(_text('Как пускать трафик', 'Traffic routing'),
                 textAlign: TextAlign.center,
                 style: const TextStyle(
                     fontSize: 24,
                     fontWeight: FontWeight.w700,
                     letterSpacing: -.6)),
             const SizedBox(height: 5),
-            Text('Выбери, какие сайты отправлять через сервер',
+            Text(
+                _text('Выбери, какие сайты отправлять через сервер',
+                    'Choose which sites go through the server'),
                 textAlign: TextAlign.center,
                 style: TextStyle(color: _muted, fontSize: 12)),
             const SizedBox(height: 20),
-            _routeOption('Всё через VPN', 'Любые сайты идут через сервер.',
-                Icons.shield_rounded, 'proxy'),
             _routeOption(
-                'Только сайты из списка',
-                'В список — через VPN, всё остальное напрямую.',
+                _text('Всё через VPN', 'All traffic through VPN'),
+                _text('Любые сайты идут через сервер.',
+                    'All sites use the server.'),
+                Icons.shield_rounded,
+                'proxy'),
+            _routeOption(
+                _text('Только сайты из списка', 'Only sites in the list'),
+                _text('В список — через VPN, всё остальное напрямую.',
+                    'Listed sites use VPN; everything else connects directly.'),
                 Icons.list_alt_rounded,
                 'rules'),
             _routeOption(
-                'Всё, кроме списка',
-                'Сайты из списка идут напрямую, остальные — через VPN.',
+                _text('Всё, кроме списка', 'Everything except the list'),
+                _text('Сайты из списка идут напрямую, остальные — через VPN.',
+                    'Listed sites connect directly; everything else uses VPN.'),
                 Icons.alt_route_rounded,
                 'exclude'),
             if (coreSettings.routing == 'rules' ||
@@ -2235,13 +2538,14 @@ class _HomePageState extends State<HomePage>
         children: [
           Text(
               routeListMode == 'rules'
-                  ? 'Сайты через VPN'
-                  : 'Исключения из VPN',
+                  ? _localized('Сайты через VPN')
+                  : _localized('Исключения из VPN'),
               style:
                   const TextStyle(fontSize: 23, fontWeight: FontWeight.w700)),
           const SizedBox(height: 6),
           Text(
-              'Домен, маска или IP-сеть на строку. Подойдут *.ru, 10.0.0.0/8 и JSON-списки Amnezia.',
+              _localized(
+                  'Домен, маска или IP-сеть на строку. Подойдут *.ru, 10.0.0.0/8 и JSON-списки Amnezia.'),
               style: TextStyle(color: _muted, fontSize: 12)),
           const SizedBox(height: 16),
           Container(
@@ -2366,10 +2670,7 @@ class _HomePageState extends State<HomePage>
             child: Text('Переподключи ядро, чтобы применить маршрут.',
                 style: TextStyle(fontSize: 12))),
         TextButton(
-            onPressed: () async {
-              await _disconnectActive();
-              await _toggle();
-            },
+            onPressed: _applyPendingReconnect,
             child: const Text('Применить')),
       ]));
 
@@ -2456,9 +2757,9 @@ class _HomePageState extends State<HomePage>
                                 ? const [Color(0xFFFF9FAD), Color(0xFFAB4A67)]
                                 : backend.state == VpnState.connected ||
                                         switchingServer
-                                    ? const [
-                                        Color(0xFF93EAD0),
-                                        Color(0xFF279B91)
+                                    ? [
+                                        Color.lerp(_accent, Colors.white, .22)!,
+                                        _accent
                                       ]
                                     : [_accent, _accent.withValues(alpha: .55)],
                           ),
@@ -2545,8 +2846,8 @@ class _HomePageState extends State<HomePage>
                             : (selected?.name ?? 'Выберите сервер'),
                     textAlign: TextAlign.center,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                        color: Colors.white,
+                    style: TextStyle(
+                        color: _foreground,
                         fontSize: 15,
                         fontWeight: FontWeight.w600))))
       ]);
@@ -2557,11 +2858,11 @@ class _HomePageState extends State<HomePage>
 
   String _connectedLabel() {
     return switch (coreSettings.connectionMode) {
-      'proxy' => 'ПРОКСИ ГОТОВ',
-      'system' => 'СИСТЕМНЫЙ ПРОКСИ',
-      'tun' => 'TUN АКТИВЕН',
-      'mixed' => 'MIXED АКТИВЕН',
-      _ => 'ПОДКЛЮЧЕНО',
+      'proxy' => _text('ПРОКСИ ГОТОВ', 'PROXY READY'),
+      'system' => _text('СИСТЕМНЫЙ ПРОКСИ', 'SYSTEM PROXY'),
+      'tun' => _text('TUN АКТИВЕН', 'TUN ACTIVE'),
+      'mixed' => _text('MIXED АКТИВЕН', 'MIXED ACTIVE'),
+      _ => _text('ПОДКЛЮЧЕНО', 'CONNECTED'),
     };
   }
 
@@ -2569,17 +2870,21 @@ class _HomePageState extends State<HomePage>
       Column(mainAxisSize: MainAxisSize.min, children: [
         Row(mainAxisAlignment: MainAxisAlignment.center, children: [
           _tinyStat('ЯДРО', process?.name ?? coreSettings.core,
-              choices: const [('xray', 'Xray'), ('sing-box', 'sing-box')],
+              choices: Platform.isAndroid
+                  ? const [('sing-box', 'sing-box')]
+                  : const [('xray', 'Xray'), ('sing-box', 'sing-box')],
               onSelected: (value) =>
                   _selectCore(value == 'xray' ? 'Xray' : value)),
           const SizedBox(width: 8),
           _tinyStat('РЕЖИМ', _connectionModeLabel(coreSettings.connectionMode),
-              choices: const [
-                ('proxy', 'Proxy'),
-                ('system', 'System proxy'),
-                ('tun', 'TUN'),
-                ('mixed', 'Mixed'),
-              ],
+              choices: Platform.isAndroid
+                  ? const [('tun', 'Android VPN')]
+                  : const [
+                      ('proxy', 'Proxy'),
+                      ('system', 'System proxy'),
+                      ('tun', 'TUN'),
+                      ('mixed', 'Mixed'),
+                    ],
               onSelected: _setConnectionMode),
         ]),
         if (coreSettings.showRamUsage) ...[
@@ -2589,19 +2894,19 @@ class _HomePageState extends State<HomePage>
             child: Text(
               key: ValueKey('$coreMemoryMb:${backend.state}'),
               backend.state == VpnState.connected
-                  ? 'RAM ядра · ${coreMemoryMb == null ? 'считаю…' : '${coreMemoryMb!} МБ'}'
-                  : 'RAM ядра · отключено',
+                  ? '${Platform.isAndroid ? 'RAM приложения' : 'RAM ядра'} · ${coreMemoryMb == null ? 'считаю…' : '${coreMemoryMb!} МБ'}'
+                  : '${Platform.isAndroid ? 'RAM приложения' : 'RAM ядра'} · отключено',
               style: TextStyle(
-                  fontSize: 10,
-                  color: Colors.white.withValues(alpha: .66),
-                  fontWeight: FontWeight.w500),
+                  fontSize: 10, color: _muted, fontWeight: FontWeight.w500),
             ),
           ),
         ],
       ]);
 
   Future<void> _refreshCoreMemoryUsage() async {
-    if (!Platform.isLinux || readingCoreMemory || !coreSettings.showRamUsage) {
+    if ((!Platform.isLinux && !Platform.isAndroid) ||
+        readingCoreMemory ||
+        !coreSettings.showRamUsage) {
       return;
     }
     if (backend.state != VpnState.connected) {
@@ -2610,6 +2915,11 @@ class _HomePageState extends State<HomePage>
     }
     readingCoreMemory = true;
     try {
+      if (Platform.isAndroid && backend is AndroidVpnBackend) {
+        final memoryMb = await (backend as AndroidVpnBackend).readMemoryMb();
+        if (mounted) setState(() => coreMemoryMb = memoryMb);
+        return;
+      }
       final pids = <int>{
         if (process?.pid != null) process!.pid!,
         if (tunnelBridgeBackend?.pid != null) tunnelBridgeBackend!.pid!,
@@ -2660,8 +2970,8 @@ class _HomePageState extends State<HomePage>
               child: Row(mainAxisSize: MainAxisSize.min, children: [
                 Text('$label  ', style: TextStyle(color: _muted, fontSize: 10)),
                 Text(value,
-                    style: const TextStyle(
-                        color: Colors.white,
+                    style: TextStyle(
+                        color: _foreground,
                         fontSize: 11,
                         fontWeight: FontWeight.w600)),
                 const SizedBox(width: 4),
@@ -2677,10 +2987,10 @@ class _HomePageState extends State<HomePage>
       child: Column(children: [
         Icon(Icons.public_off_rounded, size: 35, color: _muted),
         SizedBox(height: 10),
-        Text('Пока нет серверов',
+        Text(_localized('Пока нет серверов'),
             style: TextStyle(fontWeight: FontWeight.w600)),
         SizedBox(height: 5),
-        Text('Добавьте ссылку или подписку, чтобы начать',
+        Text(_localized('Добавьте ссылку или подписку, чтобы начать'),
             textAlign: TextAlign.center, style: TextStyle(color: _muted)),
       ]));
   List<Widget> _profileSections() {
@@ -2735,7 +3045,7 @@ class _HomePageState extends State<HomePage>
                                   overflow: TextOverflow.ellipsis,
                                   style: TextStyle(
                                       fontWeight: FontWeight.w600,
-                                      color: Colors.white))),
+                                      color: _foreground))),
                           Text('${entries.length}',
                               style: TextStyle(color: _muted, fontSize: 11)),
                           IconButton(
@@ -2753,16 +3063,16 @@ class _HomePageState extends State<HomePage>
                                   turns: collapsed ? .5 : 0,
                                   duration: const Duration(milliseconds: 220),
                                   child: Icon(Icons.expand_less_rounded,
-                                      size: 19, color: Colors.white70))),
+                                      size: 19, color: _muted))),
                           IconButton(
                               tooltip: 'Обновить подписку',
                               onPressed: () => _refreshSubscription(url),
                               icon: Icon(Icons.sync_rounded,
-                                  size: 19, color: Colors.white70)),
+                                  size: 19, color: _muted)),
                           PopupMenuButton<String>(
                               tooltip: 'Действия с подпиской',
                               icon: Icon(Icons.more_horiz_rounded,
-                                  size: 20, color: Colors.white70),
+                                  size: 20, color: _muted),
                               onSelected: (action) =>
                                   _subscriptionAction(action, url),
                               itemBuilder: (_) => [
@@ -2810,9 +3120,11 @@ class _HomePageState extends State<HomePage>
 
   String _formatBytes(int bytes) {
     final gb = bytes / (1024 * 1024 * 1024);
-    if (gb >= 1) return '${gb.toStringAsFixed(gb >= 10 ? 0 : 1)} ГБ';
+    if (gb >= 1) {
+      return '${gb.toStringAsFixed(gb >= 10 ? 0 : 1)} ${english ? 'GB' : 'ГБ'}';
+    }
     final mb = bytes / (1024 * 1024);
-    return '${mb.toStringAsFixed(0)} МБ';
+    return '${mb.toStringAsFixed(0)} ${english ? 'MB' : 'МБ'}';
   }
 
   Widget _fadingProfileGroup({required bool visible, required Widget child}) =>
@@ -2852,16 +3164,23 @@ class _HomePageState extends State<HomePage>
   String _expiryLabel(DateTime expires) {
     final local = expires.toLocal();
     final remaining = local.difference(DateTime.now());
-    if (remaining.isNegative || remaining.inSeconds == 0) return 'Срок истёк';
+    if (remaining.isNegative || remaining.inSeconds == 0) {
+      return _text('Срок истёк', 'Expired');
+    }
     final date =
         '${local.day.toString().padLeft(2, '0')}.${local.month.toString().padLeft(2, '0')}.${local.year}';
     if (remaining.inDays >= 1) {
-      return 'Ещё ${remaining.inDays} дн. · $date';
+      return _text('Ещё ${remaining.inDays} дн. · $date',
+          '${remaining.inDays} days left · $date');
     }
     if (remaining.inHours >= 1) {
-      return 'Истекает сегодня · ${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
+      return _text(
+          'Истекает сегодня · ${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}',
+          'Expires today · ${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}');
     }
-    return 'Меньше часа · ${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
+    return _text(
+        'Меньше часа · ${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}',
+        'Under an hour · ${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}');
   }
 
   Future<void> _openProviderUrl(String? value) async {
@@ -2873,8 +3192,13 @@ class _HomePageState extends State<HomePage>
       return;
     }
     try {
+      final command = Platform.isWindows
+          ? ('rundll32', ['url.dll,FileProtocolHandler', uri.toString()])
+          : Platform.isMacOS
+              ? ('open', [uri.toString()])
+              : ('xdg-open', [uri.toString()]);
       final launch =
-          await Process.start('xdg-open', [uri.toString()], runInShell: false);
+          await Process.start(command.$1, command.$2, runInShell: false);
       if (await launch.exitCode != 0 && mounted)
         _message('Не удалось открыть ссылку');
     } catch (_) {
@@ -2892,8 +3216,14 @@ class _HomePageState extends State<HomePage>
     final expires = metadata.expiresAt;
     final now = DateTime.now();
     final expired = expires != null && expires.isBefore(now);
+    final expiryText = metadata.neverExpires
+        ? _text('∞ · Без срока', '∞ · No expiry')
+        : expires == null
+            ? null
+            : _expiryLabel(expires);
     final hasInfo = used != null ||
         total != null ||
+        metadata.expire != null ||
         expires != null ||
         metadata.deviceLimit != null ||
         metadata.announcement != null ||
@@ -2905,12 +3235,15 @@ class _HomePageState extends State<HomePage>
         : null;
     if (collapsed) {
       final summary = total == 0 && used != null
-          ? 'Без лимита · ${_formatBytes(used)} использовано'
+          ? _text('Без лимита · ${_formatBytes(used)} использовано',
+              'Unlimited · ${_formatBytes(used)} used')
           : used != null && total != null
-              ? '${_formatBytes(used)} из ${_formatBytes(total)}'
+              ? _text('${_formatBytes(used)} из ${_formatBytes(total)}',
+                  '${_formatBytes(used)} of ${_formatBytes(total)}')
               : used != null
-                  ? '${_formatBytes(used)} использовано'
-                  : 'Данные подписки';
+                  ? _text('${_formatBytes(used)} использовано',
+                      '${_formatBytes(used)} used')
+                  : _text('Данные подписки', 'Subscription details');
       return Padding(
           padding: const EdgeInsets.fromLTRB(14, 0, 14, 10),
           child: InkWell(
@@ -2940,9 +3273,9 @@ class _HomePageState extends State<HomePage>
                             overflow: TextOverflow.ellipsis,
                             style: const TextStyle(
                                 fontSize: 11, fontWeight: FontWeight.w600))),
-                    if (expires != null) ...[
+                    if (expiryText != null) ...[
                       const SizedBox(width: 8),
-                      Text(_expiryLabel(expires),
+                      Text(expiryText,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(
@@ -2965,7 +3298,9 @@ class _HomePageState extends State<HomePage>
             child:
                 Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               if (!hasInfo)
-                Text('Провайдер не передал данные о трафике и сроке',
+                Text(
+                    _text('Провайдер не передал данные о трафике и сроке',
+                        'The provider did not share usage or expiry details'),
                     style: TextStyle(color: _muted, fontSize: 11)),
               if (used != null || total != null) ...[
                 Row(children: [
@@ -2974,10 +3309,16 @@ class _HomePageState extends State<HomePage>
                   Expanded(
                       child: Text(
                           total == 0
-                              ? 'Без лимита · ${_formatBytes(used ?? 0)} использовано'
+                              ? _text(
+                                  'Без лимита · ${_formatBytes(used ?? 0)} использовано',
+                                  'Unlimited · ${_formatBytes(used ?? 0)} used')
                               : total != null
-                                  ? '${_formatBytes(used ?? 0)} из ${_formatBytes(total)}'
-                                  : 'Использовано ${_formatBytes(used ?? 0)}',
+                                  ? _text(
+                                      '${_formatBytes(used ?? 0)} из ${_formatBytes(total)}',
+                                      '${_formatBytes(used ?? 0)} of ${_formatBytes(total)}')
+                                  : _text(
+                                      'Использовано ${_formatBytes(used ?? 0)}',
+                                      '${_formatBytes(used ?? 0)} used'),
                           style: TextStyle(
                               fontSize: 12, fontWeight: FontWeight.w600))),
                   if (total != null && total > 0 && used != null)
@@ -3006,21 +3347,26 @@ class _HomePageState extends State<HomePage>
                               progress >= .9 ? Color(0xFFFFB087) : _accent))),
                 ],
               ],
-              if (expires != null ||
+              if (expiryText != null ||
                   metadata.deviceLimit != null ||
                   metadata.updateIntervalHours != null) ...[
                 SizedBox(height: 11),
                 Wrap(spacing: 12, runSpacing: 7, children: [
-                  if (expires != null)
-                    _metadataBadge(Icons.event_rounded, _expiryLabel(expires),
+                  if (expiryText != null)
+                    _metadataBadge(Icons.event_rounded, expiryText,
                         expired ? Color(0xFFFFA3A3) : _muted),
                   if (metadata.deviceLimit != null)
-                    _metadataBadge(Icons.devices_rounded,
-                        'До ${metadata.deviceLimit} устройств', _muted),
+                    _metadataBadge(
+                        Icons.devices_rounded,
+                        _text('До ${metadata.deviceLimit} устройств',
+                            'Up to ${metadata.deviceLimit} devices'),
+                        _muted),
                   if (metadata.updateIntervalHours != null)
                     _metadataBadge(
                         Icons.sync_rounded,
-                        'Совет провайдера: ${metadata.updateIntervalHours} ч',
+                        _text(
+                            'Совет провайдера: ${metadata.updateIntervalHours} ч',
+                            'Provider recommends ${metadata.updateIntervalHours} h'),
                         _muted),
                 ]),
               ],
@@ -3058,7 +3404,10 @@ class _HomePageState extends State<HomePage>
               ],
               if (sub['updatedAt'] is String) ...[
                 SizedBox(height: 8),
-                Text('Обновлено ${_updatedLabel(sub['updatedAt'] as String)}',
+                Text(
+                    _text(
+                        'Обновлено ${_updatedLabel(sub['updatedAt'] as String)}',
+                        'Updated ${_updatedLabel(sub['updatedAt'] as String)}'),
                     style: TextStyle(color: _muted, fontSize: 10)),
               ],
               if (metadata.websiteUrl != null ||
@@ -3292,7 +3641,8 @@ class _HomePageState extends State<HomePage>
               padding: const EdgeInsets.fromLTRB(9, 9, 5, 9),
               decoration: BoxDecoration(
                   color: selectedServer
-                      ? Colors.white.withOpacity(.10)
+                      ? Color.alphaBlend(
+                          _accent.withValues(alpha: .12), _surface)
                       : Colors.transparent,
                   borderRadius: BorderRadius.circular(15)),
               child: Row(children: [
@@ -3307,7 +3657,7 @@ class _HomePageState extends State<HomePage>
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(
                               fontWeight: FontWeight.w600,
-                              color: Colors.white,
+                              color: _foreground,
                               fontSize: 13)),
                       SizedBox(height: 2),
                       Text(
@@ -3326,7 +3676,7 @@ class _HomePageState extends State<HomePage>
                           fontSize: 11)),
                 PopupMenuButton<String>(
                     tooltip: 'Действия с сервером',
-                    icon: Icon(Icons.more_horiz_rounded, color: Colors.white70),
+                    icon: Icon(Icons.more_horiz_rounded, color: _muted),
                     onSelected: (value) async {
                       if (value == 'ping') {
                         await _checkOneProfile(profile);
@@ -3522,7 +3872,7 @@ class _HomePageState extends State<HomePage>
                 style: TextStyle(
                     fontSize: 10,
                     letterSpacing: .4,
-                    color: Colors.white,
+                    color: _foreground,
                     fontWeight: FontWeight.w800))
             : Icon(_serverIcon(profile.protocol),
                 color: Colors.white, size: 15));
@@ -3768,8 +4118,9 @@ class _HomePageState extends State<HomePage>
                         maxLines: 10,
                         decoration: InputDecoration(
                             hintText: 'example.com\ntracker.example.org',
-                            helperText:
-                                'Один домен на строку · действует и для поддоменов'))),
+                            helperText: _text(
+                                'Один домен на строку · действует и для поддоменов',
+                                'One domain per line · includes subdomains')))),
                 actions: [
                   TextButton(
                       onPressed: () => Navigator.pop(context),
@@ -3800,13 +4151,13 @@ class _HomePageState extends State<HomePage>
           padding: EdgeInsets.only(bottom: 24),
           children: [
             SizedBox(height: 12),
-            Text('Настройки',
+            Text(_localized('Настройки'),
                 style: TextStyle(
                     fontSize: 25,
                     fontWeight: FontWeight.w700,
                     letterSpacing: -.7)),
             SizedBox(height: 5),
-            Text('Управление локальным прокси и ядром',
+            Text(_localized('Управление локальным прокси и ядром'),
                 style: TextStyle(color: _muted, fontSize: 13)),
             SizedBox(height: 24),
             Container(
@@ -3816,9 +4167,9 @@ class _HomePageState extends State<HomePage>
                     borderRadius: BorderRadius.circular(17),
                     border: Border.all(color: Colors.white.withOpacity(.09))),
                 child: Row(children: [
-                  _segment('Основные', !advanced,
+                  _segment(_localized('Основные'), !advanced,
                       () => setState(() => advanced = false)),
-                  _segment('Для профи', advanced,
+                  _segment(_localized('Для профи'), advanced,
                       () => setState(() => advanced = true)),
                 ])),
             if (pendingReconnect) ...[
@@ -3837,10 +4188,7 @@ class _HomePageState extends State<HomePage>
                             'Изменения вступят в силу после переподключения',
                             style: TextStyle(fontSize: 12))),
                     TextButton(
-                        onPressed: () async {
-                          await _disconnectActive();
-                          await _toggle();
-                        },
+                        onPressed: _applyPendingReconnect,
                         child: Text('Применить')),
                   ])),
             ],
@@ -3869,11 +4217,44 @@ class _HomePageState extends State<HomePage>
       if (!File(executable).existsSync()) return 'Не найдено';
       final result = await Process.run(executable, ['version'])
           .timeout(const Duration(seconds: 3));
-      final output = '${result.stdout}\n${result.stderr}'
-          .split('\n')
-          .map((line) => line.trim())
-          .firstWhere((line) => line.isNotEmpty, orElse: () => 'Неизвестно');
-      return result.exitCode == 0 ? output : 'Недоступно';
+      final output = '${result.stdout}\n${result.stderr}';
+      if (result.exitCode == 0) {
+        if (name == 'sing-box') {
+          final match =
+              RegExp(r'sing-box version\s+([^\s]+)').firstMatch(output);
+          final version = match?.group(1);
+          if (version != null && version.toLowerCase() != 'unknown') {
+            return 'sing-box $version';
+          }
+        } else {
+          final firstLine = output
+              .split('\n')
+              .map((line) => line.trim())
+              .firstWhere((line) => line.isNotEmpty, orElse: () => '');
+          if (firstLine.isNotEmpty) return firstLine;
+        }
+      }
+
+      // Older binaries were built without sing-box's version linker flag.
+      // Use the adjacent build manifest first, then Go's embedded module info.
+      final buildInfo = File('${File(executable).parent.path}/BUILD-INFO.txt');
+      if (name == 'sing-box' && await buildInfo.exists()) {
+        final manifest = await buildInfo.readAsString();
+        final match = RegExp(r'^sing-box:\s*v?([^\s]+)', multiLine: true)
+            .firstMatch(manifest);
+        if (match != null) return 'sing-box ${match.group(1)}';
+      }
+      if (name == 'sing-box') {
+        final moduleInfo =
+            await Process.run('go', ['version', '-m', executable])
+                .timeout(const Duration(seconds: 3));
+        final match = RegExp(
+          r'^\s*mod\s+github\.com/sagernet/sing-box\s+v([^\s]+)',
+          multiLine: true,
+        ).firstMatch('${moduleInfo.stdout}');
+        if (match != null) return 'sing-box ${match.group(1)}';
+      }
+      return result.exitCode == 0 ? 'Версия недоступна' : 'Недоступно';
     } on Object {
       return 'Недоступно';
     }
@@ -4033,7 +4414,7 @@ class _HomePageState extends State<HomePage>
           key: ValueKey('basic'),
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            ThemeSettingsPanel(),
+            ThemeSettingsPanel(english: english),
             SizedBox(height: 24),
             _section('СОЕДИНЕНИЕ'),
             _row(
@@ -4160,6 +4541,34 @@ class _HomePageState extends State<HomePage>
             SizedBox(height: 14),
             _section('ПРИЛОЖЕНИЕ'),
             _row(
+                Icons.language_rounded,
+                'Язык интерфейса',
+                english ? 'English' : 'Русский',
+                _menu(english ? 'en' : 'ru',
+                    const {'ru': 'Русский', 'en': 'English'}, (value) async {
+                  final next = value == 'en';
+                  setState(() => english = next);
+                  await prefs?.setBool('appEnglish', next);
+                })),
+            _row(
+                Icons.auto_awesome_rounded,
+                'Анимированный фон',
+                animatedBackground
+                    ? 'Мягкое движение цветового свечения'
+                    : 'Выключен · меньше графической нагрузки',
+                _compactSwitch(
+                    value: animatedBackground,
+                    onChanged: (value) async {
+                      setState(() => animatedBackground = value);
+                      if (value) {
+                        ambientMotion.repeat();
+                      } else {
+                        ambientMotion.stop();
+                        ambientMotion.value = .12;
+                      }
+                      await prefs?.setBool('animatedBackground', value);
+                    })),
+            _row(
                 Icons.power_rounded,
                 'Автоподключение',
                 'К выбранному серверу при открытии',
@@ -4207,11 +4616,13 @@ class _HomePageState extends State<HomePage>
                 },
                 _menu(
                     coreSettings.pingMode,
-                    {
-                      'proxy': 'Proxy GET · через прокси',
-                      'tcp': 'TCP · порт',
-                      'icmp': 'ICMP · адрес'
-                    },
+                    Platform.isAndroid
+                        ? const {'tcp': 'TCP · порт сервера'}
+                        : const {
+                            'proxy': 'Proxy GET · через прокси',
+                            'tcp': 'TCP · порт',
+                            'icmp': 'ICMP · адрес'
+                          },
                     (v) => _saveCore(coreSettings.copyWith(pingMode: v),
                         requiresReconnect: false))),
             _row(
@@ -4293,8 +4704,9 @@ class _HomePageState extends State<HomePage>
             Row(children: [
               _choice('sing-box', process?.name == 'sing-box',
                   () => _selectCore('sing-box')),
-              _choice(
-                  'Xray', process?.name == 'xray', () => _selectCore('Xray')),
+              if (!Platform.isAndroid)
+                _choice(
+                    'Xray', process?.name == 'xray', () => _selectCore('Xray')),
             ]),
             SizedBox(height: 12),
             _section('XHTTP · ДЛЯ ПРОФИ'),
@@ -4502,6 +4914,32 @@ class _HomePageState extends State<HomePage>
                         coreSettings.copyWith(pingCount: int.parse(v)),
                         requiresReconnect: false))),
             SizedBox(height: 15),
+            _section('ДАННЫЕ ПРИЛОЖЕНИЯ'),
+            _row(
+                Icons.data_object_rounded,
+                'JSON настроек ядра',
+                'Посмотреть или изменить полный набор параметров',
+                IconButton(
+                    tooltip: 'Открыть JSON',
+                    onPressed: _editCoreSettingsJson,
+                    icon: const Icon(Icons.chevron_right_rounded))),
+            _row(
+                Icons.restart_alt_rounded,
+                'Сбросить настройки',
+                'Сбросить ядро, тему и поведение приложения',
+                IconButton(
+                    tooltip: 'Сбросить настройки',
+                    onPressed: _resetCoreSettings,
+                    icon: const Icon(Icons.restart_alt_rounded))),
+            _row(
+                Icons.delete_sweep_outlined,
+                'Удалить все серверы',
+                'Удалить профили и подписки с этого устройства',
+                IconButton(
+                    tooltip: 'Удалить все серверы',
+                    onPressed: _deleteAllServers,
+                    icon: const Icon(Icons.delete_outline_rounded))),
+            SizedBox(height: 15),
             _section('ДИАГНОСТИКА'),
             Container(
                 width: double.infinity,
@@ -4554,25 +4992,187 @@ class _HomePageState extends State<HomePage>
                     ])),
           ]);
 
+  Future<void> _editCoreSettingsJson() async {
+    final controller = TextEditingController(
+        text:
+            const JsonEncoder.withIndent('  ').convert(coreSettings.toJson()));
+    String? error;
+    final accepted = await showDialog<String>(
+        context: context,
+        builder: (dialogContext) => StatefulBuilder(
+            builder: (context, setDialogState) => AlertDialog(
+                  title: const Text('JSON настроек ядра'),
+                  content: SizedBox(
+                    width:
+                        math.min(520.0, MediaQuery.sizeOf(context).width - 64),
+                    child: Column(mainAxisSize: MainAxisSize.min, children: [
+                      TextField(
+                        controller: controller,
+                        minLines: 14,
+                        maxLines: 22,
+                        autofocus: true,
+                        autocorrect: false,
+                        style: const TextStyle(
+                            fontFamily: 'monospace', fontSize: 11, height: 1.4),
+                        decoration: InputDecoration(
+                            hintText: '{ ... }', errorText: error),
+                      ),
+                      const SizedBox(height: 8),
+                      const Text(
+                          'Применение проверит типы и допустимые значения. Текущие параметры соединения сохранятся.',
+                          style: TextStyle(fontSize: 11)),
+                    ]),
+                  ),
+                  actions: [
+                    TextButton(
+                        onPressed: () => Navigator.pop(dialogContext),
+                        child: const Text('Отмена')),
+                    FilledButton.icon(
+                        onPressed: () {
+                          try {
+                            final decoded = jsonDecode(controller.text);
+                            if (decoded is! Map) {
+                              throw const FormatException('Нужен JSON-объект');
+                            }
+                            final normalized = CoreSettings.fromJson(
+                                Map<String, dynamic>.from(decoded));
+                            Navigator.pop(
+                                dialogContext, jsonEncode(normalized.toJson()));
+                          } on Object catch (e) {
+                            setDialogState(() => error = e.toString());
+                          }
+                        },
+                        icon: const Icon(Icons.check_rounded),
+                        label: const Text('Проверить и применить')),
+                  ],
+                )));
+    controller.dispose();
+    if (accepted == null || !mounted) return;
+    try {
+      final data = Map<String, dynamic>.from(jsonDecode(accepted) as Map);
+      final updated = CoreSettings.fromJson(data);
+      final wasConnected = backend.state == VpnState.connected;
+      await _saveCore(updated);
+      process?.settings = updated;
+      if (wasConnected && selected != null) {
+        await _disconnectActive();
+        await _toggle();
+      }
+      if (mounted) _message('Параметры ядра обновлены из JSON');
+    } on Object catch (e) {
+      if (mounted) _message('Не удалось применить JSON: $e');
+    }
+  }
+
+  Future<void> _resetCoreSettings() async {
+    final reset = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+              title: const Text('Сбросить настройки приложения?'),
+              content: const Text(
+                  'Вернутся стандартные параметры ядра, тема и поведение приложения. Серверы останутся.'),
+              actions: [
+                TextButton(
+                    onPressed: () => Navigator.pop(context, false),
+                    child: const Text('Отмена')),
+                FilledButton(
+                    onPressed: () => Navigator.pop(context, true),
+                    child: const Text('Сбросить')),
+              ],
+            ));
+    if (reset != true || !mounted) return;
+    if (backend.state != VpnState.disconnected) await _disconnectActive();
+    final defaults = CoreSettings(
+        core: Platform.isAndroid ? 'sing-box' : 'xray', connectionMode: 'tun');
+    await _saveCore(defaults, requiresReconnect: false);
+    process?.settings = defaults;
+    await ThemeController.instance.select(ThemePreset.midnight);
+    final storage = prefs ??= await SharedPreferences.getInstance();
+    await storage.setBool('appEnglish', false);
+    await storage.setBool('animatedBackground', true);
+    await storage.setBool('autoRefreshSubscriptions', true);
+    await storage.setInt('autoRefreshHours', 6);
+    if (mounted) {
+      setState(() {
+        english = false;
+        animatedBackground = true;
+        autoRefreshSubscriptions = true;
+        autoRefreshHours = 6;
+      });
+      ambientMotion.repeat();
+    }
+    _scheduleSubscriptionRefresh();
+    if (mounted) _message('Настройки ядра сброшены');
+  }
+
+  Future<void> _deleteAllServers() async {
+    final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+              title: const Text('Удалить серверы и подписки?'),
+              content: const Text(
+                  'Все добавленные серверы, источники подписок и их сведения будут удалены с этого устройства.'),
+              actions: [
+                TextButton(
+                    onPressed: () => Navigator.pop(context, false),
+                    child: const Text('Отмена')),
+                FilledButton(
+                    style: FilledButton.styleFrom(
+                        backgroundColor: const Color(0xFFB94B58)),
+                    onPressed: () => Navigator.pop(context, true),
+                    child: const Text('Удалить всё')),
+              ],
+            ));
+    if (confirmed != true || !mounted) return;
+    if (backend.state != VpnState.disconnected) await _disconnectActive();
+    setState(() {
+      profiles.clear();
+      subscriptions.clear();
+      subscriptionProfileIds.clear();
+      subscriptionUrl = null;
+      selectedId = null;
+      activeProfileId = null;
+      pendingReconnect = false;
+      collapsedSubscriptions.clear();
+      collapsedSubscriptionInfo.clear();
+    });
+    await _persist();
+    final storage = prefs ??= await SharedPreferences.getInstance();
+    for (final key in const [
+      'subscriptions',
+      'subscriptionUrl',
+      'subscriptionProfileIds',
+      'selectedProfile',
+    ]) {
+      await storage.remove(key);
+    }
+    if (mounted) _message('Серверы и подписки удалены');
+  }
+
   String _routingLabel() => switch (coreSettings.routing) {
-        'rules' => 'Только домены из списка через VPN',
-        'exclude' => 'Всё через VPN, кроме списка',
-        _ => 'Весь трафик через VPN',
+        'rules' => _text('Только домены из списка через VPN',
+            'Only domains in the list use VPN'),
+        'exclude' => _text('Всё через VPN, кроме списка',
+            'All traffic except listed domains uses VPN'),
+        _ => _text('Весь трафик через VPN', 'All traffic through VPN'),
       };
   String _dnsLabel() => switch (coreSettings.dns) {
         'cloudflare' => 'Cloudflare · DoH',
         'google' => 'Google · DoH',
         'combined' => 'Cloudflare + Google',
         'custom' => coreSettings.customDnsResolver,
-        _ => 'Системный DNS',
+        _ => _text('Системный DNS', 'System DNS'),
       };
 
   String _dnsBlacklistLabel() => switch (coreSettings.dnsBlacklistMode) {
         'ads' => loadingAdBlocklist
-            ? 'Обновляется…'
-            : 'Блок рекламы · ${coreSettings.adBlockDomains.length}',
-        'custom' => 'Кастом · ${coreSettings.blockedDomains.length} доменов',
-        _ => 'Нет',
+            ? _text('Обновляется…', 'Updating…')
+            : _text('Блок рекламы · ${coreSettings.adBlockDomains.length}',
+                'Ad blocking · ${coreSettings.adBlockDomains.length} domains'),
+        'custom' => _text(
+            'Кастом · ${coreSettings.blockedDomains.length} доменов',
+            'Custom · ${coreSettings.blockedDomains.length} domains'),
+        _ => _text('Нет', 'Off'),
       };
   Widget _menu(String value, Map<String, String> choices,
           ValueChanged<String> onChanged) =>
@@ -4581,7 +5181,8 @@ class _HomePageState extends State<HomePage>
           onSelected: onChanged,
           icon: Icon(Icons.unfold_more_rounded, size: 20, color: _accent),
           itemBuilder: (_) => choices.entries
-              .map((e) => PopupMenuItem(value: e.key, child: Text(e.value)))
+              .map((e) =>
+                  PopupMenuItem(value: e.key, child: Text(_localized(e.value))))
               .toList());
 
   Future<void> _editPort() async {
@@ -4676,7 +5277,7 @@ class _HomePageState extends State<HomePage>
 
   Widget _section(String text) => Padding(
       padding: EdgeInsets.only(bottom: 10),
-      child: Text(text.toUpperCase(),
+      child: Text(_localized(text).toUpperCase(),
           style: TextStyle(
               color: _muted,
               fontSize: 10,
@@ -4706,8 +5307,9 @@ class _HomePageState extends State<HomePage>
                 child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                  Text(title),
-                  Text(subtitle, style: TextStyle(color: _muted, fontSize: 11))
+                  Text(_localized(title)),
+                  Text(_localized(subtitle),
+                      style: TextStyle(color: _muted, fontSize: 11))
                 ])),
             trailing
           ]));
@@ -4771,9 +5373,9 @@ class _HomePageState extends State<HomePage>
                     BoxShadow(color: _accent.withOpacity(.14), blurRadius: 18)
                   ]))),
           Row(children: [
-            _navItem(Icons.shield_outlined, 'Подключение', 0),
-            _navItem(Icons.alt_route_rounded, 'Маршрут', 1),
-            _navItem(Icons.tune_rounded, 'Настройки', 2),
+            _navItem(Icons.shield_outlined, _text('Подключение', 'Connect'), 0),
+            _navItem(Icons.alt_route_rounded, _text('Маршрут', 'Routing'), 1),
+            _navItem(Icons.tune_rounded, _text('Настройки', 'Settings'), 2),
           ]),
         ]);
       }));
@@ -4799,7 +5401,7 @@ class _HomePageState extends State<HomePage>
                     SizedBox(height: 5),
                     Text(label,
                         style: TextStyle(
-                            color: _tabIndex == index ? Colors.white : _muted,
+                            color: _tabIndex == index ? _foreground : _muted,
                             fontSize: 11,
                             fontWeight: _tabIndex == index
                                 ? FontWeight.w600
@@ -4817,9 +5419,44 @@ class _HomePageState extends State<HomePage>
               alignment: Alignment.center,
               child: Text(label,
                   style: TextStyle(
-                      color: active ? Colors.white : _muted,
+                      color: active ? _foreground : _muted,
                       fontWeight:
                           active ? FontWeight.w600 : FontWeight.normal)))));
+}
+
+class _AmbientBackgroundPainter extends CustomPainter {
+  const _AmbientBackgroundPainter(
+      {required this.progress, required this.color, required this.enabled});
+  final double progress;
+  final Color color;
+  final bool enabled;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final phase = progress * math.pi * 2;
+    final opacity = enabled ? .10 : .045;
+    final upperCenter = Offset(size.width * (.18 + math.sin(phase) * .12),
+        size.height * (.10 + math.cos(phase) * .08));
+    final lowerCenter = Offset(size.width * (.88 + math.cos(phase * .7) * .07),
+        size.height * (.74 + math.sin(phase * .7) * .08));
+    for (final blob in [
+      (upperCenter, size.width * .75, color),
+      (lowerCenter, size.width * .58, Color.lerp(color, Colors.indigo, .45)!),
+    ]) {
+      final paint = Paint()
+        ..shader = RadialGradient(colors: [
+          blob.$3.withValues(alpha: opacity),
+          blob.$3.withValues(alpha: 0),
+        ]).createShader(Rect.fromCircle(center: blob.$1, radius: blob.$2));
+      canvas.drawCircle(blob.$1, blob.$2, paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _AmbientBackgroundPainter oldDelegate) =>
+      oldDelegate.progress != progress ||
+      oldDelegate.color != color ||
+      oldDelegate.enabled != enabled;
 }
 
 class _OrbRings extends CustomPainter {
@@ -4851,6 +5488,7 @@ class _OrbRings extends CustomPainter {
   @override
   bool shouldRepaint(covariant _OrbRings old) =>
       old.progress != progress ||
+      old.color != color ||
       old.active != active ||
       old.connecting != connecting;
 }

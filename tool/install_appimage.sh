@@ -15,17 +15,24 @@ fi
 APP_DIR="${HOME}/.local/opt/ghostbox"
 APP_PATH="$APP_DIR/GhostBox.AppImage"
 DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
+VENDOR_DIR="$DATA_HOME/ghostbox-appimage/vendor/bin"
 ICON_DIR="$DATA_HOME/icons/hicolor/scalable/apps"
 DESKTOP_DIR="$DATA_HOME/applications"
 TMP_DIR="$(mktemp -d)"
 cleanup() { rm -rf -- "$TMP_DIR"; }
 trap cleanup EXIT
 
-mkdir -p "$APP_DIR" "$ICON_DIR" "$DESKTOP_DIR"
+mkdir -p "$APP_DIR" "$ICON_DIR" "$DESKTOP_DIR" "$VENDOR_DIR"
 install -m 0755 "$SOURCE" "$APP_PATH"
 
 (cd "$TMP_DIR" && "$APP_PATH" --appimage-extract >/dev/null)
 install -m 0644 "$TMP_DIR/squashfs-root/ghostbox.svg" "$ICON_DIR/ghostbox.svg"
+for core in sing-box xray; do
+  install -m 0755 "$TMP_DIR/squashfs-root/vendor/bin/$core" "$VENDOR_DIR/$core"
+done
+if [[ -f "$TMP_DIR/squashfs-root/vendor/bin/BUILD-INFO.txt" ]]; then
+  install -m 0644 "$TMP_DIR/squashfs-root/vendor/bin/BUILD-INFO.txt" "$VENDOR_DIR/BUILD-INFO.txt"
+fi
 
 cat > "$DESKTOP_DIR/ghostbox.desktop" <<EOF
 [Desktop Entry]
@@ -36,9 +43,9 @@ Icon=ghostbox
 Terminal=false
 Type=Application
 Categories=Network;Security;
-StartupWMClass=ghostbox
+StartupWMClass=GhostBox
 EOF
 chmod 0644 "$DESKTOP_DIR/ghostbox.desktop"
 
 echo "Installed GhostBox Alpha to $APP_PATH"
-echo "Launch it from the application menu, then run tool/setup_tun_permissions.sh --test from the source checkout to enable TUN."
+echo "Launch it from the application menu. Enable TUN once with: sudo setcap cap_net_admin+ep '$VENDOR_DIR/sing-box'"
