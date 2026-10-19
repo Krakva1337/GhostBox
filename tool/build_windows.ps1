@@ -72,7 +72,9 @@ try {
   }
 
   Invoke-Checked 'flutter' @('pub', 'get')
-  Invoke-Checked 'flutter' @('build', 'windows', '--release', '--target-platform', 'windows-x64')
+  # Flutter selects the Windows target architecture from the Windows runner.
+  # `--target-platform` is not a supported option for `flutter build windows`.
+  Invoke-Checked 'flutter' @('build', 'windows', '--release')
 
   $releaseDirectory = Join-Path $ProjectRoot 'build/windows/x64/runner/Release'
   $application = Join-Path $releaseDirectory 'GhostBox.exe'
