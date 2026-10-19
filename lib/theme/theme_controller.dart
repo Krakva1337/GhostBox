@@ -77,6 +77,9 @@ class ThemeController extends ChangeNotifier {
         ThemePreset.mist ||
         ThemePreset.arctic =>
           Brightness.light,
+        ThemePreset.custom => _customBackground.computeLuminance() > .42
+            ? Brightness.light
+            : Brightness.dark,
         _ => Brightness.dark,
       };
   Color get foreground => brightness == Brightness.dark

@@ -22,4 +22,8 @@ fi
 export GHOSTBOX_VENDOR_DIR="$VENDOR_DIR"
 export GHOSTBOX_ICON_PATH="$HERE/ghostbox.png"
 export LD_LIBRARY_PATH="$HERE/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-exec "$HERE/ghostbox" "$@"
+APP_BINARY="$HERE/GhostBox"
+if [ ! -x "$APP_BINARY" ]; then
+  APP_BINARY="$HERE/ghostbox"
+fi
+exec "$APP_BINARY" "$@"

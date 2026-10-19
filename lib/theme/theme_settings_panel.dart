@@ -67,16 +67,14 @@ class _ThemeSettingsPanelState extends State<ThemeSettingsPanel> {
                     !_presetScroll.hasClients) {
                   return;
                 }
-                final position = _presetScroll.position;
-                final delta = signal.scrollDelta.dy != 0
-                    ? signal.scrollDelta.dy
-                    : signal.scrollDelta.dx;
-                final target = (position.pixels + delta)
-                    .clamp(position.minScrollExtent, position.maxScrollExtent)
-                    .toDouble();
-                _presetScroll.animateTo(target,
-                    duration: const Duration(milliseconds: 180),
-                    curve: Curves.easeOutCubic);
+                GestureBinding.instance.pointerSignalResolver.register(signal,
+                    (_) {
+                  if (!_presetScroll.hasClients) return;
+                  final delta = signal.scrollDelta.dx != 0
+                      ? signal.scrollDelta.dx
+                      : signal.scrollDelta.dy;
+                  _presetScroll.position.pointerScroll(delta);
+                });
               },
               child: SizedBox(
                   height: 82,
@@ -310,7 +308,15 @@ class _ThemeSettingsPanelState extends State<ThemeSettingsPanel> {
                             Color(0xFF1C1224),
                             Color(0xFF0C2023),
                             Color(0xFF241B12),
-                            Color(0xFF20242B)
+                            Color(0xFF20242B),
+                            Color(0xFFF1F5FC),
+                            Color(0xFFF6F2EB),
+                            Color(0xFFEDF5F5),
+                            Color(0xFFEAF5FA),
+                            Color(0xFFF7EEF3),
+                            Color(0xFFF2F4EA),
+                            Color(0xFFECEFF6),
+                            Color(0xFFFFF4E8)
                           ])
                             _swatch(context, color, controller.background,
                                 () => controller.setCustom(background: color)),
@@ -481,6 +487,14 @@ class _ColorDialogState extends State<_ColorDialog> {
           Color(0xFF0C2023),
           Color(0xFF241B12),
           Color(0xFF20242B),
+          Color(0xFFF1F5FC),
+          Color(0xFFF6F2EB),
+          Color(0xFFEDF5F5),
+          Color(0xFFEAF5FA),
+          Color(0xFFF7EEF3),
+          Color(0xFFF2F4EA),
+          Color(0xFFECEFF6),
+          Color(0xFFFFF4E8),
         ]
       : const [
           Color(0xFF73A9F4),
@@ -518,11 +532,6 @@ class _ColorDialogState extends State<_ColorDialog> {
       return;
     }
     final color = Color(0xFF000000 | int.parse(raw, radix: 16));
-    if (widget.background && color.computeLuminance() > .06) {
-      setState(() => error = _s('Для тёмной темы выберите более тёмный фон',
-          'Choose a darker background for a dark theme'));
-      return;
-    }
     if (!widget.background && color.computeLuminance() < .25) {
       setState(() => error = _s('Выберите светлее, чтобы кнопки были читаемыми',
           'Choose a lighter color to keep buttons readable'));
