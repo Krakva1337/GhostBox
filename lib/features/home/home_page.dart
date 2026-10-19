@@ -380,7 +380,13 @@ class _HomePageState extends State<HomePage>
     final resumeAfterElevation =
         Platform.isWindows && (p.getBool('connectAfterElevation') ?? false);
     if (resumeAfterElevation) await p.setBool('connectAfterElevation', false);
-    if (Platform.isWindows) await systemProxy.restore();
+    if (Platform.isWindows || Platform.isLinux) {
+      try {
+        await systemProxy.restore();
+      } on Object catch (error) {
+        _recordAppLog('Не удалось восстановить системный прокси: $error');
+      }
+    }
     final saved = p.getString('profiles');
     final rows = saved == null
         ? <ServerProfile>[]
@@ -714,7 +720,9 @@ class _HomePageState extends State<HomePage>
         final hasSystemTunnel = coreSettings.connectionMode == 'tun' ||
             coreSettings.connectionMode == 'mixed';
         if (coreSettings.routing != 'direct' && !hasSystemTunnel) {
-          await _proxyHttpGet(coreSettings.localPort,
+          // The process is configured with the runtime port. This can differ
+          // from the saved port when automatic port selection is enabled.
+          await _proxyHttpGet(runtimeLocalPort,
               Duration(seconds: coreSettings.pingTimeoutSeconds + 2));
           _recordAppLog('Проверка HTTPS/TLS через прокси прошла');
         }
@@ -1526,7 +1534,7 @@ class _HomePageState extends State<HomePage>
     final timeout = Duration(seconds: timeoutSeconds);
     final samples = <int>[];
     CoreProcessBackend? probeBackend;
-    var proxyPort = coreSettings.localPort;
+    var proxyPort = activeLocalPort ?? coreSettings.localPort;
     if (mode == 'proxy' &&
         !(backend.state == VpnState.connected &&
             activeProfileId == profile.id &&

@@ -4,15 +4,21 @@ set -euo pipefail
 
 project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 target="${1:-}"
-sing_box_version="${GHOSTBOX_SING_BOX_VERSION:-v1.14.3}"
 gomobile_version="${GHOSTBOX_GOMOBILE_VERSION:-v0.1.13}"
-source_dir="$project_dir/.toolchains/src/sing-box-$sing_box_version"
 artifact_dir="$project_dir/dist/cores"
 
 case "$target" in
   android|apple) ;;
   *) echo "Usage: $0 android|apple" >&2; exit 2 ;;
 esac
+if [[ "$target" == android ]]; then
+  sing_box_repository="${GHOSTBOX_ANDROID_SING_BOX_REPOSITORY:-https://github.com/Leadaxe/sing-box-lx.git}"
+  sing_box_version="${GHOSTBOX_ANDROID_SING_BOX_VERSION:-v1.14.3-lx.21}"
+else
+  sing_box_repository="${GHOSTBOX_SING_BOX_REPOSITORY:-https://github.com/SagerNet/sing-box.git}"
+  sing_box_version="${GHOSTBOX_SING_BOX_VERSION:-v1.14.3}"
+fi
+source_dir="$project_dir/.toolchains/src/sing-box-$sing_box_version"
 command -v go >/dev/null || { echo 'Go is required.' >&2; exit 1; }
 command -v git >/dev/null || { echo 'Git is required.' >&2; exit 1; }
 
@@ -31,11 +37,12 @@ fi
 
 mkdir -p "$(dirname "$source_dir")" "$artifact_dir"
 if [[ ! -d "$source_dir/.git" ]]; then
-  git clone --depth 1 --branch "$sing_box_version" \
-    https://github.com/SagerNet/sing-box.git "$source_dir"
+  git clone --depth 1 --recurse-submodules --shallow-submodules \
+    --branch "$sing_box_version" "$sing_box_repository" "$source_dir"
 else
   git -C "$source_dir" fetch --depth 1 origin "refs/tags/$sing_box_version:refs/tags/$sing_box_version"
   git -C "$source_dir" checkout --detach "$sing_box_version"
+  git -C "$source_dir" submodule update --init --recursive --depth 1
 fi
 
 go install "github.com/sagernet/gomobile/cmd/gomobile@$gomobile_version"
@@ -47,7 +54,7 @@ pushd "$source_dir" >/dev/null
 if [[ "$target" == android ]]; then
   java_version="$(java --version 2>&1 | head -n 1)"
   [[ "$java_version" == *'17'* ]] || {
-    echo "sing-box v1.14.3 mobile builder requires JDK 17; detected: $java_version" >&2
+    echo "The pinned sing-box mobile builder requires JDK 17; detected: $java_version" >&2
     exit 1
   }
   go run ./cmd/internal/build_libbox -target android
@@ -56,8 +63,9 @@ if [[ "$target" == android ]]; then
   if [[ -f libbox-legacy.aar ]]; then
     install -m 0644 libbox-legacy.aar "$artifact_dir/android/libbox-legacy.aar"
   fi
-  printf 'sing-box %s\nGo %s\nAndroid API variants: official libbox AARs\n' \
-    "$sing_box_version" "$(go version)" > "$artifact_dir/android/BUILD-INFO.txt"
+  printf 'sing-box source: %s\nGo %s\nAndroid API variants: libbox AARs\nXHTTP: enabled by pinned sing-box-lx build\n' \
+    "$sing_box_version" \
+    "$(go version)" > "$artifact_dir/android/BUILD-INFO.txt"
   echo "Android libbox AARs: $artifact_dir/android"
 else
   go run ./cmd/internal/build_libbox -target apple -platform ios,iossimulator,macos

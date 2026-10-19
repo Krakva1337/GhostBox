@@ -55,6 +55,7 @@ build_linux() {
   local bundle="$project_dir/build/linux/$bundle_arch/release/bundle"
   local app_binary="$bundle/GhostBox"
   local appimagetool="$project_dir/.toolchains/bin/appimagetool-$appimage_arch.AppImage"
+  local runtime="$project_dir/.toolchains/bin/appimage-runtime-$appimage_arch"
   local output="$project_dir/dist/GhostBox-$(awk '/^version:/ {split($2,v,"+"); print v[1]}' pubspec.yaml)-linux-$appimage_arch.AppImage"
   if [[ ! -x "$app_binary" && -x "$bundle/ghostbox" ]]; then
     app_binary="$bundle/ghostbox"
@@ -82,8 +83,29 @@ build_linux() {
       --output "$appimagetool"
     chmod 0755 "$appimagetool"
   fi
+  if [[ ! -s "$runtime" ]]; then
+    local runtime_sha256 runtime_url
+    case "$appimage_arch" in
+      x86_64)
+        runtime_sha256=156f4bdbde9c52d01814600013e0a273f0118dc2de98975f3c8c63427ec79074
+        ;;
+      aarch64)
+        runtime_sha256=b4ff0030242d0c3bb12ce40541828303cf167493f4793456f0436edd6255c39d
+        ;;
+    esac
+    runtime_url="https://github.com/AppImage/type2-runtime/releases/download/20260928/runtime-$appimage_arch"
+    echo 'Downloading AppImage runtime…'
+    curl --fail --location --retry 3 "$runtime_url" --output "$runtime"
+    printf '%s  %s\n' "$runtime_sha256" "$runtime" | sha256sum --check --status || {
+      rm -f "$runtime"
+      echo 'Downloaded AppImage runtime failed SHA-256 verification.' >&2
+      exit 1
+    }
+    chmod 0755 "$runtime"
+  fi
   echo 'Packaging AppImage…'
-  ARCH="$appimage_arch" APPIMAGE_EXTRACT_AND_RUN=1 "$appimagetool" "$appdir" "$output"
+  ARCH="$appimage_arch" APPIMAGE_EXTRACT_AND_RUN=1 \
+    "$appimagetool" --runtime-file "$runtime" "$appdir" "$output"
   chmod 0755 "$output"
   sha256sum "$output" > "$output.sha256"
   echo "Built $output"

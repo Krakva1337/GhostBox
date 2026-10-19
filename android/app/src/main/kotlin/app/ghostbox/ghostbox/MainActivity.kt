@@ -1,6 +1,8 @@
 package app.ghostbox.ghostbox
 
 import android.app.Activity
+import android.Manifest
+import android.content.pm.PackageManager
 import android.content.Intent
 import android.net.VpnService
 import io.flutter.embedding.android.FlutterActivity
@@ -11,6 +13,7 @@ class MainActivity : FlutterActivity() {
     companion object {
         private const val CHANNEL = "app.ghostbox.ghostbox/vpn"
         private const val VPN_PERMISSION_REQUEST = 4137
+        private const val NOTIFICATION_PERMISSION_REQUEST = 4138
     }
 
     private var pendingVpnResult: MethodChannel.Result? = null
@@ -31,13 +34,16 @@ class MainActivity : FlutterActivity() {
                         pendingConfig = call.argument<String>("config")
                         pendingProfileName = call.argument<String>("profileName") ?: "GhostBox"
                         pendingMemoryMb = (call.argument<Int>("memoryMb") ?: 128).coerceIn(64, 256)
-                        val permissionIntent = VpnService.prepare(this)
-                        if (permissionIntent == null) {
-                            startPreparedVpn()
-                            result.success(null)
-                        } else {
+                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU &&
+                            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+                        ) {
                             pendingVpnResult = result
-                            startActivityForResult(permissionIntent, VPN_PERMISSION_REQUEST)
+                            requestPermissions(
+                                arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+                                NOTIFICATION_PERMISSION_REQUEST,
+                            )
+                        } else {
+                            requestVpnPermission(result)
                         }
                     }
                     "stopVpn" -> {
@@ -73,11 +79,56 @@ class MainActivity : FlutterActivity() {
                 startPreparedVpn()
                 result?.success(null)
             } catch (error: Exception) {
+                saveVpnError(error.message ?: error.toString())
                 result?.error("start_failed", error.message, null)
             }
         } else {
+            pendingConfig = null
+            pendingProfileName = null
+            getSharedPreferences("ghostbox_vpn", MODE_PRIVATE).edit()
+                .putString("state", "disconnected")
+                .putString("error", "VPN permission was denied")
+                .apply()
             result?.error("permission_denied", "VPN permission was denied", null)
         }
+    }
+
+    @Deprecated("Runtime permission result bridge")
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray,
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode != NOTIFICATION_PERMISSION_REQUEST) return
+        val result = pendingVpnResult ?: return
+        pendingVpnResult = null
+        // Notifications are optional for connectivity. Continue to the VPN
+        // consent screen even when the user declines this permission.
+        requestVpnPermission(result)
+    }
+
+    private fun requestVpnPermission(result: MethodChannel.Result) {
+        val permissionIntent = VpnService.prepare(this)
+        if (permissionIntent == null) {
+            try {
+                startPreparedVpn()
+                result.success(null)
+            } catch (error: Exception) {
+                saveVpnError(error.message ?: error.toString())
+                result.error("start_failed", error.message, null)
+            }
+        } else {
+            pendingVpnResult = result
+            startActivityForResult(permissionIntent, VPN_PERMISSION_REQUEST)
+        }
+    }
+
+    private fun saveVpnError(message: String) {
+        getSharedPreferences("ghostbox_vpn", MODE_PRIVATE).edit()
+            .putString("state", "error")
+            .putString("error", message)
+            .apply()
     }
 
     private fun startPreparedVpn() {

@@ -71,6 +71,27 @@ jobs:
       - name: Build GhostBox x64 ZIP, installer and bundled cores
         shell: pwsh
         run: ./tool/build_windows.ps1
+      - name: Smoke-check Windows TUN runtime bundle
+        shell: pwsh
+        run: |
+          $release = 'build/windows/x64/runner/Release'
+          $wintun = Join-Path $release 'vendor/bin/wintun.dll'
+          $singBox = Join-Path $release 'vendor/bin/sing-box.exe'
+          if (-not (Test-Path $wintun)) { throw "Missing bundled TUN runtime: $wintun" }
+          if (-not (Test-Path $singBox)) { throw "Missing sing-box core: $singBox" }
+          & $singBox version
+          if ($LASTEXITCODE -ne 0) { throw "sing-box smoke check failed with exit code $LASTEXITCODE" }
+          $zip = 'dist/GhostBox-Windows-x64.zip'
+          if (-not (Test-Path $zip)) { throw "Missing Windows portable package: $zip" }
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $archive = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path $zip))
+          try {
+            if ($archive.Entries.FullName -notcontains 'vendor/bin/wintun.dll') {
+              throw 'Windows ZIP does not contain vendor/bin/wintun.dll'
+            }
+          } finally {
+            $archive.Dispose()
+          }
       - uses: actions/upload-artifact@v4
         with:
           name: GhostBox-Windows-x64

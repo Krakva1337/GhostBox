@@ -700,7 +700,7 @@ class CoreProcessBackend implements VpnBackend {
               'tag': 'tun-in',
               'interface_name': 'ghostbox0',
               'address': ['172.19.0.1/30', 'fdfe:dcba:9876::1/126'],
-              'mtu': 9000,
+              'mtu': Platform.isAndroid ? 1500 : 9000,
               'auto_route': true,
               'strict_route': true,
               if (routeExclusions.isNotEmpty)

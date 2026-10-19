@@ -25,6 +25,15 @@ class DesktopSystemProxy {
 class LinuxSystemProxy {
   Map<String, String>? _previous;
 
+  File? get _snapshotFile {
+    final env = Platform.environment;
+    final root = env['XDG_CONFIG_HOME']?.trim().isNotEmpty == true
+        ? env['XDG_CONFIG_HOME']!.trim()
+        : '${env['HOME'] ?? Directory.systemTemp.path}${Platform.pathSeparator}.config';
+    return File(
+        '$root${Platform.pathSeparator}GhostBox${Platform.pathSeparator}linux-proxy-restore.json');
+  }
+
   static const _values = <String, (String, String)>{
     // gsettings expects quoted GVariant strings, and prints them quoted too.
     'mode': ('org.gnome.system.proxy', "'manual'"),
@@ -46,17 +55,8 @@ class LinuxSystemProxy {
           'gsettings', [], 'GNOME/GTK system proxy settings are unavailable.');
     }
     if (_previous == null) {
-      final snapshot = <String, String>{};
-      for (final entry in _values.entries) {
-        final result = await Process.run(
-            'gsettings', ['get', entry.value.$1, entry.key.split('.').last]);
-        if (result.exitCode != 0) {
-          throw ProcessException('gsettings',
-              [entry.value.$1, entry.key.split('.').last], '${result.stderr}');
-        }
-        snapshot[entry.key] = '${result.stdout}'.trim();
-      }
-      _previous = snapshot;
+      _previous = await _readPrevious() ?? await _readCurrentValues();
+      await _persistPrevious(_previous!);
     }
 
     final values = Map<String, (String, String)>.from(_values)
@@ -79,7 +79,12 @@ class LinuxSystemProxy {
         }
       }
     } on Object {
-      await restore();
+      try {
+        await restore();
+      } on Object {
+        // Preserve the original failure; the durable snapshot lets the next
+        // launch retry restoration if the desktop settings service is busy.
+      }
       rethrow;
     }
   }
@@ -97,7 +102,7 @@ class LinuxSystemProxy {
   }
 
   Future<void> restore() async {
-    final previous = _previous;
+    final previous = _previous ?? await _readPrevious();
     _previous = null;
     if (previous == null || !Platform.isLinux) return;
     for (final entry in previous.entries.toList().reversed) {
@@ -105,7 +110,53 @@ class LinuxSystemProxy {
       final schema = parts.length == 1
           ? 'org.gnome.system.proxy'
           : 'org.gnome.system.proxy.${parts.first}';
-      await Process.run('gsettings', ['set', schema, parts.last, entry.value]);
+      final result = await Process.run(
+          'gsettings', ['set', schema, parts.last, entry.value]);
+      if (result.exitCode != 0) {
+        throw ProcessException('gsettings', ['set', schema, parts.last],
+            '${result.stderr} ${result.stdout}');
+      }
+    }
+    final snapshot = _snapshotFile;
+    if (snapshot != null && await snapshot.exists()) {
+      await snapshot.delete();
+    }
+  }
+
+  Future<Map<String, String>> _readCurrentValues() async {
+    final snapshot = <String, String>{};
+    for (final entry in _values.entries) {
+      final key = entry.key.split('.').last;
+      final result =
+          await Process.run('gsettings', ['get', entry.value.$1, key]);
+      if (result.exitCode != 0) {
+        throw ProcessException(
+            'gsettings', ['get', entry.value.$1, key], '${result.stderr}');
+      }
+      snapshot[entry.key] = '${result.stdout}'.trim();
+    }
+    return snapshot;
+  }
+
+  Future<void> _persistPrevious(Map<String, String> previous) async {
+    final file = _snapshotFile;
+    if (file == null) return;
+    await file.parent.create(recursive: true);
+    await file.writeAsString(jsonEncode(previous), flush: true);
+  }
+
+  Future<Map<String, String>?> _readPrevious() async {
+    final file = _snapshotFile;
+    if (file == null || !await file.exists()) return null;
+    try {
+      final decoded = Map<String, dynamic>.from(
+          jsonDecode(await file.readAsString()) as Map);
+      return {
+        for (final key in _values.keys)
+          if (decoded[key] is String) key: decoded[key] as String,
+      };
+    } on Object {
+      return null;
     }
   }
 }

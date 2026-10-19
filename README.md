@@ -85,7 +85,16 @@ git tag v0.1.0-alpha.2
 git push origin v0.1.0-alpha.2
 ```
 
-Тег запускает те же сборки и автоматически прикрепляет пакеты к prerelease. Workflow **Build GhostBox for Android** запускается отдельно и выдаёт `GhostBox-Android-universal.apk`. APK подписан тестовым ключом сборки и подходит для установки вручную. При подключении Android запросит системное разрешение VPN.
+Тег запускает те же сборки и автоматически прикрепляет пакеты к prerelease. Workflow **Build GhostBox for Android** запускается отдельно и выдаёт `GhostBox-Android-universal.apk`. Android-сборка требует Android 7.0 (API 24) или новее и включает sing-box XHTTP. Без ключа из секретов APK подписывается временным тестовым ключом и подходит для разовой установки вручную. При подключении Android запросит разрешение на VPN и, если доступно, уведомления.
+
+Для Android-релизов настрой постоянную подпись. Создай приватный keystore:
+
+```bash
+keytool -genkeypair -v -keystore ghostbox-release.jks -keyalg RSA -keysize 4096 -validity 10000 -alias ghostbox
+base64 -w0 ghostbox-release.jks
+```
+
+Добавь в **Settings → Secrets and variables → Actions** секреты `ANDROID_KEYSTORE_BASE64` (вывод второй команды), `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` (`ghostbox`) и `ANDROID_KEY_PASSWORD`. Без них workflow создаёт тестовый APK для sideload, который нельзя обновлять установкой сборок, подписанных другим ключом. Храни keystore и пароли в безопасном месте: без прежнего ключа Android не примет обновление поверх установленной версии.
 
 ### Сборка из исходников
 
@@ -187,7 +196,16 @@ git tag v0.1.0-alpha.2
 git push origin v0.1.0-alpha.2
 ```
 
-The tag runs the same builds and attaches the packages to a prerelease automatically. Run **Build GhostBox for Android** separately to get `GhostBox-Android-universal.apk`. The APK uses the build's test signing key for sideloading and requests Android's VPN permission when connecting.
+The tag runs the same builds and attaches the packages to a prerelease automatically. Run **Build GhostBox for Android** separately to get `GhostBox-Android-universal.apk`. The Android build requires Android 7.0 (API 24) or later and includes sing-box XHTTP. Without a private signing key in repository secrets, the APK uses a temporary test key for one-off sideloading. On connect, Android requests VPN consent and, when available, notification permission.
+
+For Android releases, configure a persistent signing key. Create a private keystore:
+
+```bash
+keytool -genkeypair -v -keystore ghostbox-release.jks -keyalg RSA -keysize 4096 -validity 10000 -alias ghostbox
+base64 -w0 ghostbox-release.jks
+```
+
+Add repository secrets under **Settings → Secrets and variables → Actions**: `ANDROID_KEYSTORE_BASE64` (the second command's output), `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` (`ghostbox`), and `ANDROID_KEY_PASSWORD`. Without them, the workflow creates a test-signed APK for sideloading; builds signed with different keys cannot update each other. Keep the keystore and passwords safe: Android will reject updates if the original signing key is lost.
 
 ### Build from source
 

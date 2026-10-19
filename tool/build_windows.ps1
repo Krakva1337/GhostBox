@@ -10,6 +10,8 @@ $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $CoreArch = 'amd64'
 $XrayVersion = if ($env:GHOSTBOX_XRAY_VERSION) { $env:GHOSTBOX_XRAY_VERSION } else { 'v1.260327.0' }
 $SingBoxVersion = if ($env:GHOSTBOX_SING_BOX_VERSION) { $env:GHOSTBOX_SING_BOX_VERSION } else { 'v1.14.3' }
+$WintunUrl = 'https://www.wintun.net/builds/wintun-0.14.1.zip'
+$WintunSha256 = '07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51'
 
 function Invoke-Checked([string]$Program, [string[]]$Arguments) {
   & $Program @Arguments
@@ -26,10 +28,38 @@ foreach ($command in @('flutter', 'go')) {
 
 Push-Location $ProjectRoot
 try {
+  # sing-box loads Wintun dynamically when a TUN inbound starts. Bundle the
+  # official signed DLL next to the core so portable ZIPs and the installer
+  # work without a separate runtime download.
+  $coreDirectory = Join-Path $ProjectRoot "vendor/windows/$CoreArch/bin"
+  New-Item -ItemType Directory -Force -Path $coreDirectory | Out-Null
+  $wintunTemp = Join-Path $env:TEMP "ghostbox-wintun-$PID"
+  $wintunArchive = Join-Path $wintunTemp 'wintun.zip'
+  $wintunExtract = Join-Path $wintunTemp 'extract'
+  try {
+    New-Item -ItemType Directory -Force -Path $wintunExtract | Out-Null
+    Invoke-WebRequest -Uri $WintunUrl -OutFile $wintunArchive
+    $actualHash = (Get-FileHash -Path $wintunArchive -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actualHash -ne $WintunSha256) {
+      throw "Wintun archive SHA-256 mismatch: $actualHash"
+    }
+    Expand-Archive -Path $wintunArchive -DestinationPath $wintunExtract -Force
+    $wintunDll = Get-ChildItem -Path $wintunExtract -Recurse -Filter 'wintun.dll' |
+      Where-Object { $_.Directory.Name -eq $CoreArch } |
+      Select-Object -First 1
+    if (-not $wintunDll) { throw 'The verified Wintun archive does not contain its amd64 DLL.' }
+    Copy-Item -Force $wintunDll.FullName (Join-Path $coreDirectory 'wintun.dll')
+    $wintunLicense = Get-ChildItem -Path $wintunExtract -Recurse -Filter 'LICENSE.txt' |
+      Select-Object -First 1
+    if ($wintunLicense) {
+      Copy-Item -Force $wintunLicense.FullName (Join-Path $coreDirectory 'WINTUN-LICENSE.txt')
+    }
+  } finally {
+    Remove-Item -Recurse -Force $wintunTemp -ErrorAction SilentlyContinue
+  }
+
   if (-not $SkipCoreBuild) {
     $moduleCache = (& go env GOMODCACHE).Trim()
-    $coreDirectory = Join-Path $ProjectRoot "vendor/windows/$CoreArch/bin"
-    New-Item -ItemType Directory -Force -Path $coreDirectory | Out-Null
 
     foreach ($module in @(
       @{ Path = 'github.com/xtls/xray-core'; Version = $XrayVersion; Package = './main'; Name = 'xray.exe'; Tags = $null },
@@ -84,9 +114,12 @@ try {
 
   $releaseCoreDirectory = Join-Path $releaseDirectory 'vendor/bin'
   New-Item -ItemType Directory -Force -Path $releaseCoreDirectory | Out-Null
-  foreach ($core in @('xray.exe', 'sing-box.exe', 'BUILD-INFO.txt')) {
+  foreach ($core in @('xray.exe', 'sing-box.exe', 'BUILD-INFO.txt', 'wintun.dll', 'WINTUN-LICENSE.txt')) {
     $source = Join-Path $coreDirectory $core
-    if (-not (Test-Path $source)) { throw "Built core artifact is missing: $source" }
+    if (-not (Test-Path $source)) {
+      if ($core -eq 'WINTUN-LICENSE.txt') { continue }
+      throw "Built core artifact is missing: $source"
+    }
     Copy-Item -Force $source (Join-Path $releaseCoreDirectory $core)
   }
 

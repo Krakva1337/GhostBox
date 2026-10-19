@@ -32,6 +32,7 @@ class GhostBoxVpnService : VpnService(), CommandServerHandler {
     }
 
     private var commandServer: CommandServer? = null
+    @Volatile private var currentProfileName = "GhostBox"
     @Volatile private var stopping = false
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -39,14 +40,16 @@ class GhostBoxVpnService : VpnService(), CommandServerHandler {
             stopVpn()
             return START_NOT_STICKY
         }
+        stopping = false
         val config = intent?.getStringExtra(EXTRA_CONFIG)
         if (config.isNullOrBlank()) {
             stopSelf(startId)
             return START_NOT_STICKY
         }
         val name = intent.getStringExtra(EXTRA_PROFILE) ?: "GhostBox"
+        currentProfileName = name
         val memoryMb = intent.getIntExtra(EXTRA_MEMORY, 128).coerceIn(64, 256)
-        startForeground(NOTIFICATION_ID, createNotification(name))
+        startForeground(NOTIFICATION_ID, createNotification(name, connected = false))
         Thread({ startCore(config, memoryMb) }, "GhostBox-sing-box-start").start()
         return START_NOT_STICKY
     }
@@ -85,6 +88,7 @@ class GhostBoxVpnService : VpnService(), CommandServerHandler {
             server.startOrReloadService(config, OverrideOptions())
             getSharedPreferences("ghostbox_vpn", MODE_PRIVATE).edit()
                 .putString("state", "connected").remove("error").apply()
+            updateNotification(connected = true)
             Log.i(TAG, "sing-box VPN service started")
         } catch (error: Exception) {
             Log.e(TAG, "sing-box failed to start", error)
@@ -226,11 +230,20 @@ class GhostBoxVpnService : VpnService(), CommandServerHandler {
         else -> null
     }
 
-    private fun createNotification(profileName: String): Notification {
+    private fun updateNotification(connected: Boolean) {
+        getSystemService(NotificationManager::class.java)
+            .notify(NOTIFICATION_ID, createNotification(currentProfileName, connected))
+    }
+
+    private fun createNotification(profileName: String, connected: Boolean): Notification {
         val manager = getSystemService(NotificationManager::class.java)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             manager.createNotificationChannel(
-                NotificationChannel(CHANNEL_ID, "GhostBox VPN", NotificationManager.IMPORTANCE_LOW),
+                NotificationChannel(
+                    CHANNEL_ID,
+                    getString(R.string.vpn_notification_channel),
+                    NotificationManager.IMPORTANCE_LOW,
+                ),
             )
         }
         val openApp = PendingIntent.getActivity(
@@ -243,7 +256,12 @@ class GhostBoxVpnService : VpnService(), CommandServerHandler {
             Notification.Builder(this, CHANNEL_ID)
                 .setSmallIcon(R.drawable.ghostbox_status)
                 .setContentTitle(profileName)
-                .setContentText("VPN подключается")
+                .setContentText(
+                    getString(
+                        if (connected) R.string.vpn_notification_connected
+                        else R.string.vpn_notification_connecting,
+                    ),
+                )
                 .setContentIntent(openApp)
                 .setOngoing(true)
                 .build()
@@ -252,7 +270,12 @@ class GhostBoxVpnService : VpnService(), CommandServerHandler {
             Notification.Builder(this)
                 .setSmallIcon(R.drawable.ghostbox_status)
                 .setContentTitle(profileName)
-                .setContentText("VPN подключается")
+                .setContentText(
+                    getString(
+                        if (connected) R.string.vpn_notification_connected
+                        else R.string.vpn_notification_connecting,
+                    ),
+                )
                 .setContentIntent(openApp)
                 .setOngoing(true)
                 .build()

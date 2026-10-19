@@ -12,9 +12,10 @@ be rebuilt from the same revisions:
 
 - Xray `v1.260327.0` and sing-box `v1.14.3` desktop CLI cores for Windows and
   macOS. The sing-box build includes QUIC and uTLS.
-- sing-box `libbox` for Android (`libbox.aar` and the upstream legacy AAR) and
-  Apple (`Libbox.xcframework`). The official Apple gomobile build applies
-  `with_low_memory` to iOS targets while excluding macOS.
+- Android `libbox` AARs are built from the pinned `Leadaxe/sing-box-lx`
+  release, which enables XHTTP for VLESS/REALITY profiles. Apple uses upstream
+  sing-box `Libbox.xcframework`; its gomobile build applies `with_low_memory`
+  to iOS targets while excluding macOS.
 - Windows x64 and ARM64 builds are stored separately under `vendor/windows/`;
   generated core files
   and mobile libraries remain ignored build artifacts.

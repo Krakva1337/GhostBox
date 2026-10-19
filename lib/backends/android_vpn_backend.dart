@@ -102,7 +102,8 @@ class AndroidVpnBackend implements VpnBackend {
       lastError = error.message ?? error.code;
       state = VpnState.error;
       rethrow;
-    } on Object {
+    } on Object catch (error) {
+      lastError = error.toString();
       state = VpnState.error;
       rethrow;
     }

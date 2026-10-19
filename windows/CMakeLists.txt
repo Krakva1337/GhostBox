@@ -121,3 +121,25 @@ foreach(CORE_NAME xray sing-box)
     message(WARNING "Missing ${CORE_NAME}.exe: run tool/build_windows_cores.sh before distribution")
   endif()
 endforeach()
+
+# sing-box loads the signed Wintun userspace DLL dynamically for TUN mode.
+# Keep it alongside the Windows cores in both the build tree and packaged app.
+set(GHOSTBOX_WINTUN_ARCH "amd64")
+if(CMAKE_GENERATOR_PLATFORM MATCHES "ARM64|arm64" OR
+   CMAKE_SYSTEM_PROCESSOR MATCHES "^(ARM64|aarch64)$")
+  set(GHOSTBOX_WINTUN_ARCH "arm64")
+endif()
+set(GHOSTBOX_WINTUN_DLL
+  "${CMAKE_CURRENT_SOURCE_DIR}/../vendor/windows/${GHOSTBOX_WINTUN_ARCH}/bin/wintun.dll")
+set(GHOSTBOX_WINTUN_LICENSE
+  "${CMAKE_CURRENT_SOURCE_DIR}/../vendor/windows/${GHOSTBOX_WINTUN_ARCH}/bin/WINTUN-LICENSE.txt")
+if(EXISTS "${GHOSTBOX_WINTUN_DLL}")
+  install(FILES "${GHOSTBOX_WINTUN_DLL}"
+    DESTINATION "${CMAKE_INSTALL_PREFIX}/vendor/bin" COMPONENT Runtime)
+  if(EXISTS "${GHOSTBOX_WINTUN_LICENSE}")
+    install(FILES "${GHOSTBOX_WINTUN_LICENSE}"
+      DESTINATION "${CMAKE_INSTALL_PREFIX}/vendor/bin" COMPONENT Runtime)
+  endif()
+else()
+  message(WARNING "Missing wintun.dll: run tool/build_windows.ps1 to prepare the Windows TUN runtime")
+endif()
