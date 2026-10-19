@@ -1,6 +1,6 @@
 # GhostBox
 
-**Alpha 0.1.0 · Linux x86_64 · Xray-core + sing-box**
+**Alpha 0.1.0 · Linux x86_64/ARM64 · Windows x64 · Xray-core + sing-box**
 
 ## Русский
 
@@ -15,6 +15,7 @@ GhostBox — VPN-клиент на Flutter с ядрами Xray и sing-box. Lin
 - Split tunneling по доменам и IP/CIDR; поддерживается импорт JSON-списков Amnezia.
 - Проверка серверов, журнал в файл, история последних подключений и просмотр сгенерированных конфигов.
 - Необязательный индикатор RAM ядер на главном экране.
+- Kill Switch для Linux TUN/Mixed: системный firewall блокирует исходящий трафик вне туннеля и оставляет разрешённым endpoint сервера.
 - Данные подписки — трафик, срок действия, устройства, сайт и поддержка — отображаются, только если их прислал провайдер.
 - Скрипты сборки Xray/sing-box для Windows и macOS, sing-box libbox для Android и Apple.
 
@@ -32,25 +33,28 @@ Windows-сборка включает установщик и системный
 
 Или укажи `linux`, `android`, `windows`, `macos` либо `ios`. Скрипт скачает
 Go/Flutter зависимости и ядра, соберёт доступный для текущей ОС пакет; Android
-SDK можно установить через `tool/setup_android.sh`. Linux создаёт AppImage и
+SDK можно установить через `tool/setup_android.sh`. Linux создаёт AppImage для
+текущей архитектуры (x86_64 или ARM64) и
 предлагает установить его и один раз выдать ядрам право TUN. Windows и Apple
 приложения собираются на Windows и macOS соответственно; для Windows на Linux
 используй GitHub Actions.
 
-Скачай `GhostBox-0.1.0-alpha.1-linux-x86_64.AppImage` из GitHub Releases и запусти:
+Скачай подходящий AppImage в **Actions → Build GhostBox packages → Artifacts**:
+`x86_64` подходит для Intel/AMD 64-bit, `aarch64` — для ARM64 Linux.
 
 ```bash
-chmod +x GhostBox-0.1.0-alpha.1-linux-x86_64.AppImage
-./GhostBox-0.1.0-alpha.1-linux-x86_64.AppImage
+chmod +x GhostBox-0.1.0-alpha.2-linux-x86_64.AppImage
+./GhostBox-0.1.0-alpha.2-linux-x86_64.AppImage
 ```
 
+Пакеты для x86_64 и ARM64 содержат нативные бинарники и не взаимозаменяемы.
 Чтобы установить приложение в меню рабочего стола без прав root, из клона репозитория выполни:
 
 ```bash
-./tool/install_appimage.sh ./dist/GhostBox-0.1.0-alpha.1-linux-x86_64.AppImage
+./tool/install_appimage.sh ./dist/GhostBox-0.1.0-alpha.2-linux-x86_64.AppImage
 ```
 
-Добавь ссылку-подписку или сервер, выбери профиль и нажми кнопку подключения. TUN включён по умолчанию. Если AppImage не запускается из-за отсутствия FUSE, попробуй `APPIMAGE_EXTRACT_AND_RUN=1 ./GhostBox-0.1.0-alpha.1-linux-x86_64.AppImage`.
+Добавь ссылку-подписку или сервер, выбери профиль и нажми кнопку подключения. TUN включён по умолчанию. Если AppImage не запускается из-за отсутствия FUSE, попробуй `APPIMAGE_EXTRACT_AND_RUN=1 ./GhostBox-0.1.0-alpha.2-linux-x86_64.AppImage`.
 
 ### TUN без запуска VPN от root
 
@@ -63,9 +67,25 @@ getcap "$HOME/.local/share/ghostbox-appimage/vendor/bin/sing-box"
 
 На Void Linux, если `setcap` не найден: `sudo xbps-install -S libcap-progs`. Если переменная `XDG_DATA_HOME` задана, путь будет `$XDG_DATA_HOME/ghostbox-appimage/vendor/bin/sing-box`. При ошибке прав приложение покажет команду для текущего пути и кнопку копирования. `sudo` нужен только для однократной выдачи capability; сам GhostBox и VPN затем работают от твоего пользователя. После обновления AppImage эту команду может потребоваться повторить. Устройство `/dev/net/tun` должно существовать.
 
+Kill Switch пока работает в Linux с установленными `nftables` и `pkexec` и только в режимах TUN/Mixed. При включении он блокирует системный исходящий трафик вне `ghostbox0`; правило firewall переживает закрытие приложения и остаётся активным до выключения Kill Switch в настройках. После перезагрузки GhostBox попросит восстановить правило. Используй эту функцию только если понимаешь, что интернет останется заблокированным при выключенном VPN.
+
 ### Windows и Android
 
-В GitHub Actions запусти workflow **Build GhostBox for Windows** или **Build GhostBox for Android**. Windows workflow выдаёт `GhostBox-Setup-x64.exe`; Android workflow — `GhostBox-Android-universal.apk`. APK подписан тестовым ключом сборки и подходит для установки вручную. При подключении Android запросит системное разрешение VPN.
+Чтобы собрать пакеты через GitHub Actions:
+
+1. Закоммить и отправь изменения в репозиторий (`git push origin main`).
+2. На GitHub открой **Actions → Build GhostBox packages → Run workflow**.
+3. Выбери ветку `main` и нажми **Run workflow**.
+4. Дождись завершения workflow, открой его запуск и скачай нужные артефакты: `GhostBox-Linux-x86_64-AppImage`, `GhostBox-Linux-ARM64-AppImage` или `GhostBox-Windows-x64` (ZIP и установщик).
+
+Артефакты ручного запуска хранятся 14 дней. Чтобы создать GitHub Release, сначала отправь коммит в `main`, затем создай и отправь версионный тег. Например:
+
+```bash
+git tag v0.1.0-alpha.2
+git push origin v0.1.0-alpha.2
+```
+
+Тег запускает те же сборки и автоматически прикрепляет пакеты к prerelease. Workflow **Build GhostBox for Android** запускается отдельно и выдаёт `GhostBox-Android-universal.apk`. APK подписан тестовым ключом сборки и подходит для установки вручную. При подключении Android запросит системное разрешение VPN.
 
 ### Сборка из исходников
 
@@ -75,7 +95,7 @@ getcap "$HOME/.local/share/ghostbox-appimage/vendor/bin/sing-box"
 ./build.sh
 ```
 
-Чтобы выбрать Linux без меню: `./build.sh linux`. После сборки установить AppImage в меню можно командой `./tool/install_appimage.sh ./dist/GhostBox-0.1.0-alpha.1-linux-x86_64.AppImage`. Другие платформы выбираются в меню скрипта; требования платформ описаны в [deploy/PLATFORMS.md](deploy/PLATFORMS.md).
+Чтобы выбрать Linux без меню: `./build.sh linux`. После сборки установить AppImage в меню можно командой `./tool/install_appimage.sh ./dist/GhostBox-0.1.0-alpha.2-linux-x86_64.AppImage`. Другие платформы выбираются в меню скрипта; требования платформ описаны в [deploy/PLATFORMS.md](deploy/PLATFORMS.md).
 
 ### Приватность и диагностика
 
@@ -85,7 +105,7 @@ getcap "$HOME/.local/share/ghostbox-appimage/vendor/bin/sing-box"
 
 ### Статус альфа-релиза
 
-Текущая цель — Linux x86_64. Альфа требует проверки на твоём сервере и сети; держи возможность вернуться к предыдущему VPN и не запускай два TUN-клиента одновременно. Подробности и шаги установки — в [RELEASE-ALPHA.md](RELEASE-ALPHA.md).
+Текущая цель — Linux desktop и Windows x64. Альфа требует проверки на твоём сервере и сети; держи возможность вернуться к предыдущему VPN и не запускай два TUN-клиента одновременно. Подробности и шаги установки — в [RELEASE-ALPHA.md](RELEASE-ALPHA.md).
 
 ## English
 
@@ -100,6 +120,7 @@ GhostBox is a Flutter VPN client powered by Xray and sing-box. Linux supports bo
 - Domain and IP/CIDR split tunneling, including Amnezia JSON route lists.
 - Server checks, file-based logs, recent connection history and generated-config viewer.
 - Optional live core RAM usage on the main screen.
+- A Linux TUN/Mixed Kill Switch that uses the system firewall to block outbound traffic outside the tunnel while allowing the VPN endpoint.
 - Provider metadata such as traffic, expiry, device limit, website and support is shown only when supplied by the provider.
 - Build scripts for Windows/macOS Xray and sing-box, Android libbox, and the Apple Libbox XCFramework.
 
@@ -122,20 +143,20 @@ host can produce. Android SDK setup is available through
 grant the core binaries TUN capability once. Windows and Apple app builds need
 their native operating systems; use GitHub Actions for Windows from Linux.
 
-Download `GhostBox-0.1.0-alpha.1-linux-x86_64.AppImage` from GitHub Releases and run:
+Download `GhostBox-0.1.0-alpha.2-linux-x86_64.AppImage` from GitHub Releases and run:
 
 ```bash
-chmod +x GhostBox-0.1.0-alpha.1-linux-x86_64.AppImage
-./GhostBox-0.1.0-alpha.1-linux-x86_64.AppImage
+chmod +x GhostBox-0.1.0-alpha.2-linux-x86_64.AppImage
+./GhostBox-0.1.0-alpha.2-linux-x86_64.AppImage
 ```
 
 To add GhostBox to the desktop app menu without root access, run this from a repository checkout:
 
 ```bash
-./tool/install_appimage.sh ./dist/GhostBox-0.1.0-alpha.1-linux-x86_64.AppImage
+./tool/install_appimage.sh ./dist/GhostBox-0.1.0-alpha.2-linux-x86_64.AppImage
 ```
 
-Add a subscription URL or server, select a profile and press Connect. TUN is enabled by default. If AppImage cannot start because FUSE is unavailable, try `APPIMAGE_EXTRACT_AND_RUN=1 ./GhostBox-0.1.0-alpha.1-linux-x86_64.AppImage`.
+Add a subscription URL or server, select a profile and press Connect. TUN is enabled by default. If AppImage cannot start because FUSE is unavailable, try `APPIMAGE_EXTRACT_AND_RUN=1 ./GhostBox-0.1.0-alpha.2-linux-x86_64.AppImage`.
 
 ### TUN without running the VPN as root
 
@@ -148,19 +169,35 @@ getcap "$HOME/.local/share/ghostbox-appimage/vendor/bin/sing-box"
 
 On Void Linux, install `libcap-progs` if `setcap` is missing: `sudo xbps-install -S libcap-progs`. If `XDG_DATA_HOME` is set, use `$XDG_DATA_HOME/ghostbox-appimage/vendor/bin/sing-box`. On a permissions error, the app shows the exact command for the current path with a copy button. `sudo` is needed only once to grant the capability; GhostBox and the VPN then run as your normal user. Repeat the command after an AppImage update if its core binary changes. `/dev/net/tun` must exist.
 
+The Kill Switch currently supports Linux TUN/Mixed with `nftables` and `pkexec` installed. It blocks system outbound traffic outside `ghostbox0`; its firewall rule survives app exit and remains until you turn the Kill Switch off in Settings. GhostBox asks to restore the rule after a reboot. Enable it only if you understand that internet access will stay blocked while the VPN is disconnected.
+
 ### Windows and Android
 
-Run **Build GhostBox for Windows** or **Build GhostBox for Android** from GitHub Actions. The Windows workflow publishes `GhostBox-Setup-x64.exe`; the Android workflow publishes `GhostBox-Android-universal.apk`. The APK uses the build's test signing key for sideloading and requests Android's VPN permission when connecting.
+To build packages with GitHub Actions:
+
+1. Commit and push your changes to the repository (`git push origin main`).
+2. On GitHub, open **Actions → Build GhostBox packages → Run workflow**.
+3. Select the `main` branch and click **Run workflow**.
+4. When the workflow finishes, open the run and download the required artifact: `GhostBox-Linux-x86_64-AppImage`, `GhostBox-Linux-ARM64-AppImage`, or `GhostBox-Windows-x64` (ZIP and installer).
+
+Artifacts from a manual run are kept for 14 days. To create a GitHub Release, push the commit to `main`, then create and push a version tag. For example:
+
+```bash
+git tag v0.1.0-alpha.2
+git push origin v0.1.0-alpha.2
+```
+
+The tag runs the same builds and attaches the packages to a prerelease automatically. Run **Build GhostBox for Android** separately to get `GhostBox-Android-universal.apk`. The APK uses the build's test signing key for sideloading and requests Android's VPN permission when connecting.
 
 ### Build from source
 
-Use the build script. It fetches dependencies, builds the cores and app, and creates an AppImage on Linux:
+Use the build script. It fetches dependencies, builds native cores and the app, and creates an AppImage on x86_64 or ARM64 Linux:
 
 ```bash
 ./build.sh
 ```
 
-For a direct Linux build without the target picker: `./build.sh linux`. To install the resulting AppImage into the desktop menu, run `./tool/install_appimage.sh ./dist/GhostBox-0.1.0-alpha.1-linux-x86_64.AppImage`. Choose other targets in the script menu; platform requirements are listed in [deploy/PLATFORMS.md](deploy/PLATFORMS.md).
+For a direct Linux build without the target picker: `./build.sh linux`. The output ends in `linux-x86_64.AppImage` on Intel/AMD PCs or `linux-aarch64.AppImage` on ARM64. To build the Windows x64 ZIP from Linux, push the branch to GitHub, open **Actions → Build GhostBox packages → Run workflow**, wait for the workflow to finish, then download the `GhostBox-Windows-x64` artifact. Linux builds appear as `GhostBox-Linux-x86_64-AppImage` and `GhostBox-Linux-ARM64-AppImage`. Choose other targets in the script menu; platform requirements are listed in [deploy/PLATFORMS.md](deploy/PLATFORMS.md).
 
 ### Privacy and diagnostics
 
@@ -170,7 +207,7 @@ Settings and profiles are stored locally. The User-Agent contains only the clien
 
 ### Alpha status
 
-The current target is Linux x86_64. Validate this alpha with your server and network, keep your previous VPN available, and do not run two TUN clients at once. See [RELEASE-ALPHA.md](RELEASE-ALPHA.md) for release notes and installation steps.
+The current target is Linux desktop. Validate this alpha with your server and network, keep your previous VPN available, and do not run two TUN clients at once. See [RELEASE-ALPHA.md](RELEASE-ALPHA.md) for release notes and installation steps.
 
 ## License
 

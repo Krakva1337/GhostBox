@@ -21,6 +21,9 @@ class CoreSettings {
     this.logLevel = 'warning',
     this.autoConnect = false,
     this.autoPing = false,
+    this.killSwitchEnabled = false,
+    this.killSwitchEndpoint = '',
+    this.killSwitchProfileId = '',
     this.aggressiveXhttpCleanup = false,
     this.pingMode = 'proxy',
     this.proxyGetUrl = 'https://httpbin.org/status/404',
@@ -41,6 +44,8 @@ class CoreSettings {
       pingView;
   final int pingCount, pingTimeoutSeconds;
   final bool dnsThroughProxy, blocklistEnabled, autoConnect, autoPing;
+  final bool killSwitchEnabled;
+  final String killSwitchEndpoint, killSwitchProfileId;
   final bool showRamUsage;
   final bool aggressiveXhttpCleanup, autoLocalPort;
   final List<String> blockedDomains,
@@ -66,6 +71,9 @@ class CoreSettings {
           bool? blocklistEnabled,
           bool? autoConnect,
           bool? autoPing,
+          bool? killSwitchEnabled,
+          String? killSwitchEndpoint,
+          String? killSwitchProfileId,
           bool? aggressiveXhttpCleanup,
           List<String>? blockedDomains,
           List<String>? adBlockDomains,
@@ -99,6 +107,9 @@ class CoreSettings {
               : dnsBlacklistMode != 'none',
           autoConnect: autoConnect ?? this.autoConnect,
           autoPing: autoPing ?? this.autoPing,
+          killSwitchEnabled: killSwitchEnabled ?? this.killSwitchEnabled,
+          killSwitchEndpoint: killSwitchEndpoint ?? this.killSwitchEndpoint,
+          killSwitchProfileId: killSwitchProfileId ?? this.killSwitchProfileId,
           aggressiveXhttpCleanup:
               aggressiveXhttpCleanup ?? this.aggressiveXhttpCleanup,
           blockedDomains: blockedDomains ?? this.blockedDomains,
@@ -148,6 +159,9 @@ class CoreSettings {
       blocklistEnabled: blacklistMode != 'none',
       autoConnect: data['autoConnect'] == true,
       autoPing: data['autoPing'] == true,
+      killSwitchEnabled: data['killSwitchEnabled'] == true,
+      killSwitchEndpoint: data['killSwitchEndpoint'] as String? ?? '',
+      killSwitchProfileId: data['killSwitchProfileId'] as String? ?? '',
       aggressiveXhttpCleanup: data['aggressiveXhttpCleanup'] == true,
       pingMode: choice('pingMode', ['proxy', 'tcp', 'icmp'], 'proxy'),
       proxyGetUrl:
@@ -188,6 +202,9 @@ class CoreSettings {
         'logLevel': logLevel,
         'autoConnect': autoConnect,
         'autoPing': autoPing,
+        'killSwitchEnabled': killSwitchEnabled,
+        'killSwitchEndpoint': killSwitchEndpoint,
+        'killSwitchProfileId': killSwitchProfileId,
         'aggressiveXhttpCleanup': aggressiveXhttpCleanup,
         'pingMode': pingMode,
         'proxyGetUrl': proxyGetUrl,

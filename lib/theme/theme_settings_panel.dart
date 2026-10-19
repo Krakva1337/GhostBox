@@ -2,10 +2,46 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'theme_controller.dart';
 
-class ThemeSettingsPanel extends StatelessWidget {
+class ThemeSettingsPanel extends StatefulWidget {
   const ThemeSettingsPanel({super.key, this.english = false});
   final bool english;
-  String _s(String ru, String en) => english ? en : ru;
+
+  @override
+  State<ThemeSettingsPanel> createState() => _ThemeSettingsPanelState();
+}
+
+class _ThemeSettingsPanelState extends State<ThemeSettingsPanel> {
+  final ScrollController _presetScroll = ScrollController();
+
+  @override
+  void dispose() {
+    _presetScroll.dispose();
+    super.dispose();
+  }
+
+  String _s(String ru, String en) => widget.english ? en : ru;
+
+  String _presetName(String value) => switch (value) {
+        'Полночь' => _s('Полночь', 'Midnight'),
+        'Графит' => _s('Графит', 'Graphite'),
+        'Океан' => _s('Океан', 'Ocean'),
+        'Изумруд' => _s('Изумруд', 'Emerald'),
+        'Аметист' => _s('Аметист', 'Amethyst'),
+        'Сапфир' => _s('Сапфир', 'Sapphire'),
+        'Рубин' => _s('Рубин', 'Ruby'),
+        'Лаванда' => _s('Лаванда', 'Lavender'),
+        'Лес' => _s('Лес', 'Forest'),
+        'Песок' => _s('Песок', 'Sand'),
+        'Светлая' => _s('Светлая', 'Daylight'),
+        'Бумага' => _s('Бумага', 'Paper'),
+        'Туман' => _s('Туман', 'Mist'),
+        'Аврора' => _s('Аврора', 'Aurora'),
+        'Обсидиан' => _s('Обсидиан', 'Obsidian'),
+        'Закат' => _s('Закат', 'Sunset'),
+        'Арктика' => _s('Арктика', 'Arctic'),
+        'Своя' => _s('Своя', 'Custom'),
+        _ => value,
+      };
 
   @override
   Widget build(BuildContext context) {
@@ -25,161 +61,184 @@ class ThemeSettingsPanel extends StatelessWidget {
             PointerDeviceKind.mouse,
             PointerDeviceKind.trackpad,
           }),
-          child: SizedBox(
-              height: 82,
-              child: SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        SizedBox(
-                            width: 88,
-                            child: _preset(
-                                context,
-                                controller,
-                                ThemePreset.midnight,
-                                'Полночь',
-                                const Color(0xFF070D18),
-                                const Color(0xFF8BB9F4))),
-                        const SizedBox(width: 8),
-                        SizedBox(
-                            width: 88,
-                            child: _preset(
-                                context,
-                                controller,
-                                ThemePreset.graphite,
-                                'Графит',
-                                const Color(0xFF0D0F13),
-                                const Color(0xFFB6BDC9))),
-                        const SizedBox(width: 8),
-                        SizedBox(
-                            width: 88,
-                            child: _preset(
-                                context,
-                                controller,
-                                ThemePreset.ocean,
-                                'Океан',
-                                const Color(0xFF061522),
-                                const Color(0xFF4DC9E8))),
-                        const SizedBox(width: 8),
-                        SizedBox(
-                            width: 88,
-                            child: _preset(
-                                context,
-                                controller,
-                                ThemePreset.emerald,
-                                'Изумруд',
-                                const Color(0xFF091812),
-                                const Color(0xFF7CDDB6))),
-                        const SizedBox(width: 8),
-                        SizedBox(
-                            width: 88,
-                            child: _preset(
-                                context,
-                                controller,
-                                ThemePreset.amethyst,
-                                'Аметист',
-                                const Color(0xFF120D20),
-                                const Color(0xFFB9A0FF))),
-                        const SizedBox(width: 8),
-                        SizedBox(
-                            width: 88,
-                            child: _preset(
-                                context,
-                                controller,
-                                ThemePreset.sapphire,
-                                'Сапфир',
-                                const Color(0xFF091426),
-                                const Color(0xFF78A9FF))),
-                        const SizedBox(width: 8),
-                        SizedBox(
-                            width: 88,
-                            child: _preset(
-                                context,
-                                controller,
-                                ThemePreset.ruby,
-                                'Рубин',
-                                const Color(0xFF1A1018),
-                                const Color(0xFFFF8295))),
-                        for (final entry in const [
-                          (
-                            ThemePreset.lavender,
-                            'Лаванда',
-                            Color(0xFF171326),
-                            Color(0xFFC7B5FF)
-                          ),
-                          (
-                            ThemePreset.forest,
-                            'Лес',
-                            Color(0xFF0D1B15),
-                            Color(0xFF8BCF9B)
-                          ),
-                          (
-                            ThemePreset.sand,
-                            'Песок',
-                            Color(0xFF201A12),
-                            Color(0xFFE5BF8C)
-                          ),
-                          (
-                            ThemePreset.daylight,
-                            'Светлая',
-                            Color(0xFFF1F5FC),
-                            Color(0xFF355FBB)
-                          ),
-                          (
-                            ThemePreset.paper,
-                            'Бумага',
-                            Color(0xFFF6F2EB),
-                            Color(0xFF6857B8)
-                          ),
-                          (
-                            ThemePreset.mist,
-                            'Туман',
-                            Color(0xFFEDF5F5),
-                            Color(0xFF347F8A)
-                          ),
-                          (
-                            ThemePreset.aurora,
-                            'Аврора',
-                            Color(0xFF071A20),
-                            Color(0xFF53D6C2)
-                          ),
-                          (
-                            ThemePreset.obsidian,
-                            'Обсидиан',
-                            Color(0xFF111722),
-                            Color(0xFF90A4C3)
-                          ),
-                          (
-                            ThemePreset.sunset,
-                            'Закат',
-                            Color(0xFF20120F),
-                            Color(0xFFFF9568)
-                          ),
-                          (
-                            ThemePreset.arctic,
-                            'Арктика',
-                            Color(0xFFEAF5FA),
-                            Color(0xFF247D9B)
-                          ),
-                        ]) ...[
-                          const SizedBox(width: 8),
-                          SizedBox(
-                              width: 88,
-                              child: _preset(context, controller, entry.$1,
-                                  entry.$2, entry.$3, entry.$4)),
-                        ],
-                        const SizedBox(width: 8),
-                        SizedBox(
-                            width: 88,
-                            child: _preset(
-                                context,
-                                controller,
-                                ThemePreset.custom,
-                                'Своя',
-                                controller.customBackground,
-                                controller.customAccent)),
-                      ])))),
+          child: Listener(
+              onPointerSignal: (signal) {
+                if (signal is! PointerScrollEvent ||
+                    !_presetScroll.hasClients) {
+                  return;
+                }
+                final position = _presetScroll.position;
+                final delta = signal.scrollDelta.dy != 0
+                    ? signal.scrollDelta.dy
+                    : signal.scrollDelta.dx;
+                final target = (position.pixels + delta)
+                    .clamp(position.minScrollExtent, position.maxScrollExtent)
+                    .toDouble();
+                _presetScroll.animateTo(target,
+                    duration: const Duration(milliseconds: 180),
+                    curve: Curves.easeOutCubic);
+              },
+              child: SizedBox(
+                  height: 82,
+                  child: SingleChildScrollView(
+                      controller: _presetScroll,
+                      scrollDirection: Axis.horizontal,
+                      child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            SizedBox(
+                                width: 88,
+                                child: _preset(
+                                    context,
+                                    controller,
+                                    ThemePreset.midnight,
+                                    _presetName('Полночь'),
+                                    const Color(0xFF070D18),
+                                    const Color(0xFF8BB9F4))),
+                            const SizedBox(width: 8),
+                            SizedBox(
+                                width: 88,
+                                child: _preset(
+                                    context,
+                                    controller,
+                                    ThemePreset.graphite,
+                                    _presetName('Графит'),
+                                    const Color(0xFF0D0F13),
+                                    const Color(0xFFB6BDC9))),
+                            const SizedBox(width: 8),
+                            SizedBox(
+                                width: 88,
+                                child: _preset(
+                                    context,
+                                    controller,
+                                    ThemePreset.ocean,
+                                    _presetName('Океан'),
+                                    const Color(0xFF061522),
+                                    const Color(0xFF4DC9E8))),
+                            const SizedBox(width: 8),
+                            SizedBox(
+                                width: 88,
+                                child: _preset(
+                                    context,
+                                    controller,
+                                    ThemePreset.emerald,
+                                    _presetName('Изумруд'),
+                                    const Color(0xFF091812),
+                                    const Color(0xFF7CDDB6))),
+                            const SizedBox(width: 8),
+                            SizedBox(
+                                width: 88,
+                                child: _preset(
+                                    context,
+                                    controller,
+                                    ThemePreset.amethyst,
+                                    _presetName('Аметист'),
+                                    const Color(0xFF120D20),
+                                    const Color(0xFFB9A0FF))),
+                            const SizedBox(width: 8),
+                            SizedBox(
+                                width: 88,
+                                child: _preset(
+                                    context,
+                                    controller,
+                                    ThemePreset.sapphire,
+                                    _presetName('Сапфир'),
+                                    const Color(0xFF091426),
+                                    const Color(0xFF78A9FF))),
+                            const SizedBox(width: 8),
+                            SizedBox(
+                                width: 88,
+                                child: _preset(
+                                    context,
+                                    controller,
+                                    ThemePreset.ruby,
+                                    _presetName('Рубин'),
+                                    const Color(0xFF1A1018),
+                                    const Color(0xFFFF8295))),
+                            for (final entry in const [
+                              (
+                                ThemePreset.lavender,
+                                'Лаванда',
+                                Color(0xFF171326),
+                                Color(0xFFC7B5FF)
+                              ),
+                              (
+                                ThemePreset.forest,
+                                'Лес',
+                                Color(0xFF0D1B15),
+                                Color(0xFF8BCF9B)
+                              ),
+                              (
+                                ThemePreset.sand,
+                                'Песок',
+                                Color(0xFF201A12),
+                                Color(0xFFE5BF8C)
+                              ),
+                              (
+                                ThemePreset.daylight,
+                                'Светлая',
+                                Color(0xFFF1F5FC),
+                                Color(0xFF355FBB)
+                              ),
+                              (
+                                ThemePreset.paper,
+                                'Бумага',
+                                Color(0xFFF6F2EB),
+                                Color(0xFF6857B8)
+                              ),
+                              (
+                                ThemePreset.mist,
+                                'Туман',
+                                Color(0xFFEDF5F5),
+                                Color(0xFF347F8A)
+                              ),
+                              (
+                                ThemePreset.aurora,
+                                'Аврора',
+                                Color(0xFF071A20),
+                                Color(0xFF53D6C2)
+                              ),
+                              (
+                                ThemePreset.obsidian,
+                                'Обсидиан',
+                                Color(0xFF111722),
+                                Color(0xFF90A4C3)
+                              ),
+                              (
+                                ThemePreset.sunset,
+                                'Закат',
+                                Color(0xFF20120F),
+                                Color(0xFFFF9568)
+                              ),
+                              (
+                                ThemePreset.arctic,
+                                'Арктика',
+                                Color(0xFFEAF5FA),
+                                Color(0xFF247D9B)
+                              ),
+                            ]) ...[
+                              const SizedBox(width: 8),
+                              SizedBox(
+                                  width: 88,
+                                  child: _preset(
+                                      context,
+                                      controller,
+                                      entry.$1,
+                                      _presetName(entry.$2),
+                                      entry.$3,
+                                      entry.$4)),
+                            ],
+                            const SizedBox(width: 8),
+                            SizedBox(
+                                width: 88,
+                                child: _preset(
+                                    context,
+                                    controller,
+                                    ThemePreset.custom,
+                                    _presetName('Своя'),
+                                    controller.customBackground,
+                                    controller.customAccent)),
+                          ]))))),
       const SizedBox(height: 12),
       SizedBox(
           width: double.infinity,
@@ -269,7 +328,7 @@ class ThemeSettingsPanel extends StatelessWidget {
   Widget _preset(BuildContext context, ThemeController controller,
       ThemePreset preset, String name, Color background, Color accent) {
     final selected = controller.preset == preset;
-    final displayName = !english
+    final displayName = !widget.english
         ? name
         : const {
               'Полночь': 'Midnight',
@@ -323,7 +382,9 @@ class ThemeSettingsPanel extends StatelessWidget {
               Text(displayName,
                   style: TextStyle(
                       fontSize: 11,
-                      color: Theme.of(context).colorScheme.onSurface,
+                      color: background.computeLuminance() > .42
+                          ? const Color(0xFF172033)
+                          : const Color(0xFFE8ECF4),
                       fontWeight:
                           selected ? FontWeight.w700 : FontWeight.w400)),
             ]),
@@ -370,8 +431,10 @@ class ThemeSettingsPanel extends StatelessWidget {
           final controller = ThemeController.instance;
           final color = await showDialog<Color>(
               context: context,
-              builder: (_) =>
-                  _ColorDialog(initial: initial, background: background));
+              builder: (_) => _ColorDialog(
+                  initial: initial,
+                  background: background,
+                  english: widget.english));
           if (color != null) {
             await controller.setCustom(
                 accent: background ? null : color,
@@ -382,14 +445,17 @@ class ThemeSettingsPanel extends StatelessWidget {
 }
 
 class _ColorDialog extends StatefulWidget {
-  const _ColorDialog({required this.initial, required this.background});
+  const _ColorDialog(
+      {required this.initial, required this.background, required this.english});
   final Color initial;
   final bool background;
+  final bool english;
   @override
   State<_ColorDialog> createState() => _ColorDialogState();
 }
 
 class _ColorDialogState extends State<_ColorDialog> {
+  String _s(String ru, String en) => widget.english ? en : ru;
   late final TextEditingController input = TextEditingController(
       text: widget.initial
           .toARGB32()
@@ -447,16 +513,19 @@ class _ColorDialogState extends State<_ColorDialog> {
   void submit() {
     final raw = input.text.trim().replaceFirst('#', '');
     if (!RegExp(r'^[0-9a-fA-F]{6}$').hasMatch(raw)) {
-      setState(() => error = 'Введите 6 символов, например 8BB9F4');
+      setState(() => error = _s('Введите 6 символов, например 8BB9F4',
+          'Enter 6 characters, for example 8BB9F4'));
       return;
     }
     final color = Color(0xFF000000 | int.parse(raw, radix: 16));
     if (widget.background && color.computeLuminance() > .06) {
-      setState(() => error = 'Для тёмной темы выберите более тёмный фон');
+      setState(() => error = _s('Для тёмной темы выберите более тёмный фон',
+          'Choose a darker background for a dark theme'));
       return;
     }
     if (!widget.background && color.computeLuminance() < .25) {
-      setState(() => error = 'Выберите светлее, чтобы кнопки были читаемыми');
+      setState(() => error = _s('Выберите светлее, чтобы кнопки были читаемыми',
+          'Choose a lighter color to keep buttons readable'));
       return;
     }
     Navigator.pop(context, color);
@@ -464,14 +533,17 @@ class _ColorDialogState extends State<_ColorDialog> {
 
   @override
   Widget build(BuildContext context) => AlertDialog(
-        title: Text(widget.background ? 'Свой фон' : 'Свой акцент'),
+        title: Text(widget.background
+            ? _s('Свой фон', 'Custom background')
+            : _s('Свой акцент', 'Custom accent')),
         content: SizedBox(
           width: 320,
           child: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('Палитра', style: Theme.of(context).textTheme.bodySmall),
+                Text(_s('Палитра', 'Palette'),
+                    style: Theme.of(context).textTheme.bodySmall),
                 const SizedBox(height: 12),
                 Wrap(spacing: 9, runSpacing: 9, children: [
                   for (final color in _palette)
@@ -510,7 +582,7 @@ class _ColorDialogState extends State<_ColorDialog> {
                     maxLength: 7,
                     style: const TextStyle(fontSize: 14),
                     decoration: InputDecoration(
-                        labelText: 'Или введите HEX',
+                        labelText: _s('Или введите HEX', 'Or enter HEX'),
                         hintText: '8BB9F4',
                         prefixText: '# ',
                         errorText: error,
@@ -522,8 +594,8 @@ class _ColorDialogState extends State<_ColorDialog> {
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(context),
-              child: const Text('Отмена')),
-          FilledButton(onPressed: submit, child: const Text('Применить'))
+              child: Text(_s('Отмена', 'Cancel'))),
+          FilledButton(onPressed: submit, child: Text(_s('Применить', 'Apply')))
         ],
       );
 }

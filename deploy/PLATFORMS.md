@@ -2,6 +2,11 @@
 
 ## Build artifacts
 
+The **Build GhostBox packages** GitHub Actions workflow builds Linux AppImages
+for x86_64 and ARM64 on native runners, plus a Windows x64 portable ZIP and
+Inno Setup installer. Workflow artifacts are retained for 14 days. Linux ARM64
+uses the `aarch64` AppImage suffix; these binaries only run on ARM64 Linux.
+
 Core versions are pinned in the build scripts so desktop and mobile artifacts can
 be rebuilt from the same revisions:
 
@@ -81,6 +86,10 @@ Current platform integration:
   TUN requests elevation through the normal Windows UAC prompt and resumes the
   pending connection in the elevated app. The Windows workflow publishes an
   Inno Setup installer and a portable zip.
+- Linux Kill Switch uses a dedicated nftables output chain for TUN/Mixed mode.
+  It requires `nftables` and `pkexec`; the rule stays installed after GhostBox
+  exits until explicitly disabled, and allows only loopback, `ghostbox0`, DHCP
+  traffic and the selected VPN endpoint.
 - iOS still needs a `PacketTunnelProvider` app-extension target, a
   `NETunnelProviderManager` setup flow, Network Extension entitlements and a
   Flutter-to-extension configuration channel. Build/sign with an Apple team.

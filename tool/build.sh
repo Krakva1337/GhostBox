@@ -25,8 +25,8 @@ need() {
 
 build_linux() {
   [[ "$(uname -s)" == Linux ]] || { echo 'Linux builds require a Linux host.' >&2; exit 1; }
-  [[ "$arch" == amd64 ]] || {
-    echo 'The AppImage packaging step currently supports x86_64 Linux.' >&2
+  [[ "$arch" == amd64 || "$arch" == arm64 ]] || {
+    echo "Unsupported Linux architecture: $arch (supported: amd64, arm64)." >&2
     exit 1
   }
   for command in flutter go git curl cmake ninja pkg-config; do need "$command"; done
@@ -46,10 +46,16 @@ build_linux() {
   flutter build linux --release
 
   local appdir="$project_dir/build/appimage/GhostBox.AppDir"
-  local bundle="$project_dir/build/linux/x64/release/bundle"
+  local bundle_arch=x64
+  local appimage_arch=x86_64
+  if [[ "$arch" == arm64 ]]; then
+    bundle_arch=arm64
+    appimage_arch=aarch64
+  fi
+  local bundle="$project_dir/build/linux/$bundle_arch/release/bundle"
   local app_binary="$bundle/GhostBox"
-  local appimagetool="$project_dir/.toolchains/bin/appimagetool-x86_64.AppImage"
-  local output="$project_dir/dist/GhostBox-$(awk '/^version:/ {split($2,v,"+"); print v[1]}' pubspec.yaml)-linux-x86_64.AppImage"
+  local appimagetool="$project_dir/.toolchains/bin/appimagetool-$appimage_arch.AppImage"
+  local output="$project_dir/dist/GhostBox-$(awk '/^version:/ {split($2,v,"+"); print v[1]}' pubspec.yaml)-linux-$appimage_arch.AppImage"
   if [[ ! -x "$app_binary" && -x "$bundle/ghostbox" ]]; then
     app_binary="$bundle/ghostbox"
   fi
@@ -72,12 +78,12 @@ build_linux() {
   if [[ ! -x "$appimagetool" ]]; then
     echo 'Downloading AppImage packager…'
     curl --fail --location --retry 3 \
-      'https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage' \
+      "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-$appimage_arch.AppImage" \
       --output "$appimagetool"
     chmod 0755 "$appimagetool"
   fi
   echo 'Packaging AppImage…'
-  ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 "$appimagetool" "$appdir" "$output"
+  ARCH="$appimage_arch" APPIMAGE_EXTRACT_AND_RUN=1 "$appimagetool" "$appdir" "$output"
   chmod 0755 "$output"
   sha256sum "$output" > "$output.sha256"
   echo "Built $output"

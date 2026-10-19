@@ -23,6 +23,7 @@ import '../../models/core_settings.dart';
 import '../../models/subscription_metadata.dart';
 import '../../platform/system_proxy.dart';
 import '../../platform/windows_elevation.dart';
+import '../../platform/linux_kill_switch.dart';
 import '../../services/profile_parser.dart';
 import '../../services/device_identity.dart';
 import '../../services/dns_ad_blocklist.dart';
@@ -224,6 +225,142 @@ class _HomePageState extends State<HomePage>
         'One domain pattern or IP network per line. Supports *.ru, 10.0.0.0/8 and Amnezia JSON lists.',
     'ИЗМЕНЕНИЯ': 'CHANGES',
     'СОЕДИНЕНИЕ': 'CONNECTION',
+    'ЗАЩИТА ТРАФИКА': 'TRAFFIC PROTECTION',
+    'Журнал соединения': 'Connection log',
+    'Скопировать журнал': 'Copy log',
+    'Очистить журнал': 'Clear log',
+    'Закрыть': 'Close',
+    'Записей пока нет': 'No log entries yet',
+    'Попыток подключения пока нет': 'No connection attempts yet',
+    'Добавить подписку': 'Add subscription',
+    'Один или несколько URL': 'One or more URLs',
+    'Импортировать профиль': 'Import profile',
+    'Ссылка · JSON-файл · буфер обмена': 'Link · JSON file · clipboard',
+    'Из буфера': 'From clipboard',
+    'JSON-файл': 'JSON file',
+    'Добавить': 'Add',
+    'Новая подписка': 'New subscription',
+    'Название (необязательно)': 'Name (optional)',
+    'Например, Личная подписка': 'For example, Personal subscription',
+    'URL подписки': 'Subscription URL',
+    'Можно добавить несколько URL, по одному на строку':
+        'Add multiple URLs, one per line',
+    'Вставить из буфера': 'Paste from clipboard',
+    'Путь подписки': 'Subscription URL',
+    'Обновить': 'Refresh',
+    'Название подписки': 'Subscription name',
+    'Один раз разреши TUN': 'Allow TUN once',
+    'Скопировать как JSON': 'Copy as JSON',
+    'Сохранить список': 'Save list',
+    'Переподключи ядро, чтобы применить маршрут.':
+        'Reconnect the core to apply routing.',
+    'Сообщение провайдера': 'Provider message',
+    'Готово': 'Done',
+    'Копировать': 'Copy',
+    'Проверить задержку': 'Check latency',
+    'Посмотреть JSON': 'View JSON',
+    'Скопировать GhostBox-ссылку': 'Copy GhostBox link',
+    'Удалить сервер': 'Delete server',
+    'Свой DNS-резолвер': 'Custom DNS resolver',
+    'Ссылка для Proxy GET': 'Proxy GET URL',
+    'О GhostBox': 'About GhostBox',
+    'Информация о сборке и устройстве': 'Build and device information',
+    'Скопировать сведения': 'Copy information',
+    'Проверить и применить': 'Validate and apply',
+    'Сбросить настройки приложения?': 'Reset app settings?',
+    'Вернутся стандартные параметры ядра, тема и поведение приложения. Серверы останутся.':
+        'Core settings, theme and app preferences will be reset. Servers will remain.',
+    'Сбросить': 'Reset',
+    'Удалить серверы и подписки?': 'Delete servers and subscriptions?',
+    'Все добавленные серверы, источники подписок и их сведения будут удалены с этого устройства.':
+        'All servers, subscription sources and their metadata will be removed from this device.',
+    'Удалить всё': 'Delete all',
+    'Kill Switch восстановлен; системный трафик вне TUN заблокирован':
+        'Kill Switch restored; system traffic outside TUN is blocked',
+    'Не удалось восстановить Kill Switch': 'Could not restore Kill Switch',
+    'Kill Switch в Linux работает только в режиме TUN или Mixed.':
+        'Kill Switch on Linux only works in TUN or Mixed mode.',
+    'Kill Switch активен: разрешён TUN и endpoint выбранного VPN':
+        'Kill Switch is active: TUN and the selected VPN endpoint are allowed',
+    'Kill Switch доступен только в Linux.':
+        'Kill Switch is available on Linux only.',
+    'Kill Switch требует режим TUN или Mixed.':
+        'Kill Switch requires TUN or Mixed mode.',
+    'Для Kill Switch сначала выбери сервер.':
+        'Select a server before enabling Kill Switch.',
+    'Параметры ядра обновлены из JSON': 'Core settings updated from JSON',
+    'Не удалось применить JSON': 'Could not apply JSON',
+    'Сначала выключи Kill Switch для смены режима':
+        'Turn off Kill Switch before changing mode',
+    'Применение проверит типы и допустимые значения. Текущие параметры соединения сохранятся.':
+        'Values and types will be validated. Current connection parameters will be preserved.',
+    'Нужен JSON-объект': 'A JSON object is required',
+    'Серверы и подписки удалены': 'Servers and subscriptions deleted',
+    'Скопировать команду': 'Copy command',
+    'Действия': 'Actions',
+    'Открыть список правил': 'Open rules list',
+    'Обновить подписку': 'Refresh subscription',
+    'Действия с подпиской': 'Subscription actions',
+    'Свернуть детали': 'Collapse details',
+    'Действия с сервером': 'Server actions',
+    'Выбрать порт': 'Select port',
+    'Открыть маршрутизацию': 'Open routing',
+    'Изменить DNS-резолвер': 'Change DNS resolver',
+    'Изменить список': 'Edit list',
+    'Обновить список рекламы': 'Refresh ad block list',
+    'Изменить порт': 'Change port',
+    'Изменить ссылку проверки': 'Change test URL',
+    'Открыть JSON': 'Open JSON',
+    'Выбрать': 'Select',
+    'От 1024 до 65535': 'From 1024 to 65535',
+    'Подписка удалена; серверы сохранены в «Мои профили»':
+        'Subscription removed; servers remain in My Profiles',
+    'Вставьте ссылку или JSON-конфиг сервера, либо выберите JSON-файл. Также можно добавить URL подписки.':
+        'Paste a server link or JSON config, choose a JSON file, or add a subscription URL.',
+    'Порт должен быть от 1024 до 65535': 'Port must be between 1024 and 65535',
+    'Сначала добавьте и выберите сервер': 'Add and select a server first',
+    'Сначала выберите сервер': 'Select a server first',
+    'Подождите завершения подключения': 'Wait for the connection to finish',
+    'Сначала выбери сервер': 'Select a server first',
+    'Сначала отключите ядро': 'Stop the core first',
+    'Сначала отключи Kill Switch': 'Turn off Kill Switch first',
+    'Добавь один или несколько URL подписки':
+        'Add one or more subscription URLs',
+    'JSON должен содержать домены или IP-сети':
+        'JSON must contain domains or IP networks',
+    'Android подключает приложения через системный VPN (TUN)':
+        'Android routes apps through its system VPN (TUN)',
+    'На Android системный TUN работает через sing-box':
+        'System TUN on Android uses sing-box',
+    'Команда скопирована': 'Command copied',
+    'Полный JSON скопирован': 'Full JSON copied',
+    'GhostBox-ссылка сервера скопирована': 'GhostBox server link copied',
+    'URL подписки скопирован': 'Subscription URL copied',
+    'Короткая ссылка GhostBox скопирована': 'GhostBox short link copied',
+    'Провайдер не указал корректную ссылку':
+        'The provider did not supply a valid URL',
+    'Не удалось открыть ссылку': 'Could not open the link',
+    'Сведения скопированы': 'Information copied',
+    'Настройки ядра сброшены': 'Core settings reset',
+    'Укажите корректную HTTP или HTTPS ссылку':
+        'Enter a valid HTTP or HTTPS URL',
+    'Укажите IP, IP:порт или URL DNS-over-HTTPS':
+        'Enter an IP, IP:port, or DNS-over-HTTPS URL',
+    'Введи полную ссылку, начинающуюся с http:// или https://':
+        'Enter a full URL starting with http:// or https://',
+    'Подписка обновлена': 'Subscription updated',
+    'Неверный домен': 'Invalid domain',
+    'Не удалось применить изменения': 'Could not apply changes',
+    'Не удалось переключить сервер': 'Could not switch server',
+    'Не удалось подготовить TUN-конфиг': 'Could not prepare TUN config',
+    'Не удалось обновить список рекламы': 'Could not refresh ad block list',
+    'Не удалось загрузить список рекламы': 'Could not load ad block list',
+    'Не удалось загрузить': 'Could not load',
+    'Ошибка подключения': 'Connection error',
+    'Нет серверов для проверки': 'No servers to check',
+    'нет ответа': 'no response',
+    'Запуск ядра не удался': 'Core failed to start',
+    'Ядро завершилось с кодом': 'Core exited with code',
   };
 
   @override
@@ -361,6 +498,21 @@ class _HomePageState extends State<HomePage>
     _scheduleSubscriptionRefresh();
     if (autoRefreshSubscriptions) {
       unawaited(_refreshDueSubscriptions());
+    }
+    if (Platform.isLinux &&
+        coreSettings.killSwitchEnabled &&
+        selected != null) {
+      try {
+        await LinuxKillSwitch.arm(selected!,
+            knownEndpoint: coreSettings.killSwitchProfileId == selected!.id
+                ? coreSettings.killSwitchEndpoint
+                : null);
+        _recordAppLog(
+            'Kill Switch восстановлен; системный трафик вне TUN заблокирован');
+      } on Object catch (error) {
+        connectionIssue = 'Не удалось восстановить Kill Switch: $error';
+        _recordAppLog(connectionIssue!);
+      }
     }
     if (mounted &&
         (coreSettings.autoConnect || resumeAfterElevation) &&
@@ -501,8 +653,15 @@ class _HomePageState extends State<HomePage>
             attemptCore == 'xray' &&
             (attemptMode == 'tun' || attemptMode == 'mixed');
         var runtimeProfile = attemptProfile;
+        if (Platform.isLinux &&
+            coreSettings.killSwitchEnabled &&
+            coreSettings.killSwitchProfileId == attemptProfile.id &&
+            InternetAddress.tryParse(coreSettings.killSwitchEndpoint) != null) {
+          runtimeProfile = LinuxKillSwitch.withEndpoint(
+              runtimeProfile, coreSettings.killSwitchEndpoint);
+        }
         if (usesXrayTunnelBridge) {
-          runtimeProfile = await _resolveXrayTunnelProfile(attemptProfile);
+          runtimeProfile = await _resolveXrayTunnelProfile(runtimeProfile);
           process?.settings = runtimeRouting.copyWith(
               connectionMode: 'proxy', localPort: runtimeLocalPort);
           _recordAppLog(
@@ -510,6 +669,24 @@ class _HomePageState extends State<HomePage>
         } else {
           process?.settings =
               runtimeRouting.copyWith(localPort: runtimeLocalPort);
+        }
+        if (Platform.isLinux && coreSettings.killSwitchEnabled) {
+          if (attemptMode != 'tun' && attemptMode != 'mixed') {
+            throw const FormatException(
+                'Kill Switch в Linux работает только в режиме TUN или Mixed.');
+          }
+          runtimeProfile = await LinuxKillSwitch.arm(runtimeProfile,
+              knownEndpoint:
+                  coreSettings.killSwitchProfileId == runtimeProfile.id
+                      ? coreSettings.killSwitchEndpoint
+                      : null);
+          await _saveCore(
+              coreSettings.copyWith(
+                  killSwitchEndpoint: runtimeProfile.address,
+                  killSwitchProfileId: runtimeProfile.id),
+              requiresReconnect: false);
+          _recordAppLog(
+              'Kill Switch активен: разрешён TUN и endpoint выбранного VPN');
         }
         runtimeProfile = await _withDeviceMetadata(runtimeProfile);
         final activeCore = process;
@@ -768,18 +945,18 @@ class _HomePageState extends State<HomePage>
                               borderRadius: BorderRadius.circular(8))),
                       const SizedBox(height: 12),
                       Row(children: [
-                        const Expanded(
-                            child: Text('Журнал соединения',
+                        Expanded(
+                            child: Text(_localized('Журнал соединения'),
                                 style: TextStyle(
                                     fontSize: 17,
                                     fontWeight: FontWeight.w700))),
                         IconButton(
-                            tooltip: 'Скопировать журнал',
+                            tooltip: _localized('Скопировать журнал'),
                             onPressed: () => Clipboard.setData(
                                 ClipboardData(text: entries.join('\n'))),
                             icon: const Icon(Icons.copy)),
                         IconButton(
-                            tooltip: 'Очистить журнал',
+                            tooltip: _localized('Очистить журнал'),
                             onPressed: () async {
                               await _logWriteQueue;
                               await core?.flushLogs();
@@ -796,7 +973,7 @@ class _HomePageState extends State<HomePage>
                             },
                             icon: const Icon(Icons.delete_sweep_outlined)),
                         IconButton(
-                            tooltip: 'Закрыть',
+                            tooltip: _localized('Закрыть'),
                             onPressed: () => Navigator.pop(context),
                             icon: const Icon(Icons.close)),
                       ]),
@@ -811,7 +988,7 @@ class _HomePageState extends State<HomePage>
                       Expanded(
                           child: entries.isEmpty
                               ? Center(
-                                  child: Text('Записей пока нет',
+                                  child: Text(_localized('Записей пока нет'),
                                       style: TextStyle(color: _muted)))
                               : ListView.separated(
                                   controller: scrollController,
@@ -864,21 +1041,22 @@ class _HomePageState extends State<HomePage>
                           borderRadius: BorderRadius.circular(8))),
                   const SizedBox(height: 12),
                   Row(children: [
-                    const Expanded(
-                        child: Text('Последние подключения',
+                    Expanded(
+                        child: Text(_localized('Последние подключения'),
                             style: TextStyle(
                                 fontSize: 17, fontWeight: FontWeight.w700))),
                     Text('${history.length}/10',
                         style: TextStyle(color: _muted, fontSize: 12)),
                     IconButton(
-                        tooltip: 'Закрыть',
+                        tooltip: _localized('Закрыть'),
                         onPressed: () => Navigator.pop(context),
                         icon: const Icon(Icons.close)),
                   ]),
                   Expanded(
                       child: history.isEmpty
                           ? Center(
-                              child: Text('Попыток подключения пока нет',
+                              child: Text(
+                                  _localized('Попыток подключения пока нет'),
                                   style: TextStyle(color: _muted)))
                           : ListView.separated(
                               controller: scrollController,
@@ -1215,6 +1393,59 @@ class _HomePageState extends State<HomePage>
     activeLocalPort = null;
   }
 
+  Future<void> _setKillSwitch(bool enabled) async {
+    if (!Platform.isLinux) {
+      _message(_text('Kill Switch пока доступен только в Linux',
+          'Kill Switch is currently available on Linux only'));
+      return;
+    }
+    if (enabled &&
+        coreSettings.connectionMode != 'tun' &&
+        coreSettings.connectionMode != 'mixed') {
+      _message(_text('Для Kill Switch выбери режим TUN или Mixed',
+          'Select TUN or Mixed mode to use Kill Switch'));
+      return;
+    }
+    try {
+      if (enabled) {
+        final profile = selected;
+        if (profile == null) {
+          _message(_text('Сначала выбери сервер', 'Select a server first'));
+          return;
+        }
+        final armedProfile = await LinuxKillSwitch.arm(profile,
+            knownEndpoint: coreSettings.killSwitchProfileId == profile.id
+                ? coreSettings.killSwitchEndpoint
+                : null);
+        await _saveCore(
+            coreSettings.copyWith(
+                killSwitchEnabled: true,
+                killSwitchEndpoint: armedProfile.address,
+                killSwitchProfileId: profile.id),
+            requiresReconnect: false);
+      } else {
+        await LinuxKillSwitch.disarm();
+        await _saveCore(
+            coreSettings.copyWith(
+                killSwitchEnabled: false,
+                killSwitchEndpoint: '',
+                killSwitchProfileId: ''),
+            requiresReconnect: false);
+      }
+      _recordAppLog(enabled
+          ? 'Kill Switch включён: весь исходящий трафик вне ghostbox0 заблокирован'
+          : 'Kill Switch выключен');
+      if (enabled) {
+        _message(_text(
+            'Kill Switch включён. При отключении VPN интернет останется заблокирован.',
+            'Kill Switch is on. Internet stays blocked when VPN disconnects.'));
+      }
+    } on Object catch (error) {
+      _message(_text('Не удалось изменить Kill Switch: $error',
+          'Could not change Kill Switch: $error'));
+    }
+  }
+
   Future<void> _switchActiveServer() async {
     final target = selected;
     if (switchingServer ||
@@ -1227,6 +1458,17 @@ class _HomePageState extends State<HomePage>
     _recordAppLog('Переключаю сервер на ${target.name}');
     if (mounted) setState(() {});
     try {
+      if (Platform.isLinux && coreSettings.killSwitchEnabled) {
+        final allowedProfile = await LinuxKillSwitch.arm(target,
+            knownEndpoint: coreSettings.killSwitchProfileId == target.id
+                ? coreSettings.killSwitchEndpoint
+                : null);
+        await _saveCore(
+            coreSettings.copyWith(
+                killSwitchEndpoint: allowedProfile.address,
+                killSwitchProfileId: target.id),
+            requiresReconnect: false);
+      }
       await _disconnectActive();
       activeProfileId = null;
       // The VPN remains active from the user's perspective and reconnects
@@ -1234,6 +1476,9 @@ class _HomePageState extends State<HomePage>
       // interface is handed from the old core to the new one.
       if (mounted) setState(() {});
       await _toggle(allowDuringSwitch: true);
+    } on Object catch (error) {
+      _recordAppLog('Не удалось переключить сервер: $error');
+      _message('Не удалось переключить сервер: $error');
     } finally {
       switchingServer = false;
       pendingReconnect = false;
@@ -1244,6 +1489,14 @@ class _HomePageState extends State<HomePage>
   Future<void> _setConnectionMode(String mode) async {
     if (Platform.isAndroid && mode != 'tun') {
       _message('Android подключает приложения через системный VPN (TUN)');
+      return;
+    }
+    if (Platform.isLinux &&
+        coreSettings.killSwitchEnabled &&
+        mode != 'tun' &&
+        mode != 'mixed') {
+      _message(_text('Сначала выключи Kill Switch для смены режима',
+          'Turn off Kill Switch before changing this mode'));
       return;
     }
     final reconnect = backend.state == VpnState.connected;
@@ -1606,13 +1859,14 @@ class _HomePageState extends State<HomePage>
                 child: Column(mainAxisSize: MainAxisSize.min, children: [
               ListTile(
                   leading: Icon(Icons.rss_feed_rounded, color: _accent),
-                  title: Text('Добавить подписку'),
-                  subtitle: Text('Один или несколько URL'),
+                  title: Text(_localized('Добавить подписку')),
+                  subtitle: Text(_localized('Один или несколько URL')),
                   onTap: () => Navigator.pop(context, 'subscription')),
               ListTile(
                   leading: Icon(Icons.link_rounded, color: _accent),
-                  title: Text('Импортировать профиль'),
-                  subtitle: Text('Ссылка · JSON-файл · буфер обмена'),
+                  title: Text(_localized('Импортировать профиль')),
+                  subtitle:
+                      Text(_localized('Ссылка · JSON-файл · буфер обмена')),
                   onTap: () => Navigator.pop(context, 'profile')),
               SizedBox(height: 10),
             ])));
@@ -1695,7 +1949,7 @@ class _HomePageState extends State<HomePage>
                                     },
                                     icon: Icon(Icons.content_paste_rounded,
                                         size: 18),
-                                    label: Text('Из буфера')),
+                                    label: Text(_localized('Из буфера'))),
                                 TextButton.icon(
                                     onPressed: () async {
                                       try {
@@ -1724,13 +1978,13 @@ class _HomePageState extends State<HomePage>
                                     },
                                     icon:
                                         Icon(Icons.file_open_rounded, size: 18),
-                                    label: Text('JSON-файл')),
+                                    label: Text(_localized('JSON-файл'))),
                                 FilledButton.icon(
                                     onPressed: () =>
                                         Navigator.pop(ctx, controller.text),
                                     icon: Icon(Icons.arrow_forward_rounded,
                                         size: 18),
-                                    label: Text('Добавить')),
+                                    label: Text(_localized('Добавить'))),
                               ],
                             ),
                           ])))));
@@ -1742,15 +1996,15 @@ class _HomePageState extends State<HomePage>
         context: context,
         builder: (context) => AlertDialog(
               backgroundColor: _surface,
-              title: Text('Новая подписка'),
+              title: Text(_localized('Новая подписка')),
               content: SizedBox(
                   width: 460,
                   child: Column(mainAxisSize: MainAxisSize.min, children: [
                     TextField(
                         controller: label,
                         decoration: InputDecoration(
-                            labelText: 'Название (необязательно)',
-                            hintText: 'Например, Личная подписка')),
+                            labelText: _localized('Название (необязательно)'),
+                            hintText: _localized('Например, Личная подписка'))),
                     SizedBox(height: 12),
                     TextField(
                         controller: urls,
@@ -1758,9 +2012,9 @@ class _HomePageState extends State<HomePage>
                         minLines: 4,
                         maxLines: 8,
                         decoration: InputDecoration(
-                            labelText: 'URL подписки',
+                            labelText: _localized('URL подписки'),
                             hintText:
-                                'https://…\nМожно добавить несколько URL, по одному на строку')),
+                                'https://…\n${_localized('Можно добавить несколько URL, по одному на строку')}')),
                     TextButton.icon(
                         onPressed: () async {
                           final data =
@@ -1769,16 +2023,16 @@ class _HomePageState extends State<HomePage>
                             urls.text = data!.text!;
                         },
                         icon: Icon(Icons.content_paste_rounded),
-                        label: Text('Вставить из буфера')),
+                        label: Text(_localized('Вставить из буфера'))),
                   ])),
               actions: [
                 TextButton(
                     onPressed: () => Navigator.pop(context),
-                    child: Text('Отмена')),
+                    child: Text(_localized('Отмена'))),
                 FilledButton(
                     onPressed: () =>
                         Navigator.pop(context, (urls.text, label.text)),
-                    child: Text('Добавить'))
+                    child: Text(_localized('Добавить')))
               ],
             ));
     urls.dispose();
@@ -1886,7 +2140,7 @@ class _HomePageState extends State<HomePage>
             context: context,
             builder: (context) => AlertDialog(
                     backgroundColor: _surface,
-                    title: const Text('Путь подписки'),
+                    title: Text(_localized('Путь подписки')),
                     content: TextField(
                         controller: controller,
                         autofocus: true,
@@ -1896,11 +2150,11 @@ class _HomePageState extends State<HomePage>
                     actions: [
                       TextButton(
                           onPressed: () => Navigator.pop(context),
-                          child: const Text('Отмена')),
+                          child: Text(_localized('Отмена'))),
                       FilledButton(
                           onPressed: () =>
                               Navigator.pop(context, controller.text.trim()),
-                          child: const Text('Обновить'))
+                          child: Text(_localized('Обновить')))
                     ]));
         controller.dispose();
         final parsedUrl = Uri.tryParse(nextUrl ?? '');
@@ -1924,16 +2178,16 @@ class _HomePageState extends State<HomePage>
             context: context,
             builder: (context) => AlertDialog(
                     backgroundColor: _surface,
-                    title: Text('Название подписки'),
+                    title: Text(_localized('Название подписки')),
                     content: TextField(controller: controller, autofocus: true),
                     actions: [
                       TextButton(
                           onPressed: () => Navigator.pop(context),
-                          child: Text('Отмена')),
+                          child: Text(_localized('Отмена'))),
                       FilledButton(
                           onPressed: () =>
                               Navigator.pop(context, controller.text.trim()),
-                          child: Text('Сохранить'))
+                          child: Text(_localized('Сохранить')))
                     ]));
         if (name != null && name.isNotEmpty) {
           setState(() => sub['name'] = name);
@@ -1966,16 +2220,52 @@ class _HomePageState extends State<HomePage>
     };
   }
 
-  void _message(String text) => GhostNotice.show(context, text,
-      error: RegExp('ошиб|не удалось|неверн|нет ответа|не отвечает|не поддерж',
-              caseSensitive: false)
-          .hasMatch(text));
+  String _messageText(String text) {
+    if (!english) return text;
+    final exact = _englishLabels[text];
+    if (exact != null) return exact;
+    for (final entry in const <(String, String)>[
+      (
+        'Не удалось загрузить список рекламы: ',
+        'Could not load ad block list: '
+      ),
+      (
+        'Не удалось обновить список рекламы: ',
+        'Could not refresh ad block list: '
+      ),
+      ('Не удалось подготовить TUN-конфиг: ', 'Could not prepare TUN config: '),
+      ('Не удалось применить изменения: ', 'Could not apply changes: '),
+      ('Не удалось переключить сервер: ', 'Could not switch server: '),
+      ('Не удалось загрузить ', 'Could not load '),
+      ('Проверено серверов: ', 'Servers checked: '),
+      ('Подписка обновлена: ', 'Subscription updated: '),
+      ('Неверный домен: ', 'Invalid domain: '),
+    ]) {
+      if (text.startsWith(entry.$1)) {
+        return '${entry.$2}${text.substring(entry.$1.length)}';
+      }
+    }
+    return text;
+  }
+
+  void _message(String text) {
+    final displayText = _messageText(text);
+    GhostNotice.show(
+      context,
+      displayText,
+      error: RegExp(
+        'ошиб|не удалось|неверн|нет ответа|не отвечает|не поддерж|error|failed|invalid|no response|could not',
+        caseSensitive: false,
+      ).hasMatch(displayText),
+    );
+  }
+
   Future<void> _addProfile() async {
     final controller = TextEditingController();
     final input = await _showPasteDialog(
-      title: 'Добавить сервер',
-      description:
-          'Вставьте ссылку или JSON-конфиг сервера, либо выберите JSON-файл. Также можно добавить URL подписки.',
+      title: _localized('Добавить сервер'),
+      description: _localized(
+          'Вставьте ссылку или JSON-конфиг сервера, либо выберите JSON-файл. Также можно добавить URL подписки.'),
       hint: 'vless://…  или  https://…',
       controller: controller,
     );
@@ -2201,12 +2491,12 @@ class _HomePageState extends State<HomePage>
           Row(children: [
             Icon(Icons.admin_panel_settings_outlined, size: 17, color: _accent),
             const SizedBox(width: 8),
-            const Expanded(
-                child: Text('Один раз разреши TUN',
+            Expanded(
+                child: Text(_localized('Один раз разреши TUN'),
                     style:
                         TextStyle(fontSize: 12, fontWeight: FontWeight.w600))),
             IconButton(
-                tooltip: 'Скопировать команду',
+                tooltip: _localized('Скопировать команду'),
                 visualDensity: VisualDensity.compact,
                 onPressed: () async {
                   await Clipboard.setData(
@@ -2277,7 +2567,7 @@ class _HomePageState extends State<HomePage>
                 height: 44,
                 child: Builder(
                     builder: (buttonContext) => IconButton(
-                        tooltip: 'Действия',
+                        tooltip: _localized('Действия'),
                         onPressed: () => _openActionsMenu(buttonContext),
                         padding: EdgeInsets.zero,
                         constraints: const BoxConstraints.tightFor(
@@ -2484,7 +2774,7 @@ class _HomePageState extends State<HomePage>
                       : 'Исключения из VPN',
                   '${(coreSettings.routing == 'rules' ? coreSettings.proxyDomains : coreSettings.directDomains).length} правил',
                   IconButton(
-                      tooltip: 'Открыть список правил',
+                      tooltip: _localized('Открыть список правил'),
                       onPressed: () => _openRouteList(coreSettings.routing),
                       icon: const Icon(Icons.chevron_right_rounded))),
               Padding(
@@ -2623,13 +2913,13 @@ class _HomePageState extends State<HomePage>
                       _readRouteDomains(routeListController.text) ??
                           const []))),
               icon: const Icon(Icons.copy_rounded, size: 17),
-              label: const Text('Скопировать как JSON')),
+              label: Text(_localized('Скопировать как JSON'))),
           const SizedBox(height: 10),
           SizedBox(
               width: double.infinity,
               child: FilledButton(
                   onPressed: _saveRouteList,
-                  child: const Text('Сохранить список'))),
+                  child: Text(_localized('Сохранить список')))),
         ],
       );
 
@@ -2714,11 +3004,13 @@ class _HomePageState extends State<HomePage>
       child: Row(children: [
         Icon(Icons.info_outline_rounded, color: _accent, size: 19),
         const SizedBox(width: 10),
-        const Expanded(
-            child: Text('Переподключи ядро, чтобы применить маршрут.',
+        Expanded(
+            child: Text(
+                _localized('Переподключи ядро, чтобы применить маршрут.'),
                 style: TextStyle(fontSize: 12))),
         TextButton(
-            onPressed: _applyPendingReconnect, child: const Text('Применить')),
+            onPressed: _applyPendingReconnect,
+            child: Text(_localized('Применить'))),
       ]));
 
   Widget _power() => Column(children: [
@@ -3000,7 +3292,7 @@ class _HomePageState extends State<HomePage>
           {required List<(String, String)> choices,
           required ValueChanged<String> onSelected}) =>
       PopupMenuButton<String>(
-          tooltip: 'Изменить $label',
+          tooltip: _text('Изменить $label', 'Edit $label'),
           onSelected: onSelected,
           itemBuilder: (_) => [
                 for (final choice in choices)
@@ -3112,12 +3404,12 @@ class _HomePageState extends State<HomePage>
                                   child: Icon(Icons.expand_less_rounded,
                                       size: 19, color: _muted))),
                           IconButton(
-                              tooltip: 'Обновить подписку',
+                              tooltip: _localized('Обновить подписку'),
                               onPressed: () => _refreshSubscription(url),
                               icon: Icon(Icons.sync_rounded,
                                   size: 19, color: _muted)),
                           PopupMenuButton<String>(
-                              tooltip: 'Действия с подпиской',
+                              tooltip: _localized('Действия с подпиской'),
                               icon: Icon(Icons.more_horiz_rounded,
                                   size: 20, color: _muted),
                               onSelected: (action) =>
@@ -3373,7 +3665,7 @@ class _HomePageState extends State<HomePage>
                     Text('${(progress! * 100).round()}%',
                         style: TextStyle(color: _muted, fontSize: 11)),
                   IconButton(
-                      tooltip: 'Свернуть детали',
+                      tooltip: _localized('Свернуть детали'),
                       visualDensity: VisualDensity.compact,
                       padding: EdgeInsets.zero,
                       constraints:
@@ -3431,12 +3723,12 @@ class _HomePageState extends State<HomePage>
                     onTap: () => showDialog<void>(
                         context: context,
                         builder: (_) => AlertDialog(
-                                title: Text('Сообщение провайдера'),
+                                title: Text(_localized('Сообщение провайдера')),
                                 content: SelectableText(metadata.announcement!),
                                 actions: [
                                   TextButton(
                                       onPressed: () => Navigator.pop(context),
-                                      child: Text('Закрыть'))
+                                      child: Text(_localized('Закрыть')))
                                 ])),
                     child: Row(children: [
                       Icon(Icons.campaign_outlined, color: _accent, size: 17),
@@ -3466,12 +3758,12 @@ class _HomePageState extends State<HomePage>
                     TextButton.icon(
                         onPressed: () => _openProviderUrl(metadata.websiteUrl),
                         icon: Icon(Icons.language_rounded, size: 16),
-                        label: Text('Сайт')),
+                        label: Text(_localized('Сайт'))),
                   if (metadata.supportUrl != null)
                     TextButton.icon(
                         onPressed: () => _openProviderUrl(metadata.supportUrl),
                         icon: Icon(Icons.support_agent_rounded, size: 16),
-                        label: Text('Поддержка')),
+                        label: Text(_localized('Поддержка'))),
                 ]),
               ],
             ])));
@@ -3624,10 +3916,10 @@ class _HomePageState extends State<HomePage>
                         _message('Полный JSON скопирован');
                       },
                       icon: const Icon(Icons.copy_rounded),
-                      label: const Text('Копировать')),
+                      label: Text(_localized('Копировать'))),
                   TextButton(
                       onPressed: () => Navigator.pop(context),
-                      child: const Text('Готово')),
+                      child: Text(_localized('Готово'))),
                 ],
               ),
             ));
@@ -3723,7 +4015,7 @@ class _HomePageState extends State<HomePage>
                               : _muted,
                           fontSize: 11)),
                 PopupMenuButton<String>(
-                    tooltip: 'Действия с сервером',
+                    tooltip: _localized('Действия с сервером'),
                     icon: Icon(Icons.more_horiz_rounded, color: _muted),
                     onSelected: (value) async {
                       if (value == 'ping') {
@@ -3757,7 +4049,7 @@ class _HomePageState extends State<HomePage>
                                 Icon(Icons.speed_rounded,
                                     size: 18, color: _accent),
                                 const SizedBox(width: 12),
-                                const Text('Проверить задержку')
+                                Text(_localized('Проверить задержку'))
                               ])),
                           PopupMenuItem(
                               value: 'json',
@@ -3765,7 +4057,7 @@ class _HomePageState extends State<HomePage>
                                 Icon(Icons.data_object_rounded,
                                     size: 18, color: _accent),
                                 const SizedBox(width: 12),
-                                const Text('Посмотреть JSON')
+                                Text(_localized('Посмотреть JSON'))
                               ])),
                           PopupMenuItem(
                               value: 'share',
@@ -3773,7 +4065,7 @@ class _HomePageState extends State<HomePage>
                                 Icon(Icons.link_rounded,
                                     size: 18, color: _accent),
                                 const SizedBox(width: 12),
-                                const Text('Скопировать GhostBox-ссылку')
+                                Text(_localized('Скопировать GhostBox-ссылку'))
                               ])),
                           PopupMenuItem(
                               value: 'delete',
@@ -3781,7 +4073,7 @@ class _HomePageState extends State<HomePage>
                                 Icon(Icons.delete_outline_rounded,
                                     size: 18, color: _muted),
                                 const SizedBox(width: 12),
-                                const Text('Удалить сервер')
+                                Text(_localized('Удалить сервер'))
                               ]))
                         ]),
               ]),
@@ -4002,7 +4294,7 @@ class _HomePageState extends State<HomePage>
         context: context,
         builder: (context) => AlertDialog(
               backgroundColor: _surface,
-              title: const Text('Свой DNS-резолвер'),
+              title: Text(_localized('Свой DNS-резолвер')),
               content: TextField(
                 controller: controller,
                 autofocus: true,
@@ -4016,11 +4308,11 @@ class _HomePageState extends State<HomePage>
               actions: [
                 TextButton(
                     onPressed: () => Navigator.pop(context),
-                    child: const Text('Отмена')),
+                    child: Text(_localized('Отмена'))),
                 FilledButton(
                     onPressed: () =>
                         Navigator.pop(context, controller.text.trim()),
-                    child: const Text('Сохранить')),
+                    child: Text(_localized('Сохранить'))),
               ],
             ));
     controller.dispose();
@@ -4039,7 +4331,7 @@ class _HomePageState extends State<HomePage>
         context: context,
         builder: (context) => AlertDialog(
               backgroundColor: _surface,
-              title: const Text('Ссылка для Proxy GET'),
+              title: Text(_localized('Ссылка для Proxy GET')),
               content: TextField(
                 controller: controller,
                 autofocus: true,
@@ -4053,11 +4345,11 @@ class _HomePageState extends State<HomePage>
               actions: [
                 TextButton(
                     onPressed: () => Navigator.pop(context),
-                    child: const Text('Отмена')),
+                    child: Text(_localized('Отмена'))),
                 FilledButton(
                     onPressed: () =>
                         Navigator.pop(context, controller.text.trim()),
-                    child: const Text('Сохранить')),
+                    child: Text(_localized('Сохранить'))),
               ],
             ));
     controller.dispose();
@@ -4172,10 +4464,10 @@ class _HomePageState extends State<HomePage>
                 actions: [
                   TextButton(
                       onPressed: () => Navigator.pop(context),
-                      child: Text('Отмена')),
+                      child: Text(_localized('Отмена'))),
                   FilledButton(
                       onPressed: () => Navigator.pop(context, controller.text),
-                      child: Text('Сохранить'))
+                      child: Text(_localized('Сохранить')))
                 ]));
     controller.dispose();
     if (result == null) return;
@@ -4237,7 +4529,7 @@ class _HomePageState extends State<HomePage>
                             style: TextStyle(fontSize: 12))),
                     TextButton(
                         onPressed: _applyPendingReconnect,
-                        child: Text('Применить')),
+                        child: Text(_localized('Применить'))),
                   ])),
             ],
             SizedBox(height: 22),
@@ -4369,21 +4661,21 @@ class _HomePageState extends State<HomePage>
                     child: Icon(Icons.shield_rounded, color: _accent),
                   ),
                   const SizedBox(width: 12),
-                  const Expanded(
+                  Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text('О GhostBox',
+                        Text(_localized('О GhostBox'),
                             style: TextStyle(
                                 fontSize: 19, fontWeight: FontWeight.w700)),
                         SizedBox(height: 2),
-                        Text('Информация о сборке и устройстве',
+                        Text(_localized('Информация о сборке и устройстве'),
                             style: TextStyle(fontSize: 11)),
                       ],
                     ),
                   ),
                   IconButton(
-                    tooltip: 'Закрыть',
+                    tooltip: _localized('Закрыть'),
                     onPressed: () => Navigator.pop(dialogContext),
                     icon: const Icon(Icons.close_rounded),
                   ),
@@ -4431,7 +4723,7 @@ class _HomePageState extends State<HomePage>
                       _message('Сведения скопированы');
                     },
                     icon: const Icon(Icons.copy_rounded, size: 17),
-                    label: const Text('Скопировать сведения'),
+                    label: Text(_localized('Скопировать сведения')),
                   ),
                 ),
               ],
@@ -4523,7 +4815,7 @@ class _HomePageState extends State<HomePage>
                           autoLocalPort: value == 'auto'))),
                   if (!coreSettings.autoLocalPort)
                     IconButton(
-                        tooltip: 'Выбрать порт',
+                        tooltip: _localized('Выбрать порт'),
                         onPressed: _editPort,
                         icon: const Icon(Icons.edit_outlined)),
                 ])),
@@ -4532,7 +4824,7 @@ class _HomePageState extends State<HomePage>
                 'Маршрутизация',
                 _routingLabel(),
                 IconButton(
-                    tooltip: 'Открыть маршрутизацию',
+                    tooltip: _localized('Открыть маршрутизацию'),
                     onPressed: () => _openTab(1),
                     icon: const Icon(Icons.chevron_right_rounded))),
             _row(
@@ -4555,7 +4847,7 @@ class _HomePageState extends State<HomePage>
                   'Адрес резолвера',
                   coreSettings.customDnsResolver,
                   IconButton(
-                      tooltip: 'Изменить DNS-резолвер',
+                      tooltip: _localized('Изменить DNS-резолвер'),
                       onPressed: () => _selectDnsResolver('custom'),
                       icon: const Icon(Icons.edit_outlined))),
             _row(
@@ -4576,7 +4868,7 @@ class _HomePageState extends State<HomePage>
                   'Домены для блокировки',
                   '${coreSettings.blockedDomains.length} доменов',
                   IconButton(
-                      tooltip: 'Изменить список',
+                      tooltip: _localized('Изменить список'),
                       onPressed: () => _editDomains(
                           'Домены для блокировки',
                           coreSettings.blockedDomains,
@@ -4590,7 +4882,7 @@ class _HomePageState extends State<HomePage>
                       ? 'Обновляется…'
                       : '${coreSettings.adBlockDomains.length} доменов · HaGeZi',
                   IconButton(
-                      tooltip: 'Обновить список рекламы',
+                      tooltip: _localized('Обновить список рекламы'),
                       onPressed: loadingAdBlocklist
                           ? null
                           : () => _refreshAdBlocklist(),
@@ -4652,6 +4944,19 @@ class _HomePageState extends State<HomePage>
                         divisions: 12,
                         onChanged: (v) => _saveCore(
                             coreSettings.copyWith(memoryMb: v.round()))))),
+            _section('ЗАЩИТА ТРАФИКА'),
+            _row(
+                Icons.shield_moon_outlined,
+                'Kill Switch',
+                Platform.isLinux
+                    ? _text(
+                        'Блокирует сеть вне TUN даже после сбоя ядра. Требует подтверждения pkexec.',
+                        'Blocks traffic outside TUN, even if the core stops. Requires pkexec approval.')
+                    : _text('Доступен только в Linux TUN/Mixed',
+                        'Available only on Linux TUN/Mixed'),
+                _compactSwitch(
+                    value: coreSettings.killSwitchEnabled,
+                    onChanged: Platform.isLinux ? _setKillSwitch : null)),
             if (Platform.isLinux)
               _row(
                   Icons.monitor_heart_rounded,
@@ -4721,7 +5026,7 @@ class _HomePageState extends State<HomePage>
                 'Источники',
                 '${subscriptions.length} подписок',
                 IconButton(
-                    tooltip: 'Добавить подписку',
+                    tooltip: _localized('Добавить подписку'),
                     onPressed: _showAddMenu,
                     icon: Icon(Icons.add_rounded))),
             _row(
@@ -4729,7 +5034,7 @@ class _HomePageState extends State<HomePage>
                 'Обновить все',
                 'Перезагрузить профили из URL',
                 IconButton(
-                    tooltip: 'Обновить все',
+                    tooltip: _localized('Обновить все'),
                     onPressed:
                         subscriptions.isEmpty ? null : _refreshAllSubscriptions,
                     icon: Icon(Icons.refresh_rounded))),
@@ -4812,7 +5117,7 @@ class _HomePageState extends State<HomePage>
                           autoLocalPort: value == 'auto'))),
                   if (!coreSettings.autoLocalPort)
                     IconButton(
-                        tooltip: 'Изменить порт',
+                        tooltip: _localized('Изменить порт'),
                         onPressed: _editPort,
                         icon: const Icon(Icons.edit_outlined)),
                 ])),
@@ -4869,7 +5174,7 @@ class _HomePageState extends State<HomePage>
                   'Адрес резолвера',
                   coreSettings.customDnsResolver,
                   IconButton(
-                      tooltip: 'Изменить DNS-резолвер',
+                      tooltip: _localized('Изменить DNS-резолвер'),
                       onPressed: () => _selectDnsResolver('custom'),
                       icon: const Icon(Icons.edit_outlined))),
             _row(
@@ -4900,7 +5205,7 @@ class _HomePageState extends State<HomePage>
                   'Заблокированные домены',
                   '${coreSettings.blockedDomains.length} доменов',
                   IconButton(
-                      tooltip: 'Изменить список',
+                      tooltip: _localized('Изменить список'),
                       onPressed: () => _editDomains(
                           'Домены для блокировки',
                           coreSettings.blockedDomains,
@@ -4914,7 +5219,7 @@ class _HomePageState extends State<HomePage>
                       ? 'Обновляется…'
                       : '${coreSettings.adBlockDomains.length} доменов · HaGeZi',
                   IconButton(
-                      tooltip: 'Обновить список рекламы',
+                      tooltip: _localized('Обновить список рекламы'),
                       onPressed: loadingAdBlocklist
                           ? null
                           : () => _refreshAdBlocklist(),
@@ -4945,7 +5250,7 @@ class _HomePageState extends State<HomePage>
                   'Ссылка для GET',
                   coreSettings.proxyGetUrl,
                   IconButton(
-                      tooltip: 'Изменить ссылку проверки',
+                      tooltip: _localized('Изменить ссылку проверки'),
                       onPressed: _editProxyGetUrl,
                       icon: const Icon(Icons.edit_outlined))),
             _row(
@@ -4975,7 +5280,7 @@ class _HomePageState extends State<HomePage>
                 'JSON настроек ядра',
                 'Посмотреть или изменить полный набор параметров',
                 IconButton(
-                    tooltip: 'Открыть JSON',
+                    tooltip: _localized('Открыть JSON'),
                     onPressed: _editCoreSettingsJson,
                     icon: const Icon(Icons.chevron_right_rounded))),
             _row(
@@ -4983,7 +5288,7 @@ class _HomePageState extends State<HomePage>
                 'Сбросить настройки',
                 'Сбросить ядро, тему и поведение приложения',
                 IconButton(
-                    tooltip: 'Сбросить настройки',
+                    tooltip: _localized('Сбросить настройки'),
                     onPressed: _resetCoreSettings,
                     icon: const Icon(Icons.restart_alt_rounded))),
             _row(
@@ -4991,7 +5296,7 @@ class _HomePageState extends State<HomePage>
                 'Удалить все серверы',
                 'Удалить профили и подписки с этого устройства',
                 IconButton(
-                    tooltip: 'Удалить все серверы',
+                    tooltip: _localized('Удалить все серверы'),
                     onPressed: _deleteAllServers,
                     icon: const Icon(Icons.delete_outline_rounded))),
             SizedBox(height: 15),
@@ -5031,7 +5336,7 @@ class _HomePageState extends State<HomePage>
                         TextButton.icon(
                             onPressed: _showLogs,
                             icon: const Icon(Icons.article_outlined, size: 16),
-                            label: const Text('Файл журнала')),
+                            label: Text(_localized('Файл журнала'))),
                       ]),
                       if (process?.logs.isNotEmpty == true) ...[
                         SizedBox(height: 12),
@@ -5056,7 +5361,7 @@ class _HomePageState extends State<HomePage>
         context: context,
         builder: (dialogContext) => StatefulBuilder(
             builder: (context, setDialogState) => AlertDialog(
-                  title: const Text('JSON настроек ядра'),
+                  title: Text(_localized('JSON настроек ядра')),
                   content: SizedBox(
                     width:
                         math.min(520.0, MediaQuery.sizeOf(context).width - 64),
@@ -5073,21 +5378,23 @@ class _HomePageState extends State<HomePage>
                             hintText: '{ ... }', errorText: error),
                       ),
                       const SizedBox(height: 8),
-                      const Text(
-                          'Применение проверит типы и допустимые значения. Текущие параметры соединения сохранятся.',
+                      Text(
+                          _localized(
+                              'Применение проверит типы и допустимые значения. Текущие параметры соединения сохранятся.'),
                           style: TextStyle(fontSize: 11)),
                     ]),
                   ),
                   actions: [
                     TextButton(
                         onPressed: () => Navigator.pop(dialogContext),
-                        child: const Text('Отмена')),
+                        child: Text(_localized('Отмена'))),
                     FilledButton.icon(
                         onPressed: () {
                           try {
                             final decoded = jsonDecode(controller.text);
                             if (decoded is! Map) {
-                              throw const FormatException('Нужен JSON-объект');
+                              throw FormatException(
+                                  _localized('Нужен JSON-объект'));
                             }
                             final normalized = CoreSettings.fromJson(
                                 Map<String, dynamic>.from(decoded));
@@ -5098,14 +5405,42 @@ class _HomePageState extends State<HomePage>
                           }
                         },
                         icon: const Icon(Icons.check_rounded),
-                        label: const Text('Проверить и применить')),
+                        label: Text(_localized('Проверить и применить'))),
                   ],
                 )));
     controller.dispose();
     if (accepted == null || !mounted) return;
     try {
       final data = Map<String, dynamic>.from(jsonDecode(accepted) as Map);
-      final updated = CoreSettings.fromJson(data);
+      var updated = CoreSettings.fromJson(data);
+      if (updated.killSwitchEnabled && !Platform.isLinux) {
+        throw const FormatException('Kill Switch доступен только в Linux.');
+      }
+      if (updated.killSwitchEnabled &&
+          updated.connectionMode != 'tun' &&
+          updated.connectionMode != 'mixed') {
+        throw const FormatException('Kill Switch требует режим TUN или Mixed.');
+      }
+      if (updated.killSwitchEnabled != coreSettings.killSwitchEnabled) {
+        if (updated.killSwitchEnabled) {
+          final profile = selected;
+          if (profile == null) {
+            throw const FormatException(
+                'Для Kill Switch сначала выбери сервер.');
+          }
+          final armedProfile = await LinuxKillSwitch.arm(profile,
+              knownEndpoint: coreSettings.killSwitchProfileId == profile.id
+                  ? coreSettings.killSwitchEndpoint
+                  : null);
+          updated = updated.copyWith(
+              killSwitchEndpoint: armedProfile.address,
+              killSwitchProfileId: profile.id);
+        } else {
+          await LinuxKillSwitch.disarm();
+          updated =
+              updated.copyWith(killSwitchEndpoint: '', killSwitchProfileId: '');
+        }
+      }
       final wasConnected = backend.state == VpnState.connected;
       await _saveCore(updated);
       process?.settings = updated;
@@ -5123,19 +5458,27 @@ class _HomePageState extends State<HomePage>
     final reset = await showDialog<bool>(
         context: context,
         builder: (context) => AlertDialog(
-              title: const Text('Сбросить настройки приложения?'),
-              content: const Text(
-                  'Вернутся стандартные параметры ядра, тема и поведение приложения. Серверы останутся.'),
+              title: Text(_localized('Сбросить настройки приложения?')),
+              content: Text(_localized(
+                  'Вернутся стандартные параметры ядра, тема и поведение приложения. Серверы останутся.')),
               actions: [
                 TextButton(
                     onPressed: () => Navigator.pop(context, false),
-                    child: const Text('Отмена')),
+                    child: Text(_localized('Отмена'))),
                 FilledButton(
                     onPressed: () => Navigator.pop(context, true),
-                    child: const Text('Сбросить')),
+                    child: Text(_localized('Сброс'))),
               ],
             ));
     if (reset != true || !mounted) return;
+    if (Platform.isLinux && coreSettings.killSwitchEnabled) {
+      try {
+        await LinuxKillSwitch.disarm();
+      } on Object catch (error) {
+        _message('Сначала отключи Kill Switch: $error');
+        return;
+      }
+    }
     if (backend.state != VpnState.disconnected) await _disconnectActive();
     final defaults = CoreSettings(
         core: Platform.isAndroid ? 'sing-box' : 'xray', connectionMode: 'tun');
@@ -5162,18 +5505,18 @@ class _HomePageState extends State<HomePage>
     final confirmed = await showDialog<bool>(
         context: context,
         builder: (context) => AlertDialog(
-              title: const Text('Удалить серверы и подписки?'),
-              content: const Text(
-                  'Все добавленные серверы, источники подписок и их сведения будут удалены с этого устройства.'),
+              title: Text(_localized('Удалить серверы и подписки?')),
+              content: Text(_localized(
+                  'Все добавленные серверы, источники подписок и их сведения будут удалены с этого устройства.')),
               actions: [
                 TextButton(
                     onPressed: () => Navigator.pop(context, false),
-                    child: const Text('Отмена')),
+                    child: Text(_localized('Отмена'))),
                 FilledButton(
                     style: FilledButton.styleFrom(
                         backgroundColor: const Color(0xFFB94B58)),
                     onPressed: () => Navigator.pop(context, true),
-                    child: const Text('Удалить всё')),
+                    child: Text(_localized('Удалить всё'))),
               ],
             ));
     if (confirmed != true || !mounted) return;
@@ -5230,7 +5573,7 @@ class _HomePageState extends State<HomePage>
   Widget _menu(String value, Map<String, String> choices,
           ValueChanged<String> onChanged) =>
       PopupMenuButton<String>(
-          tooltip: 'Выбрать',
+          tooltip: _localized('Выбрать'),
           onSelected: onChanged,
           icon: Icon(Icons.unfold_more_rounded, size: 20, color: _accent),
           itemBuilder: (_) => choices.entries
@@ -5244,20 +5587,20 @@ class _HomePageState extends State<HomePage>
         context: context,
         builder: (context) => AlertDialog(
                 backgroundColor: _surface,
-                title: Text('Локальный порт'),
+                title: Text(_localized('Локальный порт')),
                 content: TextField(
                     controller: controller,
                     keyboardType: TextInputType.number,
                     inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                    decoration:
-                        InputDecoration(helperText: 'От 1024 до 65535')),
+                    decoration: InputDecoration(
+                        helperText: _localized('От 1024 до 65535'))),
                 actions: [
                   TextButton(
                       onPressed: () => Navigator.pop(context),
-                      child: Text('Отмена')),
+                      child: Text(_localized('Отмена'))),
                   FilledButton(
                       onPressed: () => Navigator.pop(context, controller.text),
-                      child: Text('Сохранить'))
+                      child: Text(_localized('Сохранить')))
                 ]));
     controller.dispose();
     if (result == null) return;
