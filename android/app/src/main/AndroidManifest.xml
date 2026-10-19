@@ -6,7 +6,7 @@
     <application
         android:label="GhostBox"
         android:name="${applicationName}"
-        android:icon="@drawable/ghostbox_launcher">
+        android:icon="@mipmap/ic_launcher">
         <service
             android:name=".GhostBoxVpnService"
             android:permission="android.permission.BIND_VPN_SERVICE"

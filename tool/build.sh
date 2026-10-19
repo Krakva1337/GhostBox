@@ -5,6 +5,7 @@ set -euo pipefail
 project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 target="${1:-}"
 arch="$(uname -m)"
+export GOCACHE="${GOCACHE:-$project_dir/.toolchains/go-build-cache}"
 case "$arch" in x86_64|amd64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;; esac
 
 if [[ -z "$target" ]]; then
@@ -46,15 +47,23 @@ build_linux() {
 
   local appdir="$project_dir/build/appimage/GhostBox.AppDir"
   local bundle="$project_dir/build/linux/x64/release/bundle"
+  local app_binary="$bundle/GhostBox"
   local appimagetool="$project_dir/.toolchains/bin/appimagetool-x86_64.AppImage"
   local output="$project_dir/dist/GhostBox-$(awk '/^version:/ {split($2,v,"+"); print v[1]}' pubspec.yaml)-linux-x86_64.AppImage"
-  [[ -x "$bundle/ghostbox" ]] || { echo "Flutter bundle not found: $bundle" >&2; exit 1; }
+  if [[ ! -x "$app_binary" && -x "$bundle/ghostbox" ]]; then
+    app_binary="$bundle/ghostbox"
+  fi
+  [[ -x "$app_binary" ]] || { echo "Flutter bundle executable not found: $bundle" >&2; exit 1; }
   rm -rf "$appdir"
   mkdir -p "$appdir/vendor/bin" "$project_dir/.toolchains/bin" "$project_dir/dist"
   cp -a "$bundle/." "$appdir/"
+  if [[ "$app_binary" != "$appdir/ghostbox" ]]; then
+    install -m 0755 "$app_binary" "$appdir/ghostbox"
+  fi
   cp "$project_dir/packaging/appimage/AppRun" "$appdir/AppRun"
   cp "$project_dir/packaging/appimage/ghostbox.desktop" "$appdir/ghostbox.desktop"
   cp "$project_dir/assets/ghostbox_logo.svg" "$appdir/ghostbox.svg"
+  cp "$project_dir/assets/ghostbox_logo.png" "$appdir/ghostbox.png"
   install -m 0755 "$project_dir/vendor/bin/xray" "$appdir/vendor/bin/xray"
   install -m 0755 "$project_dir/vendor/bin/sing-box" "$appdir/vendor/bin/sing-box"
   install -m 0644 "$project_dir/vendor/bin/BUILD-INFO.txt" "$appdir/vendor/bin/BUILD-INFO.txt"

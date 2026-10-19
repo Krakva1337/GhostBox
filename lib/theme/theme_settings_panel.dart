@@ -1,3 +1,4 @@
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'theme_controller.dart';
 
@@ -18,103 +19,167 @@ class ThemeSettingsPanel extends StatelessWidget {
               'Dark and light themes with a custom accent.'),
           style: theme.textTheme.bodySmall),
       const SizedBox(height: 16),
-      SizedBox(
-          height: 82,
-          child: ListView(scrollDirection: Axis.horizontal, children: [
-            SizedBox(
-                width: 88,
-                child: _preset(
-                    context,
-                    controller,
-                    ThemePreset.midnight,
-                    'Полночь',
-                    const Color(0xFF070D18),
-                    const Color(0xFF8BB9F4))),
-            const SizedBox(width: 8),
-            SizedBox(
-                width: 88,
-                child: _preset(
-                    context,
-                    controller,
-                    ThemePreset.graphite,
-                    'Графит',
-                    const Color(0xFF0D0F13),
-                    const Color(0xFFB6BDC9))),
-            const SizedBox(width: 8),
-            SizedBox(
-                width: 88,
-                child: _preset(context, controller, ThemePreset.ocean, 'Океан',
-                    const Color(0xFF061522), const Color(0xFF4DC9E8))),
-            const SizedBox(width: 8),
-            SizedBox(
-                width: 88,
-                child: _preset(
-                    context,
-                    controller,
-                    ThemePreset.emerald,
-                    'Изумруд',
-                    const Color(0xFF091812),
-                    const Color(0xFF7CDDB6))),
-            const SizedBox(width: 8),
-            SizedBox(
-                width: 88,
-                child: _preset(
-                    context,
-                    controller,
-                    ThemePreset.amethyst,
-                    'Аметист',
-                    const Color(0xFF120D20),
-                    const Color(0xFFB9A0FF))),
-            const SizedBox(width: 8),
-            SizedBox(
-                width: 88,
-                child: _preset(
-                    context,
-                    controller,
-                    ThemePreset.sapphire,
-                    'Сапфир',
-                    const Color(0xFF091426),
-                    const Color(0xFF78A9FF))),
-            const SizedBox(width: 8),
-            SizedBox(
-                width: 88,
-                child: _preset(context, controller, ThemePreset.ruby, 'Рубин',
-                    const Color(0xFF1A1018), const Color(0xFFFF8295))),
-            for (final entry in const [
-              (
-                ThemePreset.lavender,
-                'Лаванда',
-                Color(0xFF171326),
-                Color(0xFFC7B5FF)
-              ),
-              (ThemePreset.forest, 'Лес', Color(0xFF0D1B15), Color(0xFF8BCF9B)),
-              (ThemePreset.sand, 'Песок', Color(0xFF201A12), Color(0xFFE5BF8C)),
-              (
-                ThemePreset.daylight,
-                'Светлая',
-                Color(0xFFF1F5FC),
-                Color(0xFF355FBB)
-              ),
-              (
-                ThemePreset.paper,
-                'Бумага',
-                Color(0xFFF6F2EB),
-                Color(0xFF6857B8)
-              ),
-              (ThemePreset.mist, 'Туман', Color(0xFFEDF5F5), Color(0xFF347F8A)),
-            ]) ...[
-              const SizedBox(width: 8),
-              SizedBox(
-                  width: 88,
-                  child: _preset(context, controller, entry.$1, entry.$2,
-                      entry.$3, entry.$4)),
-            ],
-            const SizedBox(width: 8),
-            SizedBox(
-                width: 88,
-                child: _preset(context, controller, ThemePreset.custom, 'Своя',
-                    controller.customBackground, controller.customAccent)),
-          ])),
+      ScrollConfiguration(
+          behavior: const MaterialScrollBehavior().copyWith(dragDevices: {
+            PointerDeviceKind.touch,
+            PointerDeviceKind.mouse,
+            PointerDeviceKind.trackpad,
+          }),
+          child: SizedBox(
+              height: 82,
+              child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        SizedBox(
+                            width: 88,
+                            child: _preset(
+                                context,
+                                controller,
+                                ThemePreset.midnight,
+                                'Полночь',
+                                const Color(0xFF070D18),
+                                const Color(0xFF8BB9F4))),
+                        const SizedBox(width: 8),
+                        SizedBox(
+                            width: 88,
+                            child: _preset(
+                                context,
+                                controller,
+                                ThemePreset.graphite,
+                                'Графит',
+                                const Color(0xFF0D0F13),
+                                const Color(0xFFB6BDC9))),
+                        const SizedBox(width: 8),
+                        SizedBox(
+                            width: 88,
+                            child: _preset(
+                                context,
+                                controller,
+                                ThemePreset.ocean,
+                                'Океан',
+                                const Color(0xFF061522),
+                                const Color(0xFF4DC9E8))),
+                        const SizedBox(width: 8),
+                        SizedBox(
+                            width: 88,
+                            child: _preset(
+                                context,
+                                controller,
+                                ThemePreset.emerald,
+                                'Изумруд',
+                                const Color(0xFF091812),
+                                const Color(0xFF7CDDB6))),
+                        const SizedBox(width: 8),
+                        SizedBox(
+                            width: 88,
+                            child: _preset(
+                                context,
+                                controller,
+                                ThemePreset.amethyst,
+                                'Аметист',
+                                const Color(0xFF120D20),
+                                const Color(0xFFB9A0FF))),
+                        const SizedBox(width: 8),
+                        SizedBox(
+                            width: 88,
+                            child: _preset(
+                                context,
+                                controller,
+                                ThemePreset.sapphire,
+                                'Сапфир',
+                                const Color(0xFF091426),
+                                const Color(0xFF78A9FF))),
+                        const SizedBox(width: 8),
+                        SizedBox(
+                            width: 88,
+                            child: _preset(
+                                context,
+                                controller,
+                                ThemePreset.ruby,
+                                'Рубин',
+                                const Color(0xFF1A1018),
+                                const Color(0xFFFF8295))),
+                        for (final entry in const [
+                          (
+                            ThemePreset.lavender,
+                            'Лаванда',
+                            Color(0xFF171326),
+                            Color(0xFFC7B5FF)
+                          ),
+                          (
+                            ThemePreset.forest,
+                            'Лес',
+                            Color(0xFF0D1B15),
+                            Color(0xFF8BCF9B)
+                          ),
+                          (
+                            ThemePreset.sand,
+                            'Песок',
+                            Color(0xFF201A12),
+                            Color(0xFFE5BF8C)
+                          ),
+                          (
+                            ThemePreset.daylight,
+                            'Светлая',
+                            Color(0xFFF1F5FC),
+                            Color(0xFF355FBB)
+                          ),
+                          (
+                            ThemePreset.paper,
+                            'Бумага',
+                            Color(0xFFF6F2EB),
+                            Color(0xFF6857B8)
+                          ),
+                          (
+                            ThemePreset.mist,
+                            'Туман',
+                            Color(0xFFEDF5F5),
+                            Color(0xFF347F8A)
+                          ),
+                          (
+                            ThemePreset.aurora,
+                            'Аврора',
+                            Color(0xFF071A20),
+                            Color(0xFF53D6C2)
+                          ),
+                          (
+                            ThemePreset.obsidian,
+                            'Обсидиан',
+                            Color(0xFF111722),
+                            Color(0xFF90A4C3)
+                          ),
+                          (
+                            ThemePreset.sunset,
+                            'Закат',
+                            Color(0xFF20120F),
+                            Color(0xFFFF9568)
+                          ),
+                          (
+                            ThemePreset.arctic,
+                            'Арктика',
+                            Color(0xFFEAF5FA),
+                            Color(0xFF247D9B)
+                          ),
+                        ]) ...[
+                          const SizedBox(width: 8),
+                          SizedBox(
+                              width: 88,
+                              child: _preset(context, controller, entry.$1,
+                                  entry.$2, entry.$3, entry.$4)),
+                        ],
+                        const SizedBox(width: 8),
+                        SizedBox(
+                            width: 88,
+                            child: _preset(
+                                context,
+                                controller,
+                                ThemePreset.custom,
+                                'Своя',
+                                controller.customBackground,
+                                controller.customAccent)),
+                      ])))),
       const SizedBox(height: 12),
       SizedBox(
           width: double.infinity,
@@ -148,7 +213,6 @@ class ThemeSettingsPanel extends StatelessWidget {
                             Color(0xFFB9A0FF),
                             Color(0xFFFF7A9E),
                             Color(0xFFFFC857),
-                            Color(0xFF45D7C4),
                             Color(0xFFEF6A5B),
                             Color(0xFF6FCE72),
                             Color(0xFF3E9BE8),
@@ -180,7 +244,14 @@ class ThemeSettingsPanel extends StatelessWidget {
                             Color(0xFF120D20),
                             Color(0xFF081C2B),
                             Color(0xFF10172E),
-                            Color(0xFF0D1B18)
+                            Color(0xFF0D1B18),
+                            Color(0xFF0C1020),
+                            Color(0xFF151A2D),
+                            Color(0xFF1A2130),
+                            Color(0xFF1C1224),
+                            Color(0xFF0C2023),
+                            Color(0xFF241B12),
+                            Color(0xFF20242B)
                           ])
                             _swatch(context, color, controller.background,
                                 () => controller.setCustom(background: color)),
@@ -214,6 +285,10 @@ class ThemeSettingsPanel extends StatelessWidget {
               'Светлая': 'Daylight',
               'Бумага': 'Paper',
               'Туман': 'Mist',
+              'Аврора': 'Aurora',
+              'Обсидиан': 'Obsidian',
+              'Закат': 'Sunset',
+              'Арктика': 'Arctic',
               'Своя': 'Custom',
             }[name] ??
             name;
@@ -333,6 +408,13 @@ class _ColorDialogState extends State<_ColorDialog> {
           Color(0xFF10172E),
           Color(0xFF18102A),
           Color(0xFF0D1B18),
+          Color(0xFF0C1020),
+          Color(0xFF151A2D),
+          Color(0xFF1A2130),
+          Color(0xFF1C1224),
+          Color(0xFF0C2023),
+          Color(0xFF241B12),
+          Color(0xFF20242B),
         ]
       : const [
           Color(0xFF73A9F4),

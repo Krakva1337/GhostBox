@@ -43,7 +43,6 @@ class _HomePageState extends State<HomePage>
   final routingScroll = ScrollController();
   final routeListController = TextEditingController();
   bool refreshingSubscriptions = false;
-  DateTime? lastRefresh;
   Timer? subscriptionRefreshTimer;
   Color get _surface => Theme.of(context).colorScheme.surface;
   Color get _subscriptionInfoSurface =>
@@ -93,7 +92,7 @@ class _HomePageState extends State<HomePage>
   bool routeListOpen = false;
   String? routeListMode;
   bool autoRefreshSubscriptions = true;
-  int autoRefreshHours = 6;
+  static const int _defaultSubscriptionRefreshHours = 12;
   Timer? uptimeTicker;
   int? coreMemoryMb;
   bool readingCoreMemory = false;
@@ -274,9 +273,6 @@ class _HomePageState extends State<HomePage>
         }
       }
       autoRefreshSubscriptions = p.getBool('autoRefreshSubscriptions') ?? true;
-      final savedRefreshHours = p.getInt('autoRefreshHours') ?? 6;
-      autoRefreshHours =
-          [1, 6, 12, 24].contains(savedRefreshHours) ? savedRefreshHours : 6;
       selectedId = p.getString('selectedProfile') ?? rows.firstOrNull?.id;
       final rawCore = p.getString('coreSettings');
       coreSettings = rawCore == null
@@ -364,7 +360,7 @@ class _HomePageState extends State<HomePage>
     }
     _scheduleSubscriptionRefresh();
     if (autoRefreshSubscriptions) {
-      unawaited(_refreshAllSubscriptions(quiet: true));
+      unawaited(_refreshDueSubscriptions());
     }
     if (mounted &&
         (coreSettings.autoConnect || resumeAfterElevation) &&
@@ -378,19 +374,31 @@ class _HomePageState extends State<HomePage>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed &&
         autoRefreshSubscriptions &&
-        prefs != null &&
-        (lastRefresh == null ||
-            DateTime.now().difference(lastRefresh!).inHours >=
-                autoRefreshHours)) {
-      _refreshAllSubscriptions(quiet: true);
+        prefs != null) {
+      unawaited(_refreshDueSubscriptions());
     }
   }
 
   void _scheduleSubscriptionRefresh() {
     subscriptionRefreshTimer?.cancel();
-    if (!autoRefreshSubscriptions) return;
-    subscriptionRefreshTimer = Timer.periodic(Duration(hours: autoRefreshHours),
-        (_) => unawaited(_refreshAllSubscriptions(quiet: true)));
+    if (!autoRefreshSubscriptions || subscriptions.isEmpty) return;
+    final now = DateTime.now();
+    final nextDue = subscriptions.map((subscription) {
+      final raw = subscription['updatedAt'];
+      final updatedAt = raw is String ? DateTime.tryParse(raw) : null;
+      return updatedAt == null
+          ? now
+          : updatedAt.add(
+              Duration(hours: _subscriptionRefreshIntervalHours(subscription)));
+    }).reduce((a, b) => a.isBefore(b) ? a : b);
+    final wait = nextDue.difference(now);
+    subscriptionRefreshTimer = Timer(
+        wait.isNegative || wait == Duration.zero
+            ? const Duration(milliseconds: 100)
+            : wait, () async {
+      await _refreshDueSubscriptions();
+      _scheduleSubscriptionRefresh();
+    });
   }
 
   Future<void> _setAutoRefresh(bool enabled) async {
@@ -398,14 +406,7 @@ class _HomePageState extends State<HomePage>
     final p = prefs ??= await SharedPreferences.getInstance();
     await p.setBool('autoRefreshSubscriptions', enabled);
     _scheduleSubscriptionRefresh();
-    if (enabled) unawaited(_refreshAllSubscriptions(quiet: true));
-  }
-
-  Future<void> _setAutoRefreshHours(int hours) async {
-    setState(() => autoRefreshHours = hours);
-    final p = prefs ??= await SharedPreferences.getInstance();
-    await p.setInt('autoRefreshHours', hours);
-    _scheduleSubscriptionRefresh();
+    if (enabled) unawaited(_refreshDueSubscriptions());
   }
 
   Future<void> _persist() async {
@@ -1532,17 +1533,62 @@ class _HomePageState extends State<HomePage>
   }
 
   Future<void> _refreshAllSubscriptions({bool quiet = false}) async {
+    await _refreshSubscriptions(quiet: quiet, dueOnly: false);
+  }
+
+  Future<void> _refreshDueSubscriptions() async {
+    await _refreshSubscriptions(quiet: true, dueOnly: true);
+  }
+
+  int _subscriptionRefreshIntervalHours(Map<String, dynamic> subscription) {
+    final metadata = subscription['metadata'];
+    final recommended = metadata is Map
+        ? int.tryParse('${metadata['updateIntervalHours'] ?? ''}')
+        : null;
+    if (recommended != null && recommended > 0) return recommended;
+    // profile-update-interval is expressed in hours. Providers that omit it
+    // use the common 12-hour client default.
+    return _defaultSubscriptionRefreshHours;
+  }
+
+  bool _subscriptionRefreshDue(
+      Map<String, dynamic> subscription, DateTime now) {
+    final rawUpdatedAt = subscription['updatedAt'];
+    final updatedAt =
+        rawUpdatedAt is String ? DateTime.tryParse(rawUpdatedAt) : null;
+    if (updatedAt == null) return true;
+    final age = now.difference(updatedAt);
+    if (age.isNegative) return false;
+    return age >=
+        Duration(hours: _subscriptionRefreshIntervalHours(subscription));
+  }
+
+  Future<void> _refreshSubscriptions(
+      {required bool quiet, required bool dueOnly}) async {
     if (refreshingSubscriptions || subscriptions.isEmpty) return;
+    final all = List<Map<String, dynamic>>.from(subscriptions);
+    final targets = dueOnly
+        ? all
+            .where((subscription) =>
+                _subscriptionRefreshDue(subscription, DateTime.now()))
+            .toList()
+        : all;
+    if (targets.isEmpty || !mounted) return;
     setState(() => refreshingSubscriptions = true);
-    lastRefresh = DateTime.now();
     var failed = 0;
     try {
-      for (final sub in List<Map<String, dynamic>>.from(subscriptions)) {
+      for (final sub in targets) {
         if (!mounted) return;
-        if (!await _refreshSubscription(sub['url'] as String, true)) failed++;
+        final url = sub['url'];
+        if (url is! String ||
+            url.isEmpty ||
+            !await _refreshSubscription(url, true)) {
+          failed++;
+        }
       }
     } finally {
       if (mounted) setState(() => refreshingSubscriptions = false);
+      _scheduleSubscriptionRefresh();
     }
     if (mounted && (!quiet || failed > 0)) {
       _message(failed == 0
@@ -1787,6 +1833,7 @@ class _HomePageState extends State<HomePage>
     }
     await _persist();
     await _saveSubscriptions();
+    _scheduleSubscriptionRefresh();
     if (mounted)
       _message(imported > 0
           ? 'Добавлено серверов: $imported'
@@ -1964,6 +2011,7 @@ class _HomePageState extends State<HomePage>
         await prefs?.setStringList(
             'subscriptionProfileIds', subscriptionProfileIds);
         await prefs?.setString('subscriptions', jsonEncode(subscriptions));
+        _scheduleSubscriptionRefresh();
       }
     } catch (e) {
       if (mounted) _message('$e');
@@ -2670,8 +2718,7 @@ class _HomePageState extends State<HomePage>
             child: Text('Переподключи ядро, чтобы применить маршрут.',
                 style: TextStyle(fontSize: 12))),
         TextButton(
-            onPressed: _applyPendingReconnect,
-            child: const Text('Применить')),
+            onPressed: _applyPendingReconnect, child: const Text('Применить')),
       ]));
 
   Widget _power() => Column(children: [
@@ -3229,7 +3276,8 @@ class _HomePageState extends State<HomePage>
         metadata.announcement != null ||
         metadata.description != null ||
         metadata.supportUrl != null ||
-        metadata.websiteUrl != null;
+        metadata.websiteUrl != null ||
+        metadata.updateIntervalHours != null;
     final progress = total != null && total > 0 && used != null
         ? (used / total).clamp(0.0, 1.0)
         : null;
@@ -4362,6 +4410,20 @@ class _HomePageState extends State<HomePage>
                 const SizedBox(height: 10),
                 SizedBox(
                   width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: () => _openProviderUrl(
+                        'https://github.com/Krakva1337/GhostBox'),
+                    icon: const Icon(Icons.open_in_new_rounded, size: 16),
+                    label: const Text(
+                      'GitHub.com/Krakva1337/GhostBox',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 6),
+                SizedBox(
+                  width: double.infinity,
                   child: FilledButton.icon(
                     onPressed: () async {
                       await Clipboard.setData(ClipboardData(text: report));
@@ -4675,25 +4737,18 @@ class _HomePageState extends State<HomePage>
                 Icons.autorenew_rounded,
                 'Автообновление',
                 autoRefreshSubscriptions
-                    ? 'При запуске и каждые $autoRefreshHours ч'
-                    : 'Выключено',
+                    ? _text('По расписанию провайдера', 'Provider schedule')
+                    : _text('Выключено', 'Off'),
                 _compactSwitch(
                     value: autoRefreshSubscriptions,
                     onChanged: _setAutoRefresh)),
             if (autoRefreshSubscriptions)
               _row(
                   Icons.schedule_rounded,
-                  'Интервал',
-                  'Обновлять подписки раз в $autoRefreshHours ч',
-                  _menu(
-                      '$autoRefreshHours',
-                      {
-                        '1': 'Каждый час',
-                        '6': 'Каждые 6 ч',
-                        '12': 'Каждые 12 ч',
-                        '24': 'Раз в сутки'
-                      },
-                      (value) => _setAutoRefreshHours(int.parse(value)))),
+                  _text('Интервал обновления', 'Refresh interval'),
+                  _text('По заголовку провайдера; если его нет — 12 ч',
+                      'Provider header; 12 h if not specified'),
+                  const SizedBox.shrink()),
           ]);
 
   Widget _advancedSettings() => Column(
@@ -5091,13 +5146,11 @@ class _HomePageState extends State<HomePage>
     await storage.setBool('appEnglish', false);
     await storage.setBool('animatedBackground', true);
     await storage.setBool('autoRefreshSubscriptions', true);
-    await storage.setInt('autoRefreshHours', 6);
     if (mounted) {
       setState(() {
         english = false;
         animatedBackground = true;
         autoRefreshSubscriptions = true;
-        autoRefreshHours = 6;
       });
       ambientMotion.repeat();
     }
@@ -5264,6 +5317,7 @@ class _HomePageState extends State<HomePage>
       await prefs?.setStringList(
           'subscriptionProfileIds', subscriptionProfileIds);
       await prefs?.setString('subscriptions', jsonEncode(subscriptions));
+      _scheduleSubscriptionRefresh();
       if (mounted && !silent)
         _message('Подписка обновлена: ${fresh.length} серверов');
       return true;

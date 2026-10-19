@@ -47,7 +47,7 @@ chmod +x GhostBox-0.1.0-alpha.1-linux-x86_64.AppImage
 Чтобы установить приложение в меню рабочего стола без прав root, из клона репозитория выполни:
 
 ```bash
-./tool/install_appimage.sh ./GhostBox-0.1.0-alpha.1-linux-x86_64.AppImage
+./tool/install_appimage.sh ./dist/GhostBox-0.1.0-alpha.1-linux-x86_64.AppImage
 ```
 
 Добавь ссылку-подписку или сервер, выбери профиль и нажми кнопку подключения. TUN включён по умолчанию. Если AppImage не запускается из-за отсутствия FUSE, попробуй `APPIMAGE_EXTRACT_AND_RUN=1 ./GhostBox-0.1.0-alpha.1-linux-x86_64.AppImage`.
@@ -69,16 +69,13 @@ getcap "$HOME/.local/share/ghostbox-appimage/vendor/bin/sing-box"
 
 ### Сборка из исходников
 
-Нужны Flutter 3.19+ и системные инструменты сборки Linux. В этой рабочей копии используется Flutter 3.47.7.
+Для локальной сборки используй скрипт. Он скачает зависимости, соберёт ядра и приложение, а на Linux создаст AppImage:
 
 ```bash
-flutter pub get
-./tool/fetch_cores.sh
-flutter build linux --release
+./build.sh
 ```
 
-
-Для локальной сборки Android установи Flutter, Go 1.27+, JDK 17, Android SDK и NDK, затем запусти `./tool/build_android.sh`. Скрипт соберёт libbox, добавит AAR в Android проект и выпустит APK. Детали Windows, Android, macOS и iOS — в [deploy/PLATFORMS.md](deploy/PLATFORMS.md).
+Чтобы выбрать Linux без меню: `./build.sh linux`. После сборки установить AppImage в меню можно командой `./tool/install_appimage.sh ./dist/GhostBox-0.1.0-alpha.1-linux-x86_64.AppImage`. Другие платформы выбираются в меню скрипта; требования платформ описаны в [deploy/PLATFORMS.md](deploy/PLATFORMS.md).
 
 ### Приватность и диагностика
 
@@ -135,7 +132,7 @@ chmod +x GhostBox-0.1.0-alpha.1-linux-x86_64.AppImage
 To add GhostBox to the desktop app menu without root access, run this from a repository checkout:
 
 ```bash
-./tool/install_appimage.sh ./GhostBox-0.1.0-alpha.1-linux-x86_64.AppImage
+./tool/install_appimage.sh ./dist/GhostBox-0.1.0-alpha.1-linux-x86_64.AppImage
 ```
 
 Add a subscription URL or server, select a profile and press Connect. TUN is enabled by default. If AppImage cannot start because FUSE is unavailable, try `APPIMAGE_EXTRACT_AND_RUN=1 ./GhostBox-0.1.0-alpha.1-linux-x86_64.AppImage`.
@@ -157,16 +154,13 @@ Run **Build GhostBox for Windows** or **Build GhostBox for Android** from GitHub
 
 ### Build from source
 
-Requirements: Flutter 3.19+ and the Linux desktop build toolchain. This workspace uses Flutter 3.47.7.
+Use the build script. It fetches dependencies, builds the cores and app, and creates an AppImage on Linux:
 
 ```bash
-flutter pub get
-./tool/fetch_cores.sh
-flutter build linux --release
+./build.sh
 ```
 
-
-To build Android locally, install Flutter, Go 1.27+, JDK 17, Android SDK and NDK, then run `./tool/build_android.sh`. It builds libbox, copies the AAR into the Android project and builds the APK. See [deploy/PLATFORMS.md](deploy/PLATFORMS.md) for Windows, Android, macOS and iOS build details.
+For a direct Linux build without the target picker: `./build.sh linux`. To install the resulting AppImage into the desktop menu, run `./tool/install_appimage.sh ./dist/GhostBox-0.1.0-alpha.1-linux-x86_64.AppImage`. Choose other targets in the script menu; platform requirements are listed in [deploy/PLATFORMS.md](deploy/PLATFORMS.md).
 
 ### Privacy and diagnostics
 

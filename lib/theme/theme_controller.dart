@@ -16,6 +16,10 @@ enum ThemePreset {
   daylight,
   paper,
   mist,
+  aurora,
+  obsidian,
+  sunset,
+  arctic,
   custom
 }
 
@@ -41,6 +45,10 @@ class ThemeController extends ChangeNotifier {
         ThemePreset.daylight => const Color(0xFF355FBB),
         ThemePreset.paper => const Color(0xFF6857B8),
         ThemePreset.mist => const Color(0xFF347F8A),
+        ThemePreset.aurora => const Color(0xFF53D6C2),
+        ThemePreset.obsidian => const Color(0xFF90A4C3),
+        ThemePreset.sunset => const Color(0xFFFF9568),
+        ThemePreset.arctic => const Color(0xFF247D9B),
         ThemePreset.custom => _customAccent,
       };
   Color get background => switch (_preset) {
@@ -57,12 +65,17 @@ class ThemeController extends ChangeNotifier {
         ThemePreset.daylight => const Color(0xFFF1F5FC),
         ThemePreset.paper => const Color(0xFFF6F2EB),
         ThemePreset.mist => const Color(0xFFEDF5F5),
+        ThemePreset.aurora => const Color(0xFF071A20),
+        ThemePreset.obsidian => const Color(0xFF111722),
+        ThemePreset.sunset => const Color(0xFF20120F),
+        ThemePreset.arctic => const Color(0xFFEAF5FA),
         ThemePreset.custom => _customBackground,
       };
   Brightness get brightness => switch (_preset) {
         ThemePreset.daylight ||
         ThemePreset.paper ||
-        ThemePreset.mist =>
+        ThemePreset.mist ||
+        ThemePreset.arctic =>
           Brightness.light,
         _ => Brightness.dark,
       };

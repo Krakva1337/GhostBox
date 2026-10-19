@@ -675,6 +675,18 @@ class CoreProcessBackend implements VpnBackend {
           {'ip_cidr': routeIps, 'action': 'route', 'outbound': 'proxy'},
       ];
       final dnsConfig = _singBoxDnsConfig();
+      final hasSplitDnsDomains = (settings.routing == 'exclude'
+              ? settings.directDomains
+              : settings.proxyDomains)
+          .any((value) => !CoreSettings.isIpRoute(value));
+      final defaultDnsDetour = hasSplitDnsDomains
+          ? (settings.routing == 'rules' ? 'direct' : 'proxy')
+          : (settings.dnsThroughProxy ? 'proxy' : 'direct');
+      final defaultDnsTag =
+          settings.dns == 'combined' ? 'cloudflare' : 'resolver';
+      final defaultDnsResolverTag = hasSplitDnsDomains
+          ? '$defaultDnsTag-$defaultDnsDetour'
+          : defaultDnsTag;
       return {
         'log': {
           'level': settings.logLevel == 'warning' ? 'warn' : settings.logLevel
@@ -707,6 +719,7 @@ class CoreProcessBackend implements VpnBackend {
           {'type': 'direct', 'tag': 'direct'}
         ],
         'route': {
+          'default_domain_resolver': {'server': defaultDnsResolverTag},
           if (settings.connectionMode == 'tun' ||
               settings.connectionMode == 'mixed')
             'auto_detect_interface': true,

@@ -1,0 +1,5 @@
+GhostBox desktop cores
+Xray: v1.260327.0
+sing-box: v1.14.3
+sing-box tags: with_quic,with_utls
+Target: linux/amd64

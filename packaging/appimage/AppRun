@@ -20,5 +20,6 @@ if [ -f "$HERE/vendor/bin/BUILD-INFO.txt" ]; then
 fi
 
 export GHOSTBOX_VENDOR_DIR="$VENDOR_DIR"
+export GHOSTBOX_ICON_PATH="$HERE/ghostbox.png"
 export LD_LIBRARY_PATH="$HERE/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 exec "$HERE/ghostbox" "$@"
