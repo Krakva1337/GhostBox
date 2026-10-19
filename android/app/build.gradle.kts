@@ -18,8 +18,14 @@ val hasReleaseSigning = listOf(
 
 android {
     namespace = "app.ghostbox.ghostbox"
-    compileSdk = flutter.compileSdkVersion
+    // Newer AndroidX plugins in the mobile UI require API 36 at compile time.
+    // This does not raise targetSdk or minSdk and does not change runtime opt-ins.
+    compileSdk = maxOf(flutter.compileSdkVersion, 36)
     ndkVersion = flutter.ndkVersion
+
+    buildFeatures {
+        buildConfig = true
+    }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

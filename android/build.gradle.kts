@@ -1,3 +1,5 @@
+import com.android.build.gradle.LibraryExtension
+
 allprojects {
     repositories {
         google()
@@ -15,8 +17,13 @@ subprojects {
     val newSubprojectBuildDir: Directory = newBuildDir.dir(project.name)
     project.layout.buildDirectory.value(newSubprojectBuildDir)
 }
+// A few Flutter plugins still pin their library modules to API 34, while
+// current AndroidX dependencies require API 36 metadata checks. Raise only
+// the compile SDK for Android library subprojects; target/min SDKs stay intact.
 subprojects {
-    project.evaluationDependsOn(":app")
+    afterEvaluate {
+        extensions.findByType(LibraryExtension::class.java)?.compileSdk = 36
+    }
 }
 
 tasks.register<Delete>("clean") {
