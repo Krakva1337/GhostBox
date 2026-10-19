@@ -1,0 +1,67 @@
+name: Build GhostBox for Apple platforms
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    name: macOS app (Apple Silicon)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.2'
+          cache: true
+      - name: Build macOS app and bundled cores
+        run: ./tool/build.sh macos
+      - name: Verify app signature
+        run: |
+          app="$(find build/macos/Build/Products/Release -maxdepth 1 -name '*.app' -print -quit)"
+          test -n "$app"
+          codesign --verify --deep --strict "$app"
+          mkdir -p dist
+          ditto -c -k --sequesterRsrc --keepParent "$app" dist/GhostBox-macOS-arm64-dev.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GhostBox-macOS-arm64-dev
+          path: dist/GhostBox-macOS-arm64-dev.zip
+          if-no-files-found: error
+          retention-days: 14
+
+  ios-unsigned:
+    name: iOS unsigned compile (VPN extension pending)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.2'
+          cache: true
+      - name: Build Apple sing-box library
+        run: ./tool/build_mobile_cores.sh apple
+      - name: Compile unsigned iOS shell
+        run: |
+          flutter pub get
+          flutter build ios --release --no-codesign
+      - name: Explain current iOS scope
+        run: echo 'This is a compile artifact only. PacketTunnelProvider, its app-extension target and Apple VPN entitlements are not integrated yet.'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GhostBox-iOS-unsigned-compile
+          path: |
+            build/ios/iphoneos/Runner.app
+            dist/cores/apple/Libbox.xcframework
+          if-no-files-found: error
+          retention-days: 14

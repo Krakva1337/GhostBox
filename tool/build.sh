@@ -160,7 +160,11 @@ case "$target" in
     cd "$project_dir"
     flutter pub get
     flutter build macos --release
-    "$project_dir/tool/package_macos_cores.sh" "$project_dir/build/macos/Build/Products/Release/GhostBox.app" "$arch"
+    app_dir="$project_dir/build/macos/Build/Products/Release/GhostBox.app"
+    if [[ ! -d "$app_dir" ]]; then
+      app_dir="$project_dir/build/macos/Build/Products/Release/Runner.app"
+    fi
+    "$project_dir/tool/package_macos_cores.sh" "$app_dir" "$arch"
     ;;
   ios)
     [[ "$(uname -s)" == Darwin ]] || { echo 'iOS builds require macOS and Xcode.' >&2; exit 1; }

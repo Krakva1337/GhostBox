@@ -380,7 +380,7 @@ class _HomePageState extends State<HomePage>
     final resumeAfterElevation =
         Platform.isWindows && (p.getBool('connectAfterElevation') ?? false);
     if (resumeAfterElevation) await p.setBool('connectAfterElevation', false);
-    if (Platform.isWindows || Platform.isLinux) {
+    if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
       try {
         await systemProxy.restore();
       } on Object catch (error) {
@@ -427,7 +427,7 @@ class _HomePageState extends State<HomePage>
       if (p.getBool('xrayDefaultMigrated') != true) {
         coreSettings = coreSettings.copyWith(core: 'xray');
       }
-      if (Platform.isAndroid) {
+      if (Platform.isAndroid || Platform.isIOS) {
         coreSettings = coreSettings.copyWith(
           core: 'sing-box',
           connectionMode: 'tun',
@@ -436,7 +436,13 @@ class _HomePageState extends State<HomePage>
       }
       if (p.getBool('tunDefaultMigrated') != true) {
         coreSettings = coreSettings.copyWith(
-            connectionMode: Platform.isWindows ? 'system' : 'tun');
+            connectionMode:
+                Platform.isWindows || Platform.isMacOS ? 'system' : 'tun');
+      }
+      if (Platform.isMacOS &&
+          (coreSettings.connectionMode == 'tun' ||
+              coreSettings.connectionMode == 'mixed')) {
+        coreSettings = coreSettings.copyWith(connectionMode: 'system');
       }
       if (migrateWindowsProxy) {
         coreSettings = coreSettings.copyWith(connectionMode: 'system');
@@ -474,7 +480,7 @@ class _HomePageState extends State<HomePage>
       await p.setBool('xrayDefaultMigrated', true);
       await p.setBool('tunDefaultMigrated', true);
     }
-    if (Platform.isAndroid) {
+    if (Platform.isAndroid || Platform.isIOS || Platform.isMacOS) {
       await p.setString('coreSettings', jsonEncode(coreSettings.toJson()));
     }
     if (migrateWindowsProxy) {
@@ -597,6 +603,13 @@ class _HomePageState extends State<HomePage>
   Future<void> _toggle({bool allowDuringSwitch = false}) async {
     if (backend.state == VpnState.connecting ||
         (switchingServer && !allowDuringSwitch)) return;
+    if (Platform.isIOS && backend.state != VpnState.connected) {
+      _message(_text(
+        'Для iOS ещё нужен Network Extension. Сборка приложения и ядра подготовлена, системный VPN-модуль пока не подключён.',
+        'iOS still needs a Network Extension. The app and core build is prepared, but the system VPN provider is not integrated yet.',
+      ));
+      return;
+    }
     if (backend.state == VpnState.connected) {
       _recordAppLog('Отключено');
       glow.stop();
@@ -1495,8 +1508,16 @@ class _HomePageState extends State<HomePage>
   }
 
   Future<void> _setConnectionMode(String mode) async {
-    if (Platform.isAndroid && mode != 'tun') {
-      _message('Android подключает приложения через системный VPN (TUN)');
+    if ((Platform.isAndroid || Platform.isIOS) && mode != 'tun') {
+      _message(Platform.isIOS
+          ? _text('На iOS доступен только системный VPN (TUN)',
+              'iOS only supports the system VPN (TUN) mode')
+          : 'Android подключает приложения через системный VPN (TUN)');
+      return;
+    }
+    if (Platform.isMacOS && mode != 'proxy' && mode != 'system') {
+      _message(_text('На macOS доступны локальный прокси и системный прокси',
+          'macOS supports local proxy and system proxy modes'));
       return;
     }
     if (Platform.isLinux &&
@@ -2317,8 +2338,8 @@ class _HomePageState extends State<HomePage>
   }
 
   Future<void> _selectCore(String value) async {
-    if (Platform.isAndroid && value == 'Xray') {
-      _message('На Android системный TUN работает через sing-box');
+    if ((Platform.isAndroid || Platform.isIOS) && value == 'Xray') {
+      _message('На мобильных устройствах VPN-режим использует sing-box');
       return;
     }
     final next = value == 'Xray' ? 'xray' : 'sing-box';
@@ -3217,21 +3238,26 @@ class _HomePageState extends State<HomePage>
       Column(mainAxisSize: MainAxisSize.min, children: [
         Row(mainAxisAlignment: MainAxisAlignment.center, children: [
           _tinyStat('ЯДРО', process?.name ?? coreSettings.core,
-              choices: Platform.isAndroid
+              choices: Platform.isAndroid || Platform.isIOS
                   ? const [('sing-box', 'sing-box')]
                   : const [('xray', 'Xray'), ('sing-box', 'sing-box')],
               onSelected: (value) =>
                   _selectCore(value == 'xray' ? 'Xray' : value)),
           const SizedBox(width: 8),
           _tinyStat('РЕЖИМ', _connectionModeLabel(coreSettings.connectionMode),
-              choices: Platform.isAndroid
-                  ? const [('tun', 'Android VPN')]
-                  : const [
-                      ('proxy', 'Proxy'),
-                      ('system', 'System proxy'),
-                      ('tun', 'TUN'),
-                      ('mixed', 'Mixed'),
-                    ],
+              choices: Platform.isAndroid || Platform.isIOS
+                  ? [('tun', Platform.isIOS ? 'iOS VPN' : 'Android VPN')]
+                  : Platform.isMacOS
+                      ? const [
+                          ('proxy', 'Proxy'),
+                          ('system', 'System proxy'),
+                        ]
+                      : const [
+                          ('proxy', 'Proxy'),
+                          ('system', 'System proxy'),
+                          ('tun', 'TUN'),
+                          ('mixed', 'Mixed'),
+                        ],
               onSelected: _setConnectionMode),
         ]),
         if (coreSettings.showRamUsage) ...[
@@ -4991,7 +5017,7 @@ class _HomePageState extends State<HomePage>
                 },
                 _menu(
                     coreSettings.pingMode,
-                    Platform.isAndroid
+                    Platform.isAndroid || Platform.isIOS
                         ? const {'tcp': 'TCP · порт сервера'}
                         : const {
                             'proxy': 'Proxy GET · через прокси',
@@ -5249,7 +5275,13 @@ class _HomePageState extends State<HomePage>
                 },
                 _menu(
                     coreSettings.pingMode,
-                    {'proxy': 'Proxy GET', 'tcp': 'TCP', 'icmp': 'ICMP'},
+                    Platform.isAndroid || Platform.isIOS
+                        ? const {'tcp': 'TCP'}
+                        : const {
+                            'proxy': 'Proxy GET',
+                            'tcp': 'TCP',
+                            'icmp': 'ICMP',
+                          },
                     (v) => _saveCore(coreSettings.copyWith(pingMode: v),
                         requiresReconnect: false))),
             if (coreSettings.pingMode == 'proxy')
@@ -5421,6 +5453,19 @@ class _HomePageState extends State<HomePage>
     try {
       final data = Map<String, dynamic>.from(jsonDecode(accepted) as Map);
       var updated = CoreSettings.fromJson(data);
+      if (Platform.isMacOS &&
+          updated.connectionMode != 'proxy' &&
+          updated.connectionMode != 'system') {
+        throw const FormatException(
+            'На macOS JSON может включать только режим Proxy или System proxy.');
+      }
+      if (Platform.isIOS &&
+          (updated.core != 'sing-box' ||
+              updated.connectionMode != 'tun' ||
+              updated.pingMode != 'tcp')) {
+        throw const FormatException(
+            'Для iOS требуются sing-box, системный VPN (TUN) и TCP-проверка задержки.');
+      }
       if (updated.killSwitchEnabled && !Platform.isLinux) {
         throw const FormatException('Kill Switch доступен только в Linux.');
       }
@@ -5489,7 +5534,9 @@ class _HomePageState extends State<HomePage>
     }
     if (backend.state != VpnState.disconnected) await _disconnectActive();
     final defaults = CoreSettings(
-        core: Platform.isAndroid ? 'sing-box' : 'xray', connectionMode: 'tun');
+      core: Platform.isAndroid || Platform.isIOS ? 'sing-box' : 'xray',
+      connectionMode: Platform.isMacOS ? 'system' : 'tun',
+    );
     await _saveCore(defaults, requiresReconnect: false);
     process?.settings = defaults;
     await ThemeController.instance.select(ThemePreset.midnight);

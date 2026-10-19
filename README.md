@@ -4,7 +4,7 @@
 
 ## Русский
 
-GhostBox — VPN-клиент на Flutter с ядрами Xray и sing-box. Linux поддерживает оба ядра. На Android подключение выполняется через системный `VpnService` и sing-box libbox; Windows поддерживает системный прокси и TUN с запросом прав администратора. macOS и iOS пока находятся на этапе подготовки ядер и runner-проектов.
+GhostBox — VPN-клиент на Flutter с ядрами Xray и sing-box. Linux поддерживает оба ядра. На Android подключение выполняется через системный `VpnService` и sing-box libbox; Windows поддерживает системный прокси и TUN с запросом прав администратора. На macOS доступны локальный и системный SOCKS-прокси; TUN пока не реализован. iOS проходит предварительную сборку, но VPN-подключение требует Network Extension, который пока не подключён.
 
 ### Возможности
 
@@ -37,7 +37,9 @@ SDK можно установить через `tool/setup_android.sh`. Linux с
 текущей архитектуры (x86_64 или ARM64) и
 предлагает установить его и один раз выдать ядрам право TUN. Windows и Apple
 приложения собираются на Windows и macOS соответственно; для Windows на Linux
-используй GitHub Actions.
+используй GitHub Actions. Apple dev-сборки доступны в **Actions → Build GhostBox
+for Apple platforms**. macOS выдаёт ad-hoc подписанный `.app` для проверки;
+iOS выдаёт только unsigned compile artifact и libbox XCFramework, пока без VPN.
 
 Скачай подходящий AppImage в **Actions → Build GhostBox packages → Artifacts**:
 `x86_64` подходит для Intel/AMD 64-bit, `aarch64` — для ARM64 Linux.
@@ -114,11 +116,11 @@ base64 -w0 ghostbox-release.jks
 
 ### Статус альфа-релиза
 
-Текущая цель — Linux desktop и Windows x64. Альфа требует проверки на твоём сервере и сети; держи возможность вернуться к предыдущему VPN и не запускай два TUN-клиента одновременно. Подробности и шаги установки — в [RELEASE-ALPHA.md](RELEASE-ALPHA.md).
+Текущая цель релиза — Linux desktop и Windows x64; macOS proxy-сборка доступна для разработки, а iOS пока без Network Extension VPN-провайдера. Альфа требует проверки на твоём сервере и сети; держи возможность вернуться к предыдущему VPN и не запускай два TUN-клиента одновременно. Подробности и шаги установки — в [RELEASE-ALPHA.md](RELEASE-ALPHA.md).
 
 ## English
 
-GhostBox is a Flutter VPN client powered by Xray and sing-box. Linux supports both cores. Android connects through the system `VpnService` and sing-box libbox; Windows supports the current user's system proxy and TUN with a Windows administrator prompt. macOS and iOS currently have core and runner build preparation only.
+GhostBox is a Flutter VPN client powered by Xray and sing-box. Linux supports both cores. Android connects through the system `VpnService` and sing-box libbox; Windows supports the current user's system proxy and TUN with a Windows administrator prompt. macOS supports local and system SOCKS proxy modes; TUN is not implemented yet. iOS has a preliminary build path, but VPN connections still need a Network Extension, which is not integrated yet.
 
 ### Features
 
@@ -150,7 +152,10 @@ fetches Go/Flutter dependencies and core binaries, then builds what the current
 host can produce. Android SDK setup is available through
 `tool/setup_android.sh`. Linux creates an AppImage and offers to install it and
 grant the core binaries TUN capability once. Windows and Apple app builds need
-their native operating systems; use GitHub Actions for Windows from Linux.
+their native operating systems; use GitHub Actions for Windows from Linux. Apple
+development artifacts are available in **Actions → Build GhostBox for Apple
+platforms**. The macOS `.app` is ad-hoc signed for local testing; the iOS output
+is only an unsigned compile artifact and libbox XCFramework, not a VPN release.
 
 Download `GhostBox-0.1.0-alpha.2-linux-x86_64.AppImage` from GitHub Releases and run:
 
@@ -215,7 +220,7 @@ Use the build script. It fetches dependencies, builds native cores and the app, 
 ./build.sh
 ```
 
-For a direct Linux build without the target picker: `./build.sh linux`. The output ends in `linux-x86_64.AppImage` on Intel/AMD PCs or `linux-aarch64.AppImage` on ARM64. To build the Windows x64 ZIP from Linux, push the branch to GitHub, open **Actions → Build GhostBox packages → Run workflow**, wait for the workflow to finish, then download the `GhostBox-Windows-x64` artifact. Linux builds appear as `GhostBox-Linux-x86_64-AppImage` and `GhostBox-Linux-ARM64-AppImage`. Choose other targets in the script menu; platform requirements are listed in [deploy/PLATFORMS.md](deploy/PLATFORMS.md).
+For a direct Linux build without the target picker: `./build.sh linux`. The output ends in `linux-x86_64.AppImage` on Intel/AMD PCs or `linux-aarch64.AppImage` on ARM64. To build the Windows x64 ZIP from Linux, push the branch to GitHub, open **Actions → Build GhostBox packages → Run workflow**, wait for the workflow to finish, then download the `GhostBox-Windows-x64` artifact. Linux builds appear as `GhostBox-Linux-x86_64-AppImage` and `GhostBox-Linux-ARM64-AppImage`. Choose other targets in the script menu; platform requirements are listed in [deploy/PLATFORMS.md](deploy/PLATFORMS.md). Apple development builds run from **Actions → Build GhostBox for Apple platforms**.
 
 ### Privacy and diagnostics
 
@@ -225,7 +230,7 @@ Settings and profiles are stored locally. The User-Agent contains only the clien
 
 ### Alpha status
 
-The current target is Linux desktop. Validate this alpha with your server and network, keep your previous VPN available, and do not run two TUN clients at once. See [RELEASE-ALPHA.md](RELEASE-ALPHA.md) for release notes and installation steps.
+The current release target is Linux desktop. macOS proxy builds are available for development; iOS is still missing its Network Extension VPN provider. Validate this alpha with your server and network, keep your previous VPN available, and do not run two TUN clients at once. See [RELEASE-ALPHA.md](RELEASE-ALPHA.md) for release notes and installation steps.
 
 ## License
 

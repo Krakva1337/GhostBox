@@ -18,5 +18,19 @@ install_dir="$app_bundle/Contents/MacOS/vendor/bin"
 mkdir -p "$install_dir"
 install -m 0755 "$core_dir/xray" "$install_dir/xray"
 install -m 0755 "$core_dir/sing-box" "$install_dir/sing-box"
+identity="${GHOSTBOX_CODESIGN_IDENTITY:--}"
+sign_args=(--force --sign "$identity")
+if [[ "$identity" != "-" ]]; then
+  sign_args+=(--options runtime --timestamp)
+fi
+codesign "${sign_args[@]}" "$install_dir/xray"
+codesign "${sign_args[@]}" "$install_dir/sing-box"
+codesign "${sign_args[@]}" \
+  --entitlements "$project_dir/macos/Runner/Release.entitlements" "$app_bundle"
+codesign --verify --deep --strict "$app_bundle"
 echo "Installed cores in $install_dir"
-echo 'Sign the nested cores and the app bundle after copying for signed distribution.'
+if [[ "$identity" == "-" ]]; then
+  echo 'Ad-hoc signed for local testing; Developer ID signing and notarization are required for public distribution.'
+else
+  echo "Signed with: $identity. Notarize the app before public distribution."
+fi

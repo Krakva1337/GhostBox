@@ -5,10 +5,12 @@ import 'dart:io';
 class DesktopSystemProxy {
   final LinuxSystemProxy _linux = LinuxSystemProxy();
   final WindowsSystemProxy _windows = WindowsSystemProxy();
+  final MacOSSystemProxy _macOS = MacOSSystemProxy();
 
   Future<void> enable(int port) async {
     if (Platform.isLinux) return _linux.enable(port);
     if (Platform.isWindows) return _windows.enable(port);
+    if (Platform.isMacOS) return _macOS.enable(port);
     throw const ProcessException(
         'system proxy', [], 'System proxy integration is unavailable.');
   }
@@ -16,6 +18,7 @@ class DesktopSystemProxy {
   Future<void> restore() async {
     if (Platform.isLinux) return _linux.restore();
     if (Platform.isWindows) return _windows.restore();
+    if (Platform.isMacOS) return _macOS.restore();
   }
 }
 
@@ -289,6 +292,8 @@ public static class GhostBoxWinInet {
   [DllImport("wininet.dll", SetLastError=true)]
   public static extern bool InternetSetOption(IntPtr h, int option, IntPtr b, int n);
 }
+
+
 "@
 if (-not ('GhostBoxWinInet' -as [type])) { Add-Type -TypeDefinition $source }
 [GhostBoxWinInet]::InternetSetOption([IntPtr]::Zero, 39, [IntPtr]::Zero, 0) | Out-Null
@@ -305,6 +310,181 @@ if (-not ('GhostBoxWinInet' -as [type])) { Add-Type -TypeDefinition $source }
     if (result.exitCode != 0) {
       throw ProcessException('powershell.exe', const ['-Command'],
           '${result.stderr} ${result.stdout}');
+    }
+  }
+}
+
+/// Configures the active macOS network service's SOCKS proxy. networksetup
+/// requires administrator authorization, so macOS presents its standard
+/// authorization dialog when the app is not already elevated. The previous
+/// proxy is persisted and restored after disconnect or the next app launch.
+class MacOSSystemProxy {
+  Map<String, String>? _previous;
+
+  File? get _snapshotFile {
+    final home = Platform.environment['HOME'];
+    if (home == null || home.isEmpty) return null;
+    return File(
+        '$home${Platform.pathSeparator}Library${Platform.pathSeparator}Application Support${Platform.pathSeparator}GhostBox${Platform.pathSeparator}macos-proxy-restore.json');
+  }
+
+  Future<void> enable(int port) async {
+    if (!Platform.isMacOS) return;
+    final service = await _activeNetworkService();
+    if (_previous == null) {
+      _previous = await _readPrevious() ?? await _readCurrent(service);
+      await _persistPrevious(_previous!);
+    }
+    await _runNetworkSetupBatch([
+      ['-setsocksfirewallproxy', service, '127.0.0.1', '$port'],
+      ['-setsocksfirewallproxystate', service, 'on'],
+    ]);
+    final actual = await _readCurrent(service);
+    if (actual['enabled'] != 'Yes' ||
+        actual['server'] != '127.0.0.1' ||
+        actual['port'] != '$port') {
+      throw const ProcessException(
+          'networksetup', [], 'macOS system proxy preference did not persist.');
+    }
+  }
+
+  Future<String> _activeNetworkService() async {
+    final route = await Process.run('/sbin/route', ['-n', 'get', 'default']);
+    final device = RegExp(r'^\s*interface:\s*(\S+)', multiLine: true)
+        .firstMatch('${route.stdout}')
+        ?.group(1);
+    final result = await Process.run(
+        '/usr/sbin/networksetup', ['-listnetworkserviceorder']);
+    if (result.exitCode != 0) {
+      throw ProcessException('networksetup', ['-listnetworkserviceorder'],
+          '${result.stderr} ${result.stdout}');
+    }
+    String? firstEnabled;
+    String? matching;
+    String? service;
+    for (final line in '${result.stdout}'.split('\n')) {
+      final header = RegExp(r'^\s*\(\d+\)\s+(.+)$').firstMatch(line);
+      if (header != null) {
+        final value = header.group(1)!.trim();
+        service = value.startsWith('*') ? null : value;
+        firstEnabled ??= service;
+        continue;
+      }
+      final hardware = RegExp(r'Device:\s*([^)]+)\)').firstMatch(line);
+      if (service != null && device != null && hardware?.group(1) == device) {
+        matching = service;
+        break;
+      }
+    }
+    final selected = matching ?? firstEnabled;
+    if (selected == null || selected.isEmpty) {
+      throw const ProcessException(
+          'networksetup', [], 'No enabled macOS network service was found.');
+    }
+    return selected;
+  }
+
+  Future<Map<String, String>> _readCurrent(String service) async {
+    final result = await Process.run(
+        '/usr/sbin/networksetup', ['-getsocksfirewallproxy', service]);
+    if (result.exitCode != 0) {
+      throw ProcessException(
+          'networksetup',
+          ['-getsocksfirewallproxy', service],
+          '${result.stderr} ${result.stdout}');
+    }
+    final values = <String, String>{};
+    for (final line in '${result.stdout}'.split('\n')) {
+      final match =
+          RegExp(r'^\s*(Enabled|Server|Port):\s*(.*)$').firstMatch(line);
+      if (match != null)
+        values[match.group(1)!.toLowerCase()] = match.group(2)!.trim();
+    }
+    return {
+      'service': service,
+      'enabled': values['enabled'] ?? 'No',
+      'server': values['server'] == '(Empty)' ? '' : values['server'] ?? '',
+      'port': values['port'] == '(Empty)' ? '0' : values['port'] ?? '0',
+    };
+  }
+
+  Future<void> _runNetworkSetup(List<String> args) async {
+    await _runNetworkSetupBatch([args]);
+  }
+
+  Future<void> _runNetworkSetupBatch(List<List<String>> commands) async {
+    Object? directError;
+    for (final args in commands) {
+      final direct = await Process.run('/usr/sbin/networksetup', args);
+      if (direct.exitCode != 0) {
+        directError = '${direct.stderr} ${direct.stdout}';
+        break;
+      }
+    }
+    if (directError == null) return;
+    final shell = commands
+        .map((args) =>
+            '/usr/sbin/networksetup ${args.map(_shellQuote).join(' ')}')
+        .join(' && ');
+    final escaped = shell.replaceAll('\\', '\\\\').replaceAll('"', '\\"');
+    final authorized = await Process.run('/usr/bin/osascript', [
+      '-e',
+      'do shell script "$escaped" with administrator privileges',
+    ]);
+    if (authorized.exitCode != 0) {
+      final authorizationError =
+          '${authorized.stderr} ${authorized.stdout}'.trim();
+      throw ProcessException(
+          'networksetup',
+          commands.expand((args) => args).toList(),
+          authorizationError.isEmpty ? '$directError' : authorizationError);
+    }
+  }
+
+  String _shellQuote(String value) => "'${value.replaceAll("'", "'\\''")}'";
+
+  Future<void> restore() async {
+    if (!Platform.isMacOS) return;
+    final previous = _previous ?? await _readPrevious();
+    if (previous == null) return;
+    final service = previous['service'];
+    if (service == null) return;
+    final commands = <List<String>>[];
+    final oldServer = previous['server'] ?? '';
+    if (oldServer.isNotEmpty) {
+      commands.add([
+        '-setsocksfirewallproxy',
+        service,
+        oldServer,
+        previous['port'] ?? '0',
+      ]);
+    }
+    commands.add([
+      '-setsocksfirewallproxystate',
+      service,
+      previous['enabled'] == 'Yes' ? 'on' : 'off',
+    ]);
+    await _runNetworkSetupBatch(commands);
+    final snapshot = _snapshotFile;
+    if (snapshot != null && await snapshot.exists()) await snapshot.delete();
+    _previous = null;
+  }
+
+  Future<void> _persistPrevious(Map<String, String> previous) async {
+    final file = _snapshotFile;
+    if (file == null) return;
+    await file.parent.create(recursive: true);
+    await file.writeAsString(jsonEncode(previous), flush: true);
+  }
+
+  Future<Map<String, String>?> _readPrevious() async {
+    final file = _snapshotFile;
+    if (file == null || !await file.exists()) return null;
+    try {
+      return Map<String, String>.from(
+          jsonDecode(await file.readAsString()) as Map);
+    } on Object {
+      return null;
     }
   }
 }

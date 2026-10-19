@@ -7,6 +7,11 @@ for x86_64 and ARM64 on native runners, plus a Windows x64 portable ZIP and
 Inno Setup installer. Workflow artifacts are retained for 14 days. Linux ARM64
 uses the `aarch64` AppImage suffix; these binaries only run on ARM64 Linux.
 
+The manual **Build GhostBox for Apple platforms** workflow builds an Apple
+Silicon macOS `.app` and an unsigned iOS compile artifact. The macOS app uses
+local proxy or System Proxy mode; the iOS output is for compile/UI work only
+until the Packet Tunnel extension and Apple provisioning are complete.
+
 Core versions are pinned in the build scripts so desktop and mobile artifacts can
 be rebuilt from the same revisions:
 
@@ -91,12 +96,16 @@ Current platform integration:
   It requires `nftables` and `pkexec`; the rule stays installed after GhostBox
   exits until explicitly disabled, and allows only loopback, `ghostbox0`, DHCP
   traffic and the selected VPN endpoint.
-- iOS still needs a `PacketTunnelProvider` app-extension target, a
-  `NETunnelProviderManager` setup flow, Network Extension entitlements and a
-  Flutter-to-extension configuration channel. Build/sign with an Apple team.
-- macOS still needs a supported VPN/TUN adapter and the required Network
-  Extension or system-extension entitlements. The generated Flutter runner and
-  desktop core binaries alone provide the UI and local core processes.
+- macOS supports local proxy and System Proxy modes using the bundled Xray or
+  sing-box process. System Proxy changes the active network service's SOCKS
+  setting and requests administrator authorization; previous settings are
+  saved and restored. TUN/Mixed are intentionally unavailable until a supported
+  Network Extension adapter is added.
+- iOS currently builds the Flutter shell and Apple Libbox XCFramework, but
+  cannot connect yet. It still needs a `PacketTunnelProvider` app-extension
+  target, a `NETunnelProviderManager` setup flow, Network Extension entitlements
+  and a Flutter-to-extension configuration channel. Build/sign with an Apple
+  team and request the Network Extension capability for the App ID.
 
 Android and Windows builds have not yet been device/VM validated in this
 workspace. Run the workflows and smoke-test VPN permission, connect/disconnect,
@@ -120,8 +129,10 @@ Android: ./tool/build_android.sh
 ```
 
 Windows requires Visual Studio's Desktop development with C++ workload. Apple
-targets require Xcode; iOS distribution additionally needs valid signing and
-Network Extension entitlements. Android release distribution needs a private
+targets require Xcode. The macOS app is ad-hoc signed for local testing by
+default; use a Developer ID certificate and notarize it before distribution.
+iOS distribution needs valid signing, a Packet Tunnel extension and Network
+Extension entitlements. Android release distribution needs a private
 release keystore instead of the debug key currently configured in Gradle.
 
 On Windows, build the x64 package with:
