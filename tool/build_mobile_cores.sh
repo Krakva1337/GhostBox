@@ -5,6 +5,7 @@ set -euo pipefail
 project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 target="${1:-}"
 gomobile_version="${GHOSTBOX_GOMOBILE_VERSION:-v0.1.13}"
+android_ndk_version="${GHOSTBOX_ANDROID_NDK_VERSION:-28.2.13676358}"
 artifact_dir="$project_dir/dist/cores"
 
 case "$target" in
@@ -29,10 +30,23 @@ if [[ "$target" == apple ]]; then
   }
   command -v xcodebuild >/dev/null || { echo 'Xcode is required.' >&2; exit 1; }
 else
-  [[ -n "${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}" ]] || {
+  android_sdk="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+  [[ -n "$android_sdk" ]] || {
     echo 'Set ANDROID_HOME to an installed Android SDK (run tool/setup_android.sh first).' >&2
     exit 1
   }
+  android_ndk="$android_sdk/ndk/$android_ndk_version"
+  [[ -d "$android_ndk/toolchains/llvm" ]] || {
+    echo "Android NDK $android_ndk_version is required at $android_ndk (set GHOSTBOX_ANDROID_NDK_VERSION to override)." >&2
+    exit 1
+  }
+  # setup-android on GitHub runners exports its preinstalled r27 as
+  # ANDROID_NDK_HOME even if sdkmanager has also installed r28. sing-box-lx's
+  # Cronet archive requires r28's linker, so pin the toolchain explicitly.
+  export ANDROID_HOME="$android_sdk"
+  export ANDROID_SDK_ROOT="$android_sdk"
+  export ANDROID_NDK_HOME="$android_ndk"
+  export ANDROID_NDK_ROOT="$android_ndk"
 fi
 
 mkdir -p "$(dirname "$source_dir")" "$artifact_dir"

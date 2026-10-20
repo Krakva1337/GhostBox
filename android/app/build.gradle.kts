@@ -21,7 +21,9 @@ android {
     // Newer AndroidX plugins in the mobile UI require API 36 at compile time.
     // This does not raise targetSdk or minSdk and does not change runtime opt-ins.
     compileSdk = maxOf(flutter.compileSdkVersion, 36)
-    ndkVersion = flutter.ndkVersion
+    // Match the NDK used to build the sing-box/Cronet AAR in
+    // tool/build_mobile_cores.sh and the GitHub Actions Android jobs.
+    ndkVersion = "28.2.13676358"
 
     buildFeatures {
         buildConfig = true
