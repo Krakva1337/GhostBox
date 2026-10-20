@@ -29,6 +29,7 @@ import '../../services/device_identity.dart';
 import '../../services/dns_ad_blocklist.dart';
 import '../../services/github_updater.dart';
 import '../../services/log_store.dart';
+import '../../services/traffic_stats.dart';
 import '../../theme/theme_settings_panel.dart';
 import '../../theme/theme_controller.dart';
 import '../../theme/brand_icon.dart';
@@ -118,6 +119,9 @@ class _HomePageState extends State<HomePage>
   String? appUpdateStatus;
   GhostBoxRelease? availableAppRelease;
   final GitHubUpdater appUpdater = GitHubUpdater();
+  final TrafficStats trafficStats = TrafficStats();
+  final Set<String> _speedTestProfiles = <String>{};
+  final Map<String, double> _profileDownloadSpeeds = <String, double>{};
   static const int _defaultSubscriptionRefreshHours = 12;
   Timer? uptimeTicker;
   int? coreMemoryMb;
@@ -772,6 +776,7 @@ class _HomePageState extends State<HomePage>
   }
 
   Future<void> _load() async {
+    if (Platform.isMacOS) await _migrateMacContainerPreferences();
     final p = await SharedPreferences.getInstance();
     final resumeAfterElevation =
         Platform.isWindows && (p.getBool('connectAfterElevation') ?? false);
@@ -840,13 +845,7 @@ class _HomePageState extends State<HomePage>
       }
       if (p.getBool('tunDefaultMigrated') != true) {
         coreSettings = coreSettings.copyWith(
-            connectionMode:
-                Platform.isWindows || Platform.isMacOS ? 'system' : 'tun');
-      }
-      if (Platform.isMacOS &&
-          (coreSettings.connectionMode == 'tun' ||
-              coreSettings.connectionMode == 'mixed')) {
-        coreSettings = coreSettings.copyWith(connectionMode: 'system');
+            connectionMode: Platform.isWindows ? 'system' : 'tun');
       }
       if (migrateWindowsProxy) {
         coreSettings = coreSettings.copyWith(connectionMode: 'system');
@@ -876,6 +875,7 @@ class _HomePageState extends State<HomePage>
         ];
       }
     });
+    await trafficStats.load(p);
     if (!animatedBackground) {
       ambientMotion.stop();
       ambientMotion.value = .12;
@@ -960,6 +960,25 @@ class _HomePageState extends State<HomePage>
     }
     if (mounted && !autoUpdateApp) {
       unawaited(_checkAppUpdate(silent: true));
+    }
+  }
+
+  Future<void> _migrateMacContainerPreferences() async {
+    final home = Platform.environment['HOME'];
+    if (home == null || home.isEmpty) return;
+    const bundleId = 'app.ghostbox.ghostbox';
+    final oldPrefs = File(
+        '$home/Library/Containers/$bundleId/Data/Library/Preferences/$bundleId.plist');
+    final newPrefs = File('$home/Library/Preferences/$bundleId.plist');
+    if (await newPrefs.exists() || !await oldPrefs.exists()) return;
+    try {
+      final imported = await Process.run(
+          '/usr/bin/defaults', ['import', bundleId, oldPrefs.path]);
+      if (imported.exitCode == 0) {
+        _recordAppLog('Перенесены настройки из хранилища Mac App Sandbox');
+      }
+    } on Object catch (error) {
+      _recordAppLog('Не удалось перенести настройки macOS: $error');
     }
   }
 
@@ -1100,9 +1119,10 @@ class _HomePageState extends State<HomePage>
         }
         // Xray has no native TUN inbound. On Linux and Windows, run Xray as a
         // loopback SOCKS upstream and let sing-box own the system TUN.
-        final usesXrayTunnelBridge = (Platform.isLinux || Platform.isWindows) &&
-            attemptCore == 'xray' &&
-            (attemptMode == 'tun' || attemptMode == 'mixed');
+        final usesXrayTunnelBridge =
+            (Platform.isLinux || Platform.isWindows || Platform.isMacOS) &&
+                attemptCore == 'xray' &&
+                (attemptMode == 'tun' || attemptMode == 'mixed');
         var runtimeProfile = attemptProfile;
         if (Platform.isLinux &&
             coreSettings.killSwitchEnabled &&
@@ -1240,6 +1260,8 @@ class _HomePageState extends State<HomePage>
           uptimeTicker?.cancel();
         }
         if (coreSettings.showRamUsage) unawaited(_refreshCoreMemoryUsage());
+        final storage = prefs;
+        if (storage != null) unawaited(trafficStats.sample(storage));
         if (backend is AndroidVpnBackend) {
           unawaited(_collectAndroidCoreLogs());
         }
@@ -1765,6 +1787,20 @@ exit 1
       _recordAppLog('Адаптер TUN активен: ${result.stdout.toString().trim()}');
       return;
     }
+    if (Platform.isMacOS) {
+      for (var attempt = 0; attempt < 80; attempt++) {
+        final result = await Process.run('/sbin/ifconfig', ['-l']);
+        if (result.exitCode == 0 &&
+            RegExp(r'\butun\d+\b').hasMatch('${result.stdout}')) {
+          _recordAppLog('macOS utun интерфейс поднят');
+          return;
+        }
+        if (process?.state != VpnState.connected) break;
+        await Future<void>.delayed(const Duration(milliseconds: 150));
+      }
+      throw const FormatException(
+          'sing-box не создал utun-интерфейс macOS. Разрешите запрос администратора и проверьте журнал ядра.');
+    }
     if (!Platform.isLinux) return;
     final tun = Directory('/sys/class/net/ghostbox0');
     for (var attempt = 0; attempt < 60; attempt++) {
@@ -1991,6 +2027,19 @@ foreach ($route in $routes) {
           'Маршрут Windows через TUN: ${routes.replaceAll('\n', ', ')}');
       return;
     }
+    if (Platform.isMacOS) {
+      final result = await Process.run('/sbin/route', ['-n', 'get', probeIp])
+          .timeout(const Duration(seconds: 4));
+      if (result.exitCode != 0 ||
+          !RegExp(r'^\s*interface:\s*utun\d+', multiLine: true)
+              .hasMatch('${result.stdout}')) {
+        throw const FormatException(
+            'Интерфейс utun запущен, но маршрут macOS не идёт через VPN.');
+      }
+      _recordAppLog(
+          'Маршрут macOS через TUN: ${result.stdout.toString().trim()}');
+      return;
+    }
     if (!Platform.isLinux) return;
     final result = await Process.run('ip', ['route', 'get', probeIp])
         .timeout(const Duration(seconds: 4));
@@ -2049,6 +2098,12 @@ foreach ($route in $routes) {
   }
 
   Future<void> _disconnectActive() async {
+    final storage = prefs;
+    if (storage != null &&
+        (coreSettings.connectionMode == 'tun' ||
+            coreSettings.connectionMode == 'mixed')) {
+      await trafficStats.sample(storage);
+    }
     final bridge = tunnelBridgeBackend;
     tunnelBridgeBackend = null;
     xrayTunnelBridgeActive = false;
@@ -2157,11 +2212,6 @@ foreach ($route in $routes) {
           ? _text('На iOS доступен только системный VPN (TUN)',
               'iOS only supports the system VPN (TUN) mode')
           : 'Android подключает приложения через системный VPN (TUN)');
-      return;
-    }
-    if (Platform.isMacOS && mode != 'proxy' && mode != 'system') {
-      _message(_text('На macOS доступны локальный прокси и системный прокси',
-          'macOS supports local proxy and system proxy modes'));
       return;
     }
     if (Platform.isLinux &&
@@ -2287,6 +2337,111 @@ foreach ($route in $routes) {
       return samples;
     } finally {
       await probeBackend?.disconnect();
+    }
+  }
+
+  Future<void> _testProfileSpeed(ServerProfile profile) async {
+    if (_speedTestProfiles.contains(profile.id)) return;
+    setState(() {
+      _speedTestProfiles.add(profile.id);
+      _profileDownloadSpeeds.remove(profile.id);
+    });
+    CoreProcessBackend? probeBackend;
+    var httpPort = 0;
+    try {
+      final proxyReservation =
+          await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+      final proxyPort = proxyReservation.port;
+      await proxyReservation.close();
+      final httpReservation =
+          await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+      httpPort = httpReservation.port;
+      await httpReservation.close();
+
+      final coreName = coreSettings.core == 'xray' ? 'xray' : 'sing-box';
+      probeBackend = CoreProcessBackend(
+        name: coreName,
+        executable: process?.executable ?? coreExecutable(coreName, 'vendor'),
+        configPath: 'vendor/config/$coreName-speed-test.json',
+      )..settings = coreSettings.copyWith(
+          localPort: proxyPort,
+          routing: 'proxy',
+          connectionMode: 'proxy',
+          dnsThroughProxy: true,
+        );
+      final probeProfile = ServerProfile(
+        id: profile.id,
+        name: profile.name,
+        protocol: profile.protocol,
+        address: profile.address,
+        port: profile.port,
+        uuid: profile.uuid,
+        network: profile.network,
+        security: profile.security,
+        raw: {...profile.raw, '_ghostboxHttpProbePort': httpPort},
+      );
+      await probeBackend.connect(jsonEncode(probeProfile.toJson()));
+      const timeout = Duration(seconds: 35);
+      await _waitForProxyListener(httpPort, timeout);
+      final bytes = await _downloadThroughHttpProxy(httpPort, timeout);
+      if (bytes == 0) throw const HttpException('Сервер не передал данные');
+      final speed = bytes / 1024 / 1024;
+      if (mounted) {
+        setState(() => _profileDownloadSpeeds[profile.id] = speed);
+        _message(_text(
+          'Скорость ${profile.name}: ${speed.toStringAsFixed(2)} МБ/с',
+          '${profile.name} speed: ${speed.toStringAsFixed(2)} MB/s',
+        ));
+      }
+    } on Object catch (error) {
+      if (mounted) {
+        _message(_text(
+          'Не удалось проверить скорость: $error',
+          'Speed test failed: $error',
+        ));
+      }
+    } finally {
+      await probeBackend?.disconnect();
+      if (mounted) setState(() => _speedTestProfiles.remove(profile.id));
+    }
+  }
+
+  String _speedTestMenuLabel(String profileId) {
+    final speed = _profileDownloadSpeeds[profileId];
+    if (speed == null) {
+      return _text('Проверить скорость соединения', 'Test connection speed');
+    }
+    return '${_text('Повторить тест скорости', 'Run speed test again')} · ${speed.toStringAsFixed(2)} ${english ? 'MB/s' : 'МБ/с'}';
+  }
+
+  Future<int> _downloadThroughHttpProxy(int localPort, Duration timeout) async {
+    // Cloudflare's download endpoint returns a fixed-size payload, so this
+    // measures the selected profile's real download throughput, not ping RTT.
+    final uri =
+        Uri.https('speed.cloudflare.com', '/__down', {'bytes': '8000000'});
+    final client = HttpClient()
+      ..connectionTimeout = timeout
+      ..idleTimeout = timeout
+      ..findProxy = (_) => 'PROXY 127.0.0.1:$localPort';
+    final watch = Stopwatch()..start();
+    try {
+      final request = await client.getUrl(uri).timeout(timeout);
+      request.headers.set(HttpHeaders.userAgentHeader, 'GhostBox-Speed-Test');
+      request.headers.set(HttpHeaders.connectionHeader, 'close');
+      final response = await request.close().timeout(timeout);
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw HttpException('HTTP ${response.statusCode}', uri: uri);
+      }
+      var received = 0;
+      await for (final chunk in response.timeout(timeout)) {
+        received += chunk.length;
+        if (received >= 8000000) break;
+      }
+      watch.stop();
+      if (watch.elapsedMicroseconds <= 0) return 0;
+      return (received / (watch.elapsedMicroseconds / 1000000)).round();
+    } finally {
+      client.close(force: true);
     }
   }
 
@@ -3282,18 +3437,52 @@ foreach ($route in $routes) {
                               _header(wideLayout: wideLayout),
                               const SizedBox(height: 8),
                               Expanded(
-                                  child: wideLayout
-                                      ? Row(children: [
-                                          SizedBox(
-                                              width: 120, child: _sideNav()),
-                                          const SizedBox(width: 10),
-                                          Expanded(child: page),
-                                        ])
-                                      : page),
-                              if (!wideLayout) ...[
-                                const SizedBox(height: 8),
-                                _nav(),
-                              ],
+                                  child: Row(children: [
+                                AnimatedContainer(
+                                  duration: const Duration(milliseconds: 280),
+                                  curve: Curves.easeInOutCubic,
+                                  width: wideLayout ? 120 : 0,
+                                  child: ClipRect(
+                                    child: IgnorePointer(
+                                      ignoring: !wideLayout,
+                                      child: AnimatedOpacity(
+                                        duration:
+                                            const Duration(milliseconds: 180),
+                                        curve: Curves.easeOutCubic,
+                                        opacity: wideLayout ? 1 : 0,
+                                        child: _sideNav(),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                                AnimatedContainer(
+                                  duration: const Duration(milliseconds: 280),
+                                  curve: Curves.easeInOutCubic,
+                                  width: wideLayout ? 10 : 0,
+                                ),
+                                Expanded(child: page),
+                              ])),
+                              const SizedBox(height: 8),
+                              ClipRect(
+                                child: AnimatedSize(
+                                  duration: const Duration(milliseconds: 260),
+                                  curve: Curves.easeInOutCubic,
+                                  alignment: Alignment.topCenter,
+                                  child: Align(
+                                    heightFactor: wideLayout ? 0 : 1,
+                                    child: IgnorePointer(
+                                      ignoring: wideLayout,
+                                      child: AnimatedOpacity(
+                                        duration:
+                                            const Duration(milliseconds: 180),
+                                        curve: Curves.easeOutCubic,
+                                        opacity: wideLayout ? 0 : 1,
+                                        child: _nav(),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
                             ]);
                           }))))
             ]),
@@ -4320,17 +4509,12 @@ foreach ($route in $routes) {
           _tinyStat('РЕЖИМ', _connectionModeLabel(coreSettings.connectionMode),
               choices: Platform.isAndroid || Platform.isIOS
                   ? [('tun', Platform.isIOS ? 'iOS VPN' : 'Android VPN')]
-                  : Platform.isMacOS
-                      ? const [
-                          ('proxy', 'Proxy'),
-                          ('system', 'System proxy'),
-                        ]
-                      : const [
-                          ('proxy', 'Proxy'),
-                          ('system', 'System proxy'),
-                          ('tun', 'TUN'),
-                          ('mixed', 'Mixed'),
-                        ],
+                  : const [
+                      ('proxy', 'Proxy'),
+                      ('system', 'System proxy'),
+                      ('tun', 'TUN'),
+                      ('mixed', 'Mixed'),
+                    ],
               onSelected: _setConnectionMode),
         ]),
         if (coreSettings.showRamUsage) ...[
@@ -4344,6 +4528,27 @@ foreach ($route in $routes) {
                   : '${Platform.isAndroid ? 'RAM приложения' : 'RAM ядра'} · отключено'),
               style: TextStyle(
                   fontSize: 10, color: _muted, fontWeight: FontWeight.w500),
+            ),
+          ),
+        ],
+        if (backend.state == VpnState.connected &&
+            (coreSettings.connectionMode == 'tun' ||
+                coreSettings.connectionMode == 'mixed')) ...[
+          const SizedBox(height: 7),
+          AnimatedSwitcher(
+            duration: const Duration(milliseconds: 220),
+            child: Text(
+              key: ValueKey(
+                  '${trafficStats.available}:${trafficStats.receivedPerSecond.round()}:${trafficStats.sentPerSecond.round()}'),
+              trafficStats.available
+                  ? '↓ ${formatTrafficRate(trafficStats.receivedPerSecond)}   ↑ ${formatTrafficRate(trafficStats.sentPerSecond)}'
+                  : _text(
+                      'Скорость · собираю данные…', 'Speed · collecting data…'),
+              style: TextStyle(
+                  fontSize: 10,
+                  color: trafficStats.available ? _accent : _muted,
+                  fontWeight: FontWeight.w600,
+                  fontFeatures: const [ui.FontFeature.tabularFigures()]),
             ),
           ),
         ],
@@ -5255,6 +5460,10 @@ foreach ($route in $routes) {
                     tooltip: _localized('Действия с сервером'),
                     icon: Icon(Icons.more_horiz_rounded, color: _muted),
                     onSelected: (value) async {
+                      if (value == 'speed') {
+                        await _testProfileSpeed(profile);
+                        return;
+                      }
                       if (value == 'ping') {
                         await _checkOneProfile(profile);
                         return;
@@ -5303,6 +5512,25 @@ foreach ($route in $routes) {
                                     size: 18, color: _accent),
                                 const SizedBox(width: 12),
                                 Text(_localized('Проверить задержку'))
+                              ])),
+                          PopupMenuItem(
+                              value: 'speed',
+                              enabled: !_speedTestProfiles.contains(profile.id),
+                              child: Row(children: [
+                                if (_speedTestProfiles.contains(profile.id))
+                                  SizedBox(
+                                    width: 18,
+                                    height: 18,
+                                    child: CircularProgressIndicator(
+                                        strokeWidth: 2, color: _accent),
+                                  )
+                                else
+                                  Icon(Icons.network_check_rounded,
+                                      size: 18, color: _accent),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Text(_speedTestMenuLabel(profile.id)),
+                                ),
                               ])),
                           PopupMenuItem(
                               value: 'json',
@@ -5834,6 +6062,167 @@ foreach ($route in $routes) {
     await _saveCore(update(values.toSet().toList()));
   }
 
+  Widget _trafficStatsPanel() {
+    String keyFor(DateTime date) =>
+        '${date.year.toString().padLeft(4, '0')}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
+    final now = DateTime.now();
+    final today = trafficStats.days[keyFor(now)] ?? const DailyTraffic();
+    final days = List.generate(
+      7,
+      (index) => DateTime(now.year, now.month, now.day)
+          .subtract(Duration(days: 6 - index)),
+    );
+    final rows = [
+      for (final date in days)
+        (date, trafficStats.days[keyFor(date)] ?? const DailyTraffic()),
+    ];
+    final maxUsage = rows
+        .map((row) => row.$2.received + row.$2.sent)
+        .fold<int>(0, (maximum, value) => math.max(maximum, value));
+    final total = trafficStats.days.values.fold<DailyTraffic>(
+      const DailyTraffic(),
+      (sum, day) => sum.add(received: day.received, sent: day.sent),
+    );
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      _section(_text('СТАТИСТИКА ТРАФИКА', 'TRAFFIC STATISTICS')),
+      Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(15),
+        decoration: BoxDecoration(
+          color: _surface.withOpacity(.68),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: _line.withOpacity(.45)),
+        ),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [
+            Expanded(
+              child: _trafficTotal(
+                _text('Загружено сегодня', 'Downloaded today'),
+                formatTrafficBytes(today.received),
+                Icons.south_rounded,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: _trafficTotal(
+                _text('Отправлено сегодня', 'Uploaded today'),
+                formatTrafficBytes(today.sent),
+                Icons.north_rounded,
+              ),
+            ),
+          ]),
+          const SizedBox(height: 14),
+          Text(_text('ПО ДНЯМ · ПОСЛЕДНЯЯ НЕДЕЛЯ', 'DAILY · LAST 7 DAYS'),
+              style: TextStyle(
+                  color: _muted,
+                  fontSize: 9,
+                  letterSpacing: 1.1,
+                  fontWeight: FontWeight.w700)),
+          const SizedBox(height: 8),
+          for (final row in rows)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 5),
+              child: Row(children: [
+                SizedBox(
+                  width: 43,
+                  child: Text(
+                    '${row.$1.day.toString().padLeft(2, '0')}.${row.$1.month.toString().padLeft(2, '0')}',
+                    style: TextStyle(color: _muted, fontSize: 10),
+                  ),
+                ),
+                Expanded(
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(5),
+                    child: SizedBox(
+                      height: 6,
+                      child: LinearProgressIndicator(
+                        value: maxUsage == 0
+                            ? 0
+                            : ((row.$2.received + row.$2.sent) / maxUsage)
+                                .clamp(0, 1),
+                        backgroundColor: Colors.white.withOpacity(.07),
+                        valueColor: AlwaysStoppedAnimation(_accent),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                SizedBox(
+                  width: 145,
+                  child: Text(
+                    '↓ ${formatTrafficBytes(row.$2.received)}   ↑ ${formatTrafficBytes(row.$2.sent)}',
+                    textAlign: TextAlign.right,
+                    style: TextStyle(
+                      color: _foreground,
+                      fontSize: 9,
+                      fontFeatures: const [ui.FontFeature.tabularFigures()],
+                    ),
+                  ),
+                ),
+              ]),
+            ),
+          const SizedBox(height: 9),
+          Divider(height: 1, color: _line.withOpacity(.45)),
+          const SizedBox(height: 9),
+          Row(children: [
+            Expanded(
+              child: Text(
+                _text('Сохранено за последние 90 дней',
+                    'Stored for the last 90 days'),
+                style: TextStyle(color: _muted, fontSize: 10),
+              ),
+            ),
+            Text(
+              '↓ ${formatTrafficBytes(total.received)}   ↑ ${formatTrafficBytes(total.sent)}',
+              style: TextStyle(
+                color: _foreground,
+                fontSize: 10,
+                fontWeight: FontWeight.w600,
+                fontFeatures: const [ui.FontFeature.tabularFigures()],
+              ),
+            ),
+          ]),
+          if (!trafficStats.available && total.received + total.sent == 0) ...[
+            const SizedBox(height: 7),
+            Text(
+              Platform.isAndroid || Platform.isIOS
+                  ? _text(
+                      'Системные счётчики трафика пока недоступны на этой платформе.',
+                      'System traffic counters are not available on this platform yet.')
+                  : _text('Данные собираются во время TUN/Mixed подключения.',
+                      'Usage is collected while connected in TUN/Mixed mode.'),
+              style: TextStyle(color: _muted, fontSize: 10),
+            ),
+          ],
+        ]),
+      ),
+      const SizedBox(height: 14),
+    ]);
+  }
+
+  Widget _trafficTotal(String label, String value, IconData icon) => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(children: [
+            Icon(icon, size: 14, color: _accent),
+            const SizedBox(width: 5),
+            Expanded(
+              child: Text(label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(color: _muted, fontSize: 9)),
+            ),
+          ]),
+          const SizedBox(height: 4),
+          Text(value,
+              style: TextStyle(
+                  color: _foreground,
+                  fontSize: 16,
+                  fontWeight: FontWeight.w700,
+                  fontFeatures: const [ui.FontFeature.tabularFigures()])),
+        ],
+      );
+
   Widget _settings() => ListView(
           controller: settingsScroll,
           key: PageStorageKey('settings'),
@@ -5937,6 +6326,7 @@ foreach ($route in $routes) {
                         child: advanced
                             ? _advancedSettings()
                             : _basicSettings()))),
+            _trafficStatsPanel(),
             SizedBox(height: 18),
             _section('ЖУРНАЛ'),
             _row(
@@ -7090,12 +7480,6 @@ foreach ($route in $routes) {
     try {
       final data = Map<String, dynamic>.from(jsonDecode(accepted) as Map);
       var updated = CoreSettings.fromJson(data);
-      if (Platform.isMacOS &&
-          updated.connectionMode != 'proxy' &&
-          updated.connectionMode != 'system') {
-        throw const FormatException(
-            'На macOS JSON может включать только режим Proxy или System proxy.');
-      }
       if (Platform.isIOS &&
           (updated.core != 'sing-box' ||
               updated.connectionMode != 'tun' ||
@@ -7172,7 +7556,7 @@ foreach ($route in $routes) {
     if (backend.state != VpnState.disconnected) await _disconnectActive();
     final defaults = CoreSettings(
       core: Platform.isAndroid || Platform.isIOS ? 'sing-box' : 'xray',
-      connectionMode: Platform.isMacOS ? 'system' : 'tun',
+      connectionMode: 'tun',
     );
     await _saveCore(defaults, requiresReconnect: false);
     process?.settings = defaults;

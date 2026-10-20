@@ -32,6 +32,10 @@ class CoreProcessBackend implements VpnBackend {
   bool _shouldStayConnected = false;
   bool _initializing = false;
   bool _recoveryInProgress = false;
+  int? _macElevatedPid;
+  File? _macElevatedLog;
+  Timer? _macElevatedMonitor;
+  int _macLogLineCount = 0;
   int _restartCount = 0;
   CoreSettings settings = const CoreSettings();
   String? _lastError;
@@ -42,7 +46,7 @@ class CoreProcessBackend implements VpnBackend {
   @override
   VpnState get state => _state;
   DateTime? get startedAt => _startedAt;
-  int? get pid => _process?.pid;
+  int? get pid => _process?.pid ?? _macElevatedPid;
   String? get lastError => _lastError;
   List<String> get logs => List.unmodifiable(_logs);
   Future<void> flushLogs() => _coreLogWriteQueue;
@@ -144,6 +148,10 @@ class CoreProcessBackend implements VpnBackend {
         '${check.stderr}\n${check.stdout}',
       ));
     }
+    if (Platform.isMacOS && tunMode) {
+      await _startMacElevated(serverProfile);
+      return;
+    }
     _process = await Process.start(
       executable,
       ['run', '-c', _runtimeConfig!.path],
@@ -200,6 +208,100 @@ class CoreProcessBackend implements VpnBackend {
     _restartCount = 0;
   }
 
+  Future<void> _startMacElevated(ServerProfile profile) async {
+    final logFile = File('${_runtimeDirectory!.path}/core-elevated.log');
+    _macElevatedLog = logFile;
+    _macLogLineCount = 0;
+    final command = 'umask 077; nohup ${_shellQuote(executable)} run -c '
+        '${_shellQuote(_runtimeConfig!.path)} > ${_shellQuote(logFile.path)} 2>&1 '
+        '< /dev/null & echo ${String.fromCharCode(36)}!';
+    final script = 'do shell script ${_appleScriptQuote(command)} '
+        'with administrator privileges';
+    final launched = await Process.run('osascript', ['-e', script])
+        .timeout(const Duration(minutes: 3));
+    if (launched.exitCode != 0) {
+      throw FormatException(
+        'macOS не разрешил запустить TUN с правами администратора: ${launched.stderr.toString().trim()} ${launched.stdout.toString().trim()}'
+            .trim(),
+      );
+    }
+    final pid = int.tryParse('${launched.stdout}'.trim());
+    if (pid == null) {
+      throw FormatException(
+          'Не удалось получить PID привилегированного ядра: ${launched.stdout}');
+    }
+    _macElevatedPid = pid;
+    _startedAt = DateTime.now();
+    await Future<void>.delayed(const Duration(milliseconds: 500));
+    await _readMacElevatedLog(profile);
+    if (!await _macElevatedProcessAlive(pid)) {
+      _macElevatedPid = null;
+      throw FormatException(
+        'Ядро TUN завершилось сразу после запуска: ${_logs.isEmpty ? 'см. журнал' : _logs.last}',
+      );
+    }
+    _state = VpnState.connected;
+    _lastError = null;
+    _restartCount = 0;
+    _macElevatedMonitor?.cancel();
+    _macElevatedMonitor =
+        Timer.periodic(const Duration(milliseconds: 600), (_) {
+      unawaited(_monitorMacElevatedProcess(profile, pid));
+    });
+  }
+
+  Future<void> _monitorMacElevatedProcess(
+      ServerProfile profile, int expectedPid) async {
+    if (_macElevatedPid != expectedPid || _process != null) return;
+    await _readMacElevatedLog(profile);
+    if (await _macElevatedProcessAlive(expectedPid)) return;
+    _macElevatedMonitor?.cancel();
+    _macElevatedMonitor = null;
+    _macElevatedPid = null;
+    _startedAt = null;
+    if (!_shouldStayConnected || _initializing || _recoveryInProgress) return;
+    _lastError = 'Привилегированное ядро завершилось';
+    _state = VpnState.connecting;
+    _recoveryInProgress = true;
+    _writeLifecycleLog('macOS TUN ядро завершилось; пробую поднять снова');
+    onRecoveryNotice?.call('Ядро неожиданно остановилось. Перезапускаю VPN…',
+        error: false);
+    unawaited(_recoverProcess(jsonEncode(profile.toJson())));
+  }
+
+  Future<void> _readMacElevatedLog(ServerProfile profile) async {
+    final file = _macElevatedLog;
+    if (file == null || !await file.exists()) return;
+    try {
+      final lines = await file.readAsLines();
+      if (_macLogLineCount > lines.length) _macLogLineCount = 0;
+      for (final line in lines.skip(_macLogLineCount)) {
+        _captureLog(line, profile);
+      }
+      _macLogLineCount = lines.length;
+    } on Object {
+      // A partially written line is picked up on the next poll.
+    }
+  }
+
+  Future<bool> _macElevatedProcessAlive(int pid) async {
+    try {
+      final result =
+          await Process.run('/bin/ps', ['-p', '$pid', '-o', 'stat=']);
+      final status = result.stdout.toString().trim();
+      return result.exitCode == 0 &&
+          status.isNotEmpty &&
+          !status.startsWith('Z');
+    } on Object {
+      return false;
+    }
+  }
+
+  String _shellQuote(String value) => "'${value.replaceAll("'", "'\\''")}'";
+
+  String _appleScriptQuote(String value) =>
+      '"${value.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"';
+
   Future<void> _recoverProcess(String profile) async {
     const delays = [500, 1200, 2500];
     for (final delayMs in delays) {
@@ -245,6 +347,8 @@ class CoreProcessBackend implements VpnBackend {
   Future<void> disconnect() async {
     _shouldStayConnected = false;
     _initializing = false;
+    _macElevatedMonitor?.cancel();
+    _macElevatedMonitor = null;
     final process = _process;
     _process = null;
     await _stderr?.cancel();
@@ -257,6 +361,24 @@ class CoreProcessBackend implements VpnBackend {
         process.kill(ProcessSignal.sigkill);
         return -1;
       });
+    final elevatedPid = _macElevatedPid;
+    _macElevatedPid = null;
+    if (Platform.isMacOS && elevatedPid != null) {
+      final command = '/bin/kill -TERM $elevatedPid';
+      final script = 'do shell script ${_appleScriptQuote(command)} '
+          'with administrator privileges';
+      try {
+        await Process.run('osascript', ['-e', script])
+            .timeout(const Duration(minutes: 2));
+      } on Object catch (error) {
+        _writeLifecycleLog(
+            'Не удалось завершить ядро TUN с правами администратора: $error');
+      }
+      for (var attempt = 0; attempt < 20; attempt++) {
+        if (!await _macElevatedProcessAlive(elevatedPid)) break;
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+      }
+    }
     await _cleanupConfig();
     _startedAt = null;
     _state = VpnState.disconnected;
@@ -681,11 +803,11 @@ class CoreProcessBackend implements VpnBackend {
             {
               'type': 'tun',
               'tag': 'tun-in',
-              'interface_name': 'ghostbox0',
+              if (!Platform.isMacOS) 'interface_name': 'ghostbox0',
               'address': ['172.19.0.1/30', 'fdfe:dcba:9876::1/126'],
-              'mtu': Platform.isAndroid ? 1500 : 9000,
+              'mtu': Platform.isAndroid || Platform.isMacOS ? 1500 : 9000,
               'auto_route': true,
-              'strict_route': true,
+              if (!Platform.isMacOS) 'strict_route': true,
               if (routeExclusions.isNotEmpty)
                 'route_exclude_address': routeExclusions,
             },
