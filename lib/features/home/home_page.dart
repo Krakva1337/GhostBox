@@ -75,22 +75,19 @@ class _HomePageState extends State<HomePage>
   SharedPreferences? prefs;
   List<ServerProfile> profiles = [];
   String? selectedId;
-  bool settings = false,
-      routingTab = false,
-      contactsTab = false,
-      advanced = false;
+  bool settings = false, routingTab = false, advanced = false;
   String? settingsSubpage;
   int trafficRangeDays = 7;
+  final GlobalKey _settingsModeKey = GlobalKey();
+  bool _draggingSettingsMode = false;
   final GlobalKey _bottomNavKey = GlobalKey();
   final GlobalKey _sideNavKey = GlobalKey();
   bool _draggingTabIndicator = false;
-  int get _tabIndex => contactsTab
-      ? 3
-      : settings
-          ? 2
-          : routingTab
-              ? 1
-              : 0;
+  int get _tabIndex => settings
+      ? 2
+      : routingTab
+          ? 1
+          : 0;
   CoreSettings coreSettings = CoreSettings(memoryMb: Platform.isIOS ? 32 : 128);
   final DnsAdBlocklist dnsAdBlocklist = DnsAdBlocklist();
   bool loadingAdBlocklist = false;
@@ -904,13 +901,15 @@ class _HomePageState extends State<HomePage>
           : CoreSettings.fromJson(
               Map<String, dynamic>.from(jsonDecode(rawCore) as Map));
       if (p.getBool('xrayDefaultMigrated') != true) {
-        coreSettings = coreSettings.copyWith(core: 'xray');
+        coreSettings = coreSettings.copyWith(
+            core: Platform.isAndroid || Platform.isIOS ? 'sing-box' : 'xray');
       }
       if (Platform.isAndroid || Platform.isIOS) {
         coreSettings = coreSettings.copyWith(
-          core: 'sing-box',
+          core: Platform.isAndroid && coreSettings.core == 'xray'
+              ? 'xray'
+              : 'sing-box',
           connectionMode: 'tun',
-          pingMode: 'tcp',
         );
       }
       if (p.getBool('tunDefaultMigrated') != true) {
@@ -1155,7 +1154,7 @@ class _HomePageState extends State<HomePage>
       }
       final attemptProfile = selected!;
       final attemptStarted = DateTime.now();
-      final attemptCore = Platform.isAndroid ? 'sing-box' : coreSettings.core;
+      final attemptCore = coreSettings.core;
       final attemptMode =
           Platform.isAndroid ? 'tun' : coreSettings.connectionMode;
       glow
@@ -1183,7 +1182,7 @@ class _HomePageState extends State<HomePage>
         final runtimeRouting = await _expandSplitRouteIps(coreSettings);
         if (backend is AndroidVpnBackend) {
           (backend as AndroidVpnBackend).settings = runtimeRouting.copyWith(
-            core: 'sing-box',
+            core: attemptCore,
             connectionMode: 'tun',
             localPort: runtimeLocalPort,
           );
@@ -1209,6 +1208,11 @@ class _HomePageState extends State<HomePage>
           _recordAppLog(
               'TUN запускается через sing-box маршрутизатор и Xray upstream');
         } else {
+          if (Platform.isWindows &&
+              (attemptMode == 'tun' || attemptMode == 'mixed')) {
+            runtimeProfile =
+                await _addWindowsTunnelEndpointExclusions(runtimeProfile);
+          }
           process?.settings =
               runtimeRouting.copyWith(localPort: runtimeLocalPort);
         }
@@ -1251,9 +1255,19 @@ class _HomePageState extends State<HomePage>
               ? 'TUN-интерфейс utun поднят'
               : 'TUN-интерфейс ghostbox0 поднят');
           await _verifyTunRoute('1.1.1.1');
-          await _tunHttpsGet(
-              Duration(seconds: coreSettings.pingTimeoutSeconds + 2));
-          _recordAppLog('HTTPS и TLS-проверка системного маршрута TUN прошла');
+          try {
+            await _tunHttpsGet(
+                Duration(seconds: coreSettings.pingTimeoutSeconds + 2));
+            _recordAppLog(
+                'HTTPS и TLS-проверка системного маршрута TUN прошла');
+          } on Object catch (error) {
+            // Captive portals, provider filters and individual HTTPS probe
+            // hosts can reject TLS even when Windows installed the TUN route.
+            // Keep the tunnel up after the adapter and route have been
+            // verified; report the failed probe in the live connection log.
+            _recordAppLog(
+                'Предупреждение: TUN и маршрут активны, но HTTPS-проверка не прошла: $error');
+          }
         }
         final hasSystemTunnel = coreSettings.connectionMode == 'tun' ||
             coreSettings.connectionMode == 'mixed';
@@ -1953,6 +1967,34 @@ exit 1
     );
   }
 
+  Future<ServerProfile> _addWindowsTunnelEndpointExclusions(
+      ServerProfile profile) async {
+    final addresses = await _lookupHost(profile.address);
+    if (addresses.isEmpty) {
+      throw FormatException(
+          'Не удалось разрешить адрес VPN-сервера ${profile.address} до включения Windows TUN. Проверьте DNS и повторите подключение.');
+    }
+    final existing = profile.raw['_tunExcludeAddresses'];
+    final exclusions = <String>{
+      if (existing is List) ...existing.map((value) => value.toString()),
+      ...addresses.map((address) =>
+          '${address.address}/${address.type == InternetAddressType.IPv4 ? 32 : 128}'),
+    }.toList();
+    _recordAppLog(
+        'Windows TUN: исключаю endpoint VPN из маршрута туннеля (${addresses.map((address) => address.address).join(', ')})');
+    return ServerProfile(
+      id: profile.id,
+      name: profile.name,
+      protocol: profile.protocol,
+      address: profile.address,
+      port: profile.port,
+      uuid: profile.uuid,
+      network: profile.network,
+      security: profile.security,
+      raw: {...profile.raw, '_tunExcludeAddresses': exclusions},
+    );
+  }
+
   Future<CoreSettings> _expandSplitRouteIps(CoreSettings settings) async {
     if (settings.routing != 'rules' && settings.routing != 'exclude') {
       return settings;
@@ -2128,27 +2170,31 @@ foreach ($route in $routes) {
 
   Future<void> _tunHttpsGet(Duration timeout) async {
     final failures = <String>[];
-    for (final probe in const [
-      ('connectivitycheck.gstatic.com', '/generate_204'),
-      ('cp.cloudflare.com', '/generate_204'),
-      ('www.google.com', '/generate_204'),
-    ]) {
+    final configured = Uri.tryParse(coreSettings.proxyGetUrl.trim());
+    final probes = <Uri>[
+      if (configured != null &&
+          configured.scheme == 'https' &&
+          configured.host.isNotEmpty)
+        configured,
+      Uri.https('connectivitycheck.gstatic.com', '/generate_204'),
+      Uri.https('cp.cloudflare.com', '/generate_204'),
+      Uri.https('www.google.com', '/generate_204'),
+    ];
+    for (final probe in probes) {
       final client = HttpClient()
         ..connectionTimeout = timeout
         ..idleTimeout = timeout;
       try {
-        final request =
-            await client.getUrl(Uri.https(probe.$1, probe.$2)).timeout(timeout);
+        final request = await client.getUrl(probe).timeout(timeout);
         request.followRedirects = true;
         request.headers.set(HttpHeaders.connectionHeader, 'close');
         final response = await request.close().timeout(timeout);
         await response.drain<void>().timeout(timeout);
-        if (response.statusCode < 200 || response.statusCode >= 400) {
-          throw HttpException('HTTP ${response.statusCode}');
-        }
+        // A completed TLS handshake proves the route works even when a
+        // provider-specific test URL intentionally returns 4xx/5xx.
         return;
       } on Object catch (error) {
-        failures.add('${probe.$1}: $error');
+        failures.add('${probe.host}: $error');
       } finally {
         client.close(force: true);
       }
@@ -2325,6 +2371,24 @@ foreach ($route in $routes) {
     var proxyPort = activeLocalPort ?? coreSettings.localPort;
     var httpProxyPort = 0;
     try {
+      if (mode == 'proxy' && Platform.isAndroid) {
+        if (backend.state != VpnState.connected || activeLocalPort == null) {
+          throw const SocketException(
+              'На Android Proxy GET проверяется через активный VPN. Сначала подключите сервер.');
+        }
+        if (selected?.id != profile.id) {
+          throw const SocketException(
+              'Подключите этот сервер, чтобы Proxy GET проверил его через VPN.');
+        }
+        for (var i = 0; i < count; i++) {
+          final watch = Stopwatch()..start();
+          await _proxyHttpGet(activeLocalPort!, timeout);
+          watch.stop();
+          samples.add(_elapsedMilliseconds(watch));
+        }
+        samples.sort();
+        return samples;
+      }
       if (mode == 'proxy') {
         // Probe through an isolated local proxy configured to send every request
         // through this profile. The active connection may use split rules or a
@@ -3480,8 +3544,8 @@ foreach ($route in $routes) {
   }
 
   Future<void> _selectCore(String value) async {
-    if ((Platform.isAndroid || Platform.isIOS) && value == 'Xray') {
-      _message('На мобильных устройствах VPN-режим использует sing-box');
+    if (Platform.isIOS && value == 'Xray') {
+      _message('На iOS VPN-режим использует sing-box');
       return;
     }
     final next = value == 'Xray' ? 'xray' : 'sing-box';
@@ -3571,15 +3635,7 @@ foreach ($route in $routes) {
                                     : routingTab
                                         ? _scrollFrame(
                                             _routingPage(), routingScroll)
-                                        : contactsTab
-                                            ? _scrollFrame(
-                                                SingleChildScrollView(
-                                                  controller: settingsScroll,
-                                                  child: _contactsPage(),
-                                                ),
-                                                settingsScroll)
-                                            : _scrollFrame(
-                                                _home(), homeScroll))));
+                                        : _scrollFrame(_home(), homeScroll))));
                     return Column(children: [
                       _header(wideLayout: wideLayout),
                       const SizedBox(height: 8),
@@ -3664,6 +3720,8 @@ foreach ($route in $routes) {
           _menuItem('refresh_all', Icons.sync_rounded, 'Обновить подписки'),
           _menuItem('logs', Icons.article_outlined, 'Журнал соединения'),
           _menuItem('history', Icons.history_rounded, 'Последние подключения'),
+          _menuItem('about', Icons.info_outline_rounded,
+              _text('О приложении', 'About GhostBox')),
         ]);
     if (!mounted || action == null) return;
     switch (action) {
@@ -3678,6 +3736,9 @@ foreach ($route in $routes) {
         break;
       case 'history':
         _showConnectionHistory();
+        break;
+      case 'about':
+        await _showAbout();
         break;
     }
   }
@@ -3812,11 +3873,7 @@ foreach ($route in $routes) {
                   ),
                 );
               },
-              child: wideLayout &&
-                      !routeListOpen &&
-                      !settings &&
-                      !routingTab &&
-                      !contactsTab
+              child: wideLayout && !routeListOpen && !settings && !routingTab
                   ? Center(
                       key: const ValueKey('header-brand-mark'),
                       child: InkWell(
@@ -3826,7 +3883,7 @@ foreach ($route in $routes) {
                       ),
                     )
                   : _topButton(
-                      routeListOpen || settings || routingTab || contactsTab
+                      routeListOpen || settings || routingTab
                           ? Icons.arrow_back_ios_new_rounded
                           : Icons.settings_rounded, () {
                       if (routeListOpen) {
@@ -3834,11 +3891,11 @@ foreach ($route in $routes) {
                       } else if (settings && settingsSubpage != null) {
                         setState(() => settingsSubpage = null);
                       } else {
-                        _openTab(settings || routingTab || contactsTab ? 0 : 2);
+                        _openTab(settings || routingTab ? 0 : 2);
                       }
                     },
                       key: ValueKey(
-                          'header-button-${routeListOpen || settings || routingTab || contactsTab ? 'back' : 'settings'}')),
+                          'header-button-${routeListOpen || settings || routingTab ? 'back' : 'settings'}')),
             ),
           ),
         ),
@@ -3867,30 +3924,22 @@ foreach ($route in $routes) {
                         ),
                       );
                     },
-                    child: routeListOpen ||
-                            settings ||
-                            routingTab ||
-                            contactsTab
+                    child: routeListOpen || settings || routingTab
                         ? Text(
                             key: ValueKey(routeListOpen
                                 ? 'header-domains'
-                                : contactsTab
-                                    ? 'header-contacts'
-                                    : settings
-                                        ? 'header-settings-$settingsSubpage'
-                                        : 'header-routing'),
+                                : settings
+                                    ? 'header-settings-$settingsSubpage'
+                                    : 'header-routing'),
                             routeListOpen
                                 ? _localized('Список доменов')
-                                : contactsTab
-                                    ? _localized('Контакты')
-                                    : settings
-                                        ? switch (settingsSubpage) {
-                                            'contacts' =>
-                                              _localized('Контакты'),
-                                            'release' => _localized('О релизе'),
-                                            _ => _localized('Настройки'),
-                                          }
-                                        : _localized('Маршрут'),
+                                : settings
+                                    ? switch (settingsSubpage) {
+                                        'contacts' => _localized('Контакты'),
+                                        'release' => _localized('О релизе'),
+                                        _ => _localized('Настройки'),
+                                      }
+                                    : _localized('Маршрут'),
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             textAlign: TextAlign.center,
@@ -3975,14 +4024,12 @@ foreach ($route in $routes) {
   void _openTab(int index) => setState(() {
         routeListOpen = false;
         settingsSubpage = null;
-        contactsTab = index == 3;
         settings = index == 2;
         routingTab = index == 1;
       });
 
   void _openSettingsPage(String page) => setState(() {
         settingsSubpage = page;
-        contactsTab = false;
         settings = true;
         routingTab = false;
         routeListOpen = false;
@@ -4785,7 +4832,7 @@ foreach ($route in $routes) {
       Column(mainAxisSize: MainAxisSize.min, children: [
         Row(mainAxisAlignment: MainAxisAlignment.center, children: [
           _tinyStat('ЯДРО', process?.name ?? coreSettings.core,
-              choices: Platform.isAndroid || Platform.isIOS
+              choices: Platform.isIOS
                   ? const [('sing-box', 'sing-box')]
                   : const [('xray', 'Xray'), ('sing-box', 'sing-box')],
               onSelected: (value) =>
@@ -6606,48 +6653,65 @@ foreach ($route in $routes) {
           Text(_localized('Управление локальным прокси и ядром'),
               style: TextStyle(color: _muted, fontSize: 13)),
           SizedBox(height: 24),
-          Container(
-            height: 48,
-            padding: const EdgeInsets.all(4),
-            decoration: BoxDecoration(
-                color: Colors.white.withOpacity(.065),
-                borderRadius: BorderRadius.circular(17),
-                border: Border.all(color: Colors.white.withOpacity(.09))),
-            child: Stack(
-              children: [
-                AnimatedAlign(
-                  alignment:
-                      advanced ? Alignment.centerRight : Alignment.centerLeft,
-                  duration: const Duration(milliseconds: 300),
-                  curve: Curves.easeOutCubic,
-                  child: FractionallySizedBox(
-                    widthFactor: .5,
-                    heightFactor: 1,
-                    child: AnimatedContainer(
-                      duration: const Duration(milliseconds: 240),
+          GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onPanStart: (details) {
+              setState(() => _draggingSettingsMode = true);
+              _dragSettingsMode(details.globalPosition);
+            },
+            onPanUpdate: (details) => _dragSettingsMode(details.globalPosition),
+            onPanEnd: (_) => setState(() => _draggingSettingsMode = false),
+            onPanCancel: () => setState(() => _draggingSettingsMode = false),
+            child: AnimatedScale(
+              scale: _draggingSettingsMode ? .99 : 1,
+              duration: const Duration(milliseconds: 140),
+              curve: Curves.easeOutCubic,
+              child: Container(
+                key: _settingsModeKey,
+                height: 48,
+                padding: const EdgeInsets.all(4),
+                decoration: BoxDecoration(
+                    color: Colors.white.withOpacity(.065),
+                    borderRadius: BorderRadius.circular(17),
+                    border: Border.all(color: Colors.white.withOpacity(.09))),
+                child: Stack(
+                  children: [
+                    AnimatedAlign(
+                      alignment: advanced
+                          ? Alignment.centerRight
+                          : Alignment.centerLeft,
+                      duration: const Duration(milliseconds: 300),
                       curve: Curves.easeOutCubic,
-                      decoration: BoxDecoration(
-                        color: _accent.withOpacity(.19),
-                        borderRadius: BorderRadius.circular(13),
-                        border: Border.all(
-                            color: _accent.withOpacity(.25), width: .8),
-                        boxShadow: [
-                          BoxShadow(
-                              color: _accent.withOpacity(.10),
-                              blurRadius: 12,
-                              offset: const Offset(0, 2)),
-                        ],
+                      child: FractionallySizedBox(
+                        widthFactor: .5,
+                        heightFactor: 1,
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 240),
+                          curve: Curves.easeOutCubic,
+                          decoration: BoxDecoration(
+                            color: _accent.withOpacity(.19),
+                            borderRadius: BorderRadius.circular(13),
+                            border: Border.all(
+                                color: _accent.withOpacity(.25), width: .8),
+                            boxShadow: [
+                              BoxShadow(
+                                  color: _accent.withOpacity(.10),
+                                  blurRadius: 12,
+                                  offset: const Offset(0, 2)),
+                            ],
+                          ),
+                        ),
                       ),
                     ),
-                  ),
+                    Row(children: [
+                      _segment(_localized('Основные'), !advanced,
+                          () => setState(() => advanced = false)),
+                      _segment(_localized('Для профи'), advanced,
+                          () => setState(() => advanced = true)),
+                    ]),
+                  ],
                 ),
-                Row(children: [
-                  _segment(_localized('Основные'), !advanced,
-                      () => setState(() => advanced = false)),
-                  _segment(_localized('Для профи'), advanced,
-                      () => setState(() => advanced = true)),
-                ]),
-              ],
+              ),
             ),
           ),
           _animatedReconnectBanner(
@@ -6795,15 +6859,6 @@ foreach ($route in $routes) {
                   const Icon(Icons.chevron_right_rounded))),
           InkWell(
               borderRadius: BorderRadius.circular(16),
-              onTap: () => _openSettingsPage('contacts'),
-              child: _row(
-                  Icons.alternate_email_rounded,
-                  'Контакты',
-                  _text('Репозиторий, релизы и сайты',
-                      'Repository, releases and websites'),
-                  const Icon(Icons.chevron_right_rounded))),
-          InkWell(
-              borderRadius: BorderRadius.circular(16),
               onTap: _showAbout,
               child: _row(
                   Icons.info_outline_rounded,
@@ -6823,6 +6878,18 @@ foreach ($route in $routes) {
               ),
               icon: const Icon(Icons.delete_sweep_outlined, size: 19),
               label: Text(_localized('Очистить серверы и подписки')),
+            ),
+          ),
+          const SizedBox(height: 12),
+          InkWell(
+            borderRadius: BorderRadius.circular(16),
+            onTap: () => _openSettingsPage('contacts'),
+            child: _row(
+              Icons.alternate_email_rounded,
+              'Контакты',
+              _text('Репозиторий, релизы и сайты',
+                  'Repository, releases and websites'),
+              const Icon(Icons.chevron_right_rounded),
             ),
           ),
         ],
@@ -6915,6 +6982,8 @@ foreach ($route in $routes) {
         ),
         const SizedBox(height: 14),
         Wrap(
+          alignment: WrapAlignment.center,
+          runAlignment: WrapAlignment.center,
           spacing: 10,
           runSpacing: 10,
           children: [
@@ -7706,13 +7775,18 @@ foreach ($route in $routes) {
                 },
                 _menu(
                     coreSettings.pingMode,
-                    Platform.isAndroid || Platform.isIOS
+                    Platform.isIOS
                         ? const {'tcp': 'TCP · порт сервера'}
-                        : const {
-                            'proxy': 'Proxy GET · через прокси',
-                            'tcp': 'TCP · порт',
-                            'icmp': 'ICMP · адрес'
-                          },
+                        : Platform.isAndroid
+                            ? const {
+                                'proxy': 'Proxy GET · через VPN',
+                                'tcp': 'TCP · порт сервера',
+                              }
+                            : const {
+                                'proxy': 'Proxy GET · через прокси',
+                                'tcp': 'TCP · порт',
+                                'icmp': 'ICMP · адрес'
+                              },
                     (v) => _saveCore(coreSettings.copyWith(pingMode: v),
                         requiresReconnect: false))),
             _row(
@@ -7792,11 +7866,11 @@ foreach ($route in $routes) {
             const SizedBox(height: 14),
             _section('ЯДРО'),
             Row(children: [
-              _choice('sing-box', process?.name == 'sing-box',
+              _choice('sing-box', coreSettings.core == 'sing-box',
                   () => _selectCore('sing-box')),
-              if (!Platform.isAndroid)
-                _choice(
-                    'Xray', process?.name == 'xray', () => _selectCore('Xray')),
+              if (!Platform.isIOS)
+                _choice('Xray', coreSettings.core == 'xray',
+                    () => _selectCore('Xray')),
             ]),
             SizedBox(height: 12),
             _section('XHTTP · ДЛЯ ПРОФИ'),
@@ -8079,13 +8153,15 @@ foreach ($route in $routes) {
                 },
                 _menu(
                     coreSettings.pingMode,
-                    Platform.isAndroid || Platform.isIOS
+                    Platform.isIOS
                         ? const {'tcp': 'TCP'}
-                        : const {
-                            'proxy': 'Proxy GET',
-                            'tcp': 'TCP',
-                            'icmp': 'ICMP',
-                          },
+                        : Platform.isAndroid
+                            ? const {'proxy': 'Proxy GET', 'tcp': 'TCP'}
+                            : const {
+                                'proxy': 'Proxy GET',
+                                'tcp': 'TCP',
+                                'icmp': 'ICMP',
+                              },
                     (v) => _saveCore(coreSettings.copyWith(pingMode: v),
                         requiresReconnect: false))),
             if (coreSettings.pingMode == 'proxy')
@@ -8697,6 +8773,14 @@ foreach ($route in $routes) {
         ),
       );
 
+  void _dragSettingsMode(Offset globalPosition) {
+    final renderObject = _settingsModeKey.currentContext?.findRenderObject();
+    if (renderObject is! RenderBox || !renderObject.hasSize) return;
+    final local = renderObject.globalToLocal(globalPosition);
+    final nextAdvanced = local.dx >= renderObject.size.width / 2;
+    if (nextAdvanced != advanced) setState(() => advanced = nextAdvanced);
+  }
+
   void _dragTabIndicator(Offset globalPosition, {required bool vertical}) {
     final key = vertical ? _sideNavKey : _bottomNavKey;
     final box = key.currentContext?.findRenderObject();
@@ -8706,16 +8790,16 @@ foreach ($route in $routes) {
     if (vertical) {
       const inset = 6.0;
       const rowStride = 80.0;
-      const tabAreaHeight = 4 * 72.0 + 3 * 8.0;
+      const tabAreaHeight = 3 * 72.0 + 2 * 8.0;
       final offset = local.dy - inset;
       if (offset < 0 || offset >= tabAreaHeight) return;
-      target = (offset / rowStride).floor().clamp(0, 3);
+      target = (offset / rowStride).floor().clamp(0, 2);
     } else {
       const inset = 6.0;
       final contentWidth = box.size.width - inset * 2;
       final offset = local.dx - inset;
       if (offset < 0 || offset >= contentWidth) return;
-      target = (offset / (contentWidth / 4)).floor().clamp(0, 3);
+      target = (offset / (contentWidth / 3)).floor().clamp(0, 2);
     }
     if (target != _tabIndex) _openTab(target);
   }
@@ -8752,7 +8836,7 @@ foreach ($route in $routes) {
                     offset: const Offset(0, 12))
               ]),
           child: LayoutBuilder(builder: (context, bounds) {
-            final itemWidth = bounds.maxWidth / 4;
+            final itemWidth = bounds.maxWidth / 3;
             return Stack(children: [
               AnimatedPositioned(
                   duration: const Duration(milliseconds: 280),
@@ -8780,8 +8864,6 @@ foreach ($route in $routes) {
                 _navItem(
                     Icons.alt_route_rounded, _text('Маршрут', 'Routing'), 1),
                 _navItem(Icons.tune_rounded, _text('Настройки', 'Settings'), 2),
-                _navItem(Icons.alternate_email_rounded,
-                    _text('Контакты', 'Contacts'), 3),
               ]),
             ]);
           })));
@@ -8842,10 +8924,6 @@ foreach ($route in $routes) {
                     child: _sideNavItem(
                         Icons.tune_rounded, _text('Настройки', 'Settings'), 2)),
                 const SizedBox(height: itemGap),
-                SizedBox(
-                    height: itemHeight,
-                    child: _sideNavItem(Icons.alternate_email_rounded,
-                        _text('Контакты', 'Contacts'), 3)),
                 const Spacer(),
                 Divider(
                     height: 16,

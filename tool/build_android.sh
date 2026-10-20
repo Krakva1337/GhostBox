@@ -6,9 +6,12 @@ command -v flutter >/dev/null || { echo 'Flutter is required.' >&2; exit 1; }
 command -v go >/dev/null || { echo 'Go is required to build libbox.' >&2; exit 1; }
 
 "$project_dir/tool/build_mobile_cores.sh" android
+"$project_dir/tool/build_android_xray.sh"
 mkdir -p "$project_dir/android/app/libs"
 install -m 0644 "$project_dir/dist/cores/android/libbox.aar" \
   "$project_dir/android/app/libs/libbox.aar"
+install -m 0644 "$project_dir/dist/cores/android/libXray.aar" \
+  "$project_dir/android/app/libs/libXray.aar"
 cd "$project_dir"
 flutter pub get
 ghostbox_version="$(awk '/^version:/ {split($2,v,"+"); print v[1]}' pubspec.yaml)"

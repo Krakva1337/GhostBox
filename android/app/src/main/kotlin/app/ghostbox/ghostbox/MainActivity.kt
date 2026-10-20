@@ -26,6 +26,9 @@ class MainActivity : FlutterActivity() {
     private var pendingConfig: String? = null
     private var pendingProfileName: String? = null
     private var pendingMemoryMb = 128
+    private var pendingCore = "sing-box"
+    private var pendingProxyOnly = false
+    private var pendingKeepXray = false
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -40,7 +43,13 @@ class MainActivity : FlutterActivity() {
                         pendingConfig = call.argument<String>("config")
                         pendingProfileName = call.argument<String>("profileName") ?: "GhostBox"
                         pendingMemoryMb = (call.argument<Int>("memoryMb") ?: 128).coerceIn(64, 256)
+                        pendingCore = call.argument<String>("core")?.lowercase()?.takeIf {
+                            it == "xray" || it == "sing-box"
+                        } ?: "sing-box"
+                        pendingProxyOnly = call.argument<Boolean>("proxyOnly") ?: false
+                        pendingKeepXray = call.argument<Boolean>("keepXray") ?: false
                         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU &&
+                            call.argument<Boolean>("keepXray") != true &&
                             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
                         ) {
                             pendingVpnResult = result
@@ -54,19 +63,30 @@ class MainActivity : FlutterActivity() {
                     }
                     "stopVpn" -> {
                         stopService(Intent(this, GhostBoxVpnService::class.java))
+                        stopService(Intent(this, XrayVpnService::class.java))
                         result.success(null)
                     }
-                    "vpnState" -> result.success(getSharedPreferences("ghostbox_vpn", MODE_PRIVATE).getString("state", "disconnected"))
-                    "vpnError" -> result.success(getSharedPreferences("ghostbox_vpn", MODE_PRIVATE).getString("error", null))
-                    "vpnMemoryMb" -> result.success(android.os.Debug.getPss() / 1024)
+                    "vpnState" -> result.success(VpnStateStore.state(this))
+                    "vpnError" -> result.success(VpnStateStore.error(this))
+                    "xrayProxyState" -> result.success(VpnStateStore.xrayProxyState(this))
+                    "xrayProxyError" -> result.success(VpnStateStore.xrayProxyError(this))
+                    "vpnMemoryMb" -> {
+                        val processName = "$packageName:${if (VpnStateStore.activeCore(this) == "xray") "xray" else "singboxcore"}"
+                        val pid = getSystemService(android.app.ActivityManager::class.java)
+                            .runningAppProcesses
+                            ?.firstOrNull { it.processName == processName }
+                            ?.pid
+                        val pss: Long = if (pid == null) android.os.Debug.getPss() else
+                            getSystemService(android.app.ActivityManager::class.java)
+                                .getProcessMemoryInfo(intArrayOf(pid)).firstOrNull()?.totalPss?.toLong()
+                                ?: android.os.Debug.getPss()
+                        result.success(pss / 1024)
+                    }
                     "vpnLogs" -> {
-                        val raw = getSharedPreferences("ghostbox_vpn", MODE_PRIVATE).getString("logs", "[]") ?: "[]"
-                        result.success(org.json.JSONArray(raw).let { array ->
-                            (0 until array.length()).map { array.optString(it) }
-                        })
+                        result.success(VpnStateStore.logs(this))
                     }
                     "clearVpnLogs" -> {
-                        getSharedPreferences("ghostbox_vpn", MODE_PRIVATE).edit().putString("logs", "[]").apply()
+                        VpnStateStore.update(this) { it.put("logs", org.json.JSONArray()) }
                         result.success(null)
                     }
                     else -> result.notImplemented()
@@ -203,10 +223,9 @@ class MainActivity : FlutterActivity() {
         } else {
             pendingConfig = null
             pendingProfileName = null
-            getSharedPreferences("ghostbox_vpn", MODE_PRIVATE).edit()
-                .putString("state", "disconnected")
-                .putString("error", "VPN permission was denied")
-                .apply()
+            VpnStateStore.update(this) {
+                it.put("state", "disconnected").put("error", "VPN permission was denied")
+            }
             result?.error("permission_denied", "VPN permission was denied", null)
         }
     }
@@ -243,26 +262,69 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun saveVpnError(message: String) {
-        getSharedPreferences("ghostbox_vpn", MODE_PRIVATE).edit()
-            .putString("state", "error")
-            .putString("error", message)
-            .apply()
+        VpnStateStore.update(this) { it.put("state", "error").put("error", message) }
     }
 
     private fun startPreparedVpn() {
-        val config = pendingConfig ?: error("Missing sing-box configuration")
-        val intent = Intent(this, GhostBoxVpnService::class.java)
-            .putExtra(GhostBoxVpnService.EXTRA_CONFIG, config)
-            .putExtra(GhostBoxVpnService.EXTRA_PROFILE, pendingProfileName ?: "GhostBox")
-            .putExtra(GhostBoxVpnService.EXTRA_MEMORY, pendingMemoryMb)
-        getSharedPreferences("ghostbox_vpn", MODE_PRIVATE).edit()
-            .putString("state", "connecting").remove("error").apply()
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-            startForegroundService(intent)
+        val config = pendingConfig ?: error("Missing VPN configuration")
+        val core = pendingCore
+        val intent = if (core == "xray") {
+            Intent(this, XrayVpnService::class.java)
+                .putExtra(XrayVpnService.EXTRA_CONFIG, config)
+                .putExtra(XrayVpnService.EXTRA_PROFILE, pendingProfileName ?: "GhostBox")
+                .putExtra(XrayVpnService.EXTRA_PROXY_ONLY, pendingProxyOnly)
         } else {
-            startService(intent)
+            Intent(this, GhostBoxVpnService::class.java)
+                .putExtra(GhostBoxVpnService.EXTRA_CONFIG, config)
+                .putExtra(GhostBoxVpnService.EXTRA_PROFILE, pendingProfileName ?: "GhostBox")
+                .putExtra(GhostBoxVpnService.EXTRA_MEMORY, pendingMemoryMb)
+        }
+        val proxyOnly = pendingProxyOnly
+        val keepXray = pendingKeepXray
+        VpnStateStore.update(this) {
+            it.put("activeCore", core).put("state", "connecting").remove("error")
+            if (proxyOnly) {
+                it.put("xrayProxyState", "connecting").remove("xrayProxyError")
+            }
+        }
+        if (core == "xray") {
+            stopService(Intent(this, GhostBoxVpnService::class.java))
+        } else if (!keepXray) {
+            stopService(Intent(this, XrayVpnService::class.java))
+        }
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                startForegroundService(intent)
+            } else {
+                startService(intent)
+            }
+        } catch (error: Exception) {
+            val previousExit = recentVpnServiceExit(core)
+            val detail = buildString {
+                append(error.message ?: error.toString())
+                if (previousExit != null) append("; предыдущий вылет VPN-процесса: ").append(previousExit)
+            }
+            throw IllegalStateException(detail, error)
         }
         pendingConfig = null
         pendingProfileName = null
+        pendingProxyOnly = false
+        pendingKeepXray = false
+    }
+
+    private fun recentVpnServiceExit(core: String): String? {
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.R) return null
+        return runCatching {
+            getSystemService(android.app.ActivityManager::class.java)
+                .getHistoricalProcessExitReasons(packageName, 0, 20)
+                .asSequence()
+                .filter { it.processName.startsWith("$packageName:") }
+                .sortedByDescending { it.timestamp }
+                .firstOrNull()
+                ?.let { exit ->
+                    val description = exit.description?.takeIf(String::isNotBlank)
+                    "$core: reason=${exit.reason}${description?.let { " ($it)" } ?: ""}, status=${exit.status}"
+                }
+        }.getOrNull()
     }
 }

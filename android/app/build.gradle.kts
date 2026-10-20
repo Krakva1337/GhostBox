@@ -50,6 +50,10 @@ android {
         versionName = flutter.versionName
     }
 
+    sourceSets.getByName("main").assets.srcDir(
+        "$buildDir/generated/xrayRuntimeAssets",
+    )
+
     if (hasReleaseSigning) {
         signingConfigs {
             create("release") {
@@ -70,6 +74,23 @@ android {
             )
         }
     }
+}
+
+val prepareXrayRuntimeAsset = tasks.register<Copy>("prepareXrayRuntimeAsset") {
+    val xrayAar = file("libs/libXray.aar")
+    if (!xrayAar.isFile) {
+        throw GradleException(
+            "Android Xray core is missing. Run tool/build_android_xray.sh to build it.",
+        )
+    }
+    from(xrayAar) {
+        rename { "libXray.aar" }
+    }
+    into(layout.buildDirectory.dir("generated/xrayRuntimeAssets"))
+}
+
+tasks.named("preBuild").configure {
+    dependsOn(prepareXrayRuntimeAsset)
 }
 
 dependencies {

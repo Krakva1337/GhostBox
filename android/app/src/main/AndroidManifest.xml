@@ -14,6 +14,17 @@
             android:name=".GhostBoxVpnService"
             android:permission="android.permission.BIND_VPN_SERVICE"
             android:exported="true"
+            android:process=":singboxcore"
+            android:foregroundServiceType="systemExempted">
+            <intent-filter>
+                <action android:name="android.net.VpnService" />
+            </intent-filter>
+        </service>
+        <service
+            android:name=".XrayVpnService"
+            android:permission="android.permission.BIND_VPN_SERVICE"
+            android:exported="true"
+            android:process=":xray"
             android:foregroundServiceType="systemExempted">
             <intent-filter>
                 <action android:name="android.net.VpnService" />

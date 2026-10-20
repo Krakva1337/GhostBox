@@ -57,6 +57,8 @@ jobs:
           sdkmanager 'platforms;android-36' 'ndk;28.2.13676358'
       - name: Build libbox AARs
         run: ./tool/build_mobile_cores.sh android
+      - name: Build libXray AAR
+        run: ./tool/build_android_xray.sh
       - uses: actions/upload-artifact@v4
         with:
           name: ghostbox-libbox-android

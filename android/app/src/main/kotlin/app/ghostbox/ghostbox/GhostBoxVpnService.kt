@@ -14,8 +14,12 @@ import io.nekohasekai.libbox.CommandServerHandler
 import io.nekohasekai.libbox.Libbox
 import io.nekohasekai.libbox.OverrideOptions
 import io.nekohasekai.libbox.PlatformInterface
+import io.nekohasekai.libbox.RoutePrefix
+import io.nekohasekai.libbox.RoutePrefixIterator
 import io.nekohasekai.libbox.SetupOptions
+import io.nekohasekai.libbox.StringIterator
 import io.nekohasekai.libbox.SystemProxyStatus
+import io.nekohasekai.libbox.TunOptions
 import java.lang.reflect.InvocationHandler
 import java.lang.reflect.Proxy
 import java.net.InetAddress
@@ -64,8 +68,14 @@ class GhostBoxVpnService : VpnService(), CommandServerHandler {
                 appVersion = BuildConfig.VERSION_NAME
                 appMarketingVersion = BuildConfig.VERSION_NAME
                 platformMetadata = "Android ${Build.VERSION.RELEASE} (${Build.MODEL})"
-                oomKillerEnabled = true
-                oomMemoryLimit = memoryMb.toLong() * 1024L * 1024L
+                // Go's Android stack workaround prevents native stack faults on
+                // devices with stricter ART/NDK behavior.
+                fixAndroidStack = true
+                // Do not let libbox terminate the isolated VPN process at its
+                // conservative default heap cap. Android's LMK manages this
+                // service process; a Go-side kill leaves ActivityManager with
+                // a dead VPN service and reports "process is bad" on restart.
+                oomKillerEnabled = false
             }
             if (!libboxInitialized) {
                 synchronized(GhostBoxVpnService::class.java) {
@@ -86,15 +96,16 @@ class GhostBoxVpnService : VpnService(), CommandServerHandler {
                 return
             }
             server.startOrReloadService(config, OverrideOptions())
-            getSharedPreferences("ghostbox_vpn", MODE_PRIVATE).edit()
-                .putString("state", "connected").remove("error").apply()
+            VpnStateStore.updateForCore(this, "sing-box") {
+                it.put("state", "connected").remove("error")
+            }
             updateNotification(connected = true)
             Log.i(TAG, "sing-box VPN service started")
-        } catch (error: Exception) {
+        } catch (error: Throwable) {
             Log.e(TAG, "sing-box failed to start", error)
-            getSharedPreferences("ghostbox_vpn", MODE_PRIVATE).edit()
-                .putString("state", "error")
-                .putString("error", error.message ?: error.toString()).apply()
+            VpnStateStore.updateForCore(this, "sing-box") {
+                it.put("state", "error").put("error", error.message ?: error.toString())
+            }
             stopVpn()
         }
     }
@@ -135,30 +146,41 @@ class GhostBoxVpnService : VpnService(), CommandServerHandler {
         ) as PlatformInterface
     }
 
-    private fun openTun(options: Any): Int {
+    private fun openTun(value: Any): Int {
         if (VpnService.prepare(this) != null) error("Android VPN permission is missing")
-        val builder = Builder().setSession("GhostBox").setMtu(readNumber(options, "mtu", 1500))
+        val options = value as? TunOptions ?: error("Unexpected sing-box TUN options: ${value.javaClass.name}")
+        val builder = Builder().setSession("GhostBox").setMtu(options.mtu)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) builder.setMetered(false)
 
-        readIterator(options, "inet4Address").forEach { addAddress(builder, it) }
-        readIterator(options, "inet6Address").forEach { addAddress(builder, it) }
-        if (readBoolean(options, "autoRoute")) {
-            readIterator(options, "dnsServerAddress").forEach { builder.addDnsServer(it) }
-            val ipv4Routes = readIterator(options, "inet4RouteAddress")
-                .ifEmpty { readIterator(options, "inet4RouteRange") }
-            val ipv6Routes = readIterator(options, "inet6RouteAddress")
-                .ifEmpty { readIterator(options, "inet6RouteRange") }
-            if (ipv4Routes.isEmpty() && ipv6Routes.isEmpty()) {
-                builder.addRoute("0.0.0.0", 0)
-                builder.addRoute("::", 0)
-            } else {
-                (ipv4Routes + ipv6Routes).forEach { addRoute(builder, it) }
+        options.inet4Address.forEach { builder.addAddress(it.address(), it.prefix()) }
+        options.inet6Address.forEach { builder.addAddress(it.address(), it.prefix()) }
+        if (options.autoRoute) {
+            if (!options.dnsMode.value.equals("disabled", ignoreCase = true)) {
+                options.dnsServerAddress.forEach { builder.addDnsServer(it) }
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                (readIterator(options, "inet4RouteExcludeAddress") +
-                    readIterator(options, "inet6RouteExcludeAddress")).forEach { value ->
-                    val (address, prefix) = splitPrefix(value)
-                    builder.excludeRoute(IpPrefix(InetAddress.getByName(address), prefix))
+                val ipv4Routes = options.inet4RouteAddress
+                val ipv6Routes = options.inet6RouteAddress
+                if (!ipv4Routes.hasNext() && !ipv6Routes.hasNext()) {
+                    // Some configs request auto-route without explicit routes.
+                    // Add only families that have a TUN address.
+                    if (options.inet4Address.hasNext()) builder.addRoute("0.0.0.0", 0)
+                    if (options.inet6Address.hasNext()) builder.addRoute("::", 0)
+                } else {
+                    ipv4Routes.forEach { builder.addRoute(it.address(), it.prefix()) }
+                    ipv6Routes.forEach { builder.addRoute(it.address(), it.prefix()) }
+                }
+                options.inet4RouteExcludeAddress.forEach { builder.excludeRoute(it.toIpPrefix()) }
+                options.inet6RouteExcludeAddress.forEach { builder.excludeRoute(it.toIpPrefix()) }
+            } else {
+                val ipv4Routes = options.inet4RouteRange
+                val ipv6Routes = options.inet6RouteRange
+                if (!ipv4Routes.hasNext() && !ipv6Routes.hasNext()) {
+                    if (options.inet4Address.hasNext()) builder.addRoute("0.0.0.0", 0)
+                    if (options.inet6Address.hasNext()) builder.addRoute("::", 0)
+                } else {
+                    ipv4Routes.forEach { builder.addRoute(it.address(), it.prefix()) }
+                    ipv6Routes.forEach { builder.addRoute(it.address(), it.prefix()) }
                 }
             }
         }
@@ -166,47 +188,16 @@ class GhostBoxVpnService : VpnService(), CommandServerHandler {
         return descriptor.detachFd()
     }
 
-    private fun addAddress(builder: Builder, value: String) {
-        val (address, prefix) = splitPrefix(value)
-        builder.addAddress(InetAddress.getByName(address), prefix)
+    private inline fun <T> RoutePrefixIterator.forEach(action: (RoutePrefix) -> T) {
+        while (hasNext()) action(next())
     }
 
-    private fun addRoute(builder: Builder, value: String) {
-        val (address, prefix) = splitPrefix(value)
-        builder.addRoute(InetAddress.getByName(address), prefix)
+    private inline fun StringIterator.forEach(action: (String) -> Unit) {
+        while (hasNext()) action(next())
     }
 
-    private fun splitPrefix(value: String): Pair<String, Int> {
-        val pieces = value.split('/')
-        val address = InetAddress.getByName(pieces[0])
-        val max = if (address.address.size == 4) 32 else 128
-        return pieces[0] to (pieces.getOrNull(1)?.toIntOrNull() ?: max).coerceIn(0, max)
-    }
-
-    private fun readIterator(target: Any, property: String): List<String> {
-        val iterator = readProperty(target, property) ?: return emptyList()
-        val hasNext = iterator.javaClass.methods.firstOrNull { it.name == "hasNext" } ?: return emptyList()
-        val next = iterator.javaClass.methods.firstOrNull { it.name == "next" } ?: return emptyList()
-        val output = mutableListOf<String>()
-        while ((hasNext.invoke(iterator) as? Boolean) == true) {
-            output += (next.invoke(iterator)?.toString() ?: continue)
-        }
-        return output
-    }
-
-    private fun readNumber(target: Any, property: String, fallback: Int): Int =
-        (readProperty(target, property) as? Number)?.toInt() ?: fallback
-
-    private fun readBoolean(target: Any, property: String): Boolean =
-        readProperty(target, property) as? Boolean ?: false
-
-    private fun readProperty(target: Any, property: String): Any? {
-        val capitalized = property.replaceFirstChar { it.uppercase() }
-        val getter = target.javaClass.methods.firstOrNull {
-            it.name == "get$capitalized" || it.name == "is$capitalized" || it.name == property
-        } ?: return null
-        return getter.invoke(target)
-    }
+    private fun RoutePrefix.toIpPrefix(): IpPrefix =
+        IpPrefix(InetAddress.getByName(address()), prefix())
 
     private fun emptyIteratorProxy(type: Class<*>): Any = Proxy.newProxyInstance(
         type.classLoader,
@@ -291,9 +282,8 @@ class GhostBoxVpnService : VpnService(), CommandServerHandler {
             Log.w(TAG, "Error while stopping sing-box", error)
         } finally {
             commandServer = null
-            if (getSharedPreferences("ghostbox_vpn", MODE_PRIVATE).getString("state", "") != "error") {
-                getSharedPreferences("ghostbox_vpn", MODE_PRIVATE).edit()
-                    .putString("state", "disconnected").apply()
+            if (VpnStateStore.state(this) != "error") {
+                VpnStateStore.updateForCore(this, "sing-box") { it.put("state", "disconnected") }
             }
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
@@ -316,13 +306,7 @@ class GhostBoxVpnService : VpnService(), CommandServerHandler {
     override fun writeDebugMessage(message: String?) {
         val line = message.orEmpty()
         Log.d(TAG, line)
-        val preferences = getSharedPreferences("ghostbox_vpn", MODE_PRIVATE)
-        val logs = runCatching {
-            org.json.JSONArray(preferences.getString("logs", "[]") ?: "[]")
-        }.getOrElse { org.json.JSONArray() }
-        logs.put(line)
-        while (logs.length() > 1000) logs.remove(0)
-        preferences.edit().putString("logs", logs.toString()).apply()
+        VpnStateStore.appendLog(this, line)
     }
     override fun connectSSHAgent(): Int = -1
 }

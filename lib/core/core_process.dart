@@ -1145,8 +1145,9 @@ class CoreProcessBackend implements VpnBackend {
               'name': 'ghostbox0',
               'mtu': 1500,
               'gateway': ['172.19.0.1/30', 'fc00::1/64'],
-              'autoSystemRoutingTable': ['0.0.0.0/0', '::/0'],
-              'autoOutboundsInterface': 'auto',
+              if (!Platform.isAndroid)
+                'autoSystemRoutingTable': ['0.0.0.0/0', '::/0'],
+              if (!Platform.isAndroid) 'autoOutboundsInterface': 'auto',
             },
             'sniffing': {
               'enabled': settings.sniffingEnabled,
