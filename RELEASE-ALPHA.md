@@ -1,20 +1,20 @@
-# GhostBox v0.1-Alpha
+# GhostBox v1.0-Alpha
 
 Linux x86_64 desktop preview, built with Flutter and bundled Xray-core and sing-box binaries.
 
 ## Install
 
-Download `GhostBox-0.1.0-alpha-linux-x86_64.AppImage` from the release assets and run:
+Download `GhostBox-1.0.0-alpha-linux-x86_64.AppImage` from the release assets and run:
 
 ```bash
-chmod +x GhostBox-0.1.0-alpha-linux-x86_64.AppImage
-./GhostBox-0.1.0-alpha-linux-x86_64.AppImage
+chmod +x GhostBox-1.0.0-alpha-linux-x86_64.AppImage
+./GhostBox-1.0.0-alpha-linux-x86_64.AppImage
 ```
 
 Optionally add it to the desktop application menu:
 
 ```bash
-./tool/install_appimage.sh ./GhostBox-0.1.0-alpha-linux-x86_64.AppImage
+./tool/install_appimage.sh ./GhostBox-1.0.0-alpha-linux-x86_64.AppImage
 ```
 
 Import a subscription or profile, check its connection, and choose a connection mode. TUN is the default. For Linux TUN, start GhostBox once so AppRun copies the bundled cores to the user data directory, then run:

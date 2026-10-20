@@ -36,14 +36,14 @@ class GitHubUpdater {
   static const releasesPage = 'https://github.com/$repository/releases';
   static const currentVersion = String.fromEnvironment(
     'GHOSTBOX_VERSION',
-    defaultValue: '0.1.0-alpha',
+    defaultValue: '1.0.0-alpha',
   );
 
   static String displayVersion(String version) {
     final normalized = version.replaceFirst(RegExp(r'^v'), '');
-    if (RegExp(r'^0\.1(?:\.0)?-alpha$', caseSensitive: false)
+    if (RegExp(r'^1\.0(?:\.0)?-alpha$', caseSensitive: false)
         .hasMatch(normalized)) {
-      return 'v0.1-Alpha';
+      return 'v1.0-Alpha';
     }
     final shortPreAlpha =
         RegExp(r'^(\d+)\.(\d+)\.0(-pre-alpha.*)$').firstMatch(normalized);

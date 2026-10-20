@@ -255,13 +255,35 @@ class _ThemeSettingsPanelState extends State<ThemeSettingsPanel> {
               'Independent from the app theme. Presets change the app icon; custom colors apply in the UI and on desktop.'),
           style: theme.textTheme.bodySmall),
       const SizedBox(height: 12),
-      Wrap(spacing: 9, runSpacing: 9, children: [
-        for (final icon in _iconOptions)
-          _iconOption(context, controller, icon.$1, _presetName(icon.$2),
-              icon.$3, icon.$4),
-        _iconOption(context, controller, 'custom', _s('Своя', 'Custom'),
-            controller.iconForeground, controller.iconBackground),
-      ]),
+      LayoutBuilder(builder: (context, bounds) {
+        const spacing = 9.0;
+        const minTileWidth = 56.0;
+        final columns = ((bounds.maxWidth + spacing) / (minTileWidth + spacing))
+            .floor()
+            .clamp(1, _iconOptions.length + 1);
+        final tileWidth = (bounds.maxWidth - spacing * (columns - 1)) / columns;
+        return Wrap(
+          alignment: WrapAlignment.center,
+          spacing: spacing,
+          runSpacing: spacing,
+          children: [
+            for (final icon in _iconOptions)
+              SizedBox(
+                  width: tileWidth,
+                  child: _iconOption(context, controller, icon.$1,
+                      _presetName(icon.$2), icon.$3, icon.$4)),
+            SizedBox(
+                width: tileWidth,
+                child: _iconOption(
+                    context,
+                    controller,
+                    'custom',
+                    _s('Своя', 'Custom'),
+                    controller.iconForeground,
+                    controller.iconBackground)),
+          ],
+        );
+      }),
       AnimatedSize(
         duration: const Duration(milliseconds: 260),
         curve: Curves.easeInOutCubic,
@@ -275,30 +297,28 @@ class _ThemeSettingsPanelState extends State<ThemeSettingsPanel> {
                     Text(_s('Цвет призрака', 'Ghost color'),
                         style: theme.textTheme.bodySmall),
                     const SizedBox(height: 9),
-                    Wrap(spacing: 9, runSpacing: 9, children: [
-                      for (final color in _iconColors)
-                        _swatch(
-                            context,
-                            color,
-                            controller.iconForeground,
-                            () => controller.setCustomIconColors(
-                                foreground: color)),
-                      _customIconColor(context, controller, foreground: true),
-                    ]),
+                    _swatchPalette(
+                      context,
+                      colors: _iconColors,
+                      selected: controller.iconForeground,
+                      onSelected: (color) =>
+                          controller.setCustomIconColors(foreground: color),
+                      trailing: _customIconColor(context, controller,
+                          foreground: true),
+                    ),
                     const SizedBox(height: 16),
                     Text(_s('Фон значка', 'Icon background'),
                         style: theme.textTheme.bodySmall),
                     const SizedBox(height: 9),
-                    Wrap(spacing: 9, runSpacing: 9, children: [
-                      for (final color in _iconBackgrounds)
-                        _swatch(
-                            context,
-                            color,
-                            controller.iconBackground,
-                            () => controller.setCustomIconColors(
-                                background: color)),
-                      _customIconColor(context, controller, foreground: false),
-                    ]),
+                    _swatchPalette(
+                      context,
+                      colors: _iconBackgrounds,
+                      selected: controller.iconBackground,
+                      onSelected: (color) =>
+                          controller.setCustomIconColors(background: color),
+                      trailing: _customIconColor(context, controller,
+                          foreground: false),
+                    ),
                   ],
                 ),
               ),
@@ -316,8 +336,9 @@ class _ThemeSettingsPanelState extends State<ThemeSettingsPanel> {
                         Text(_s('Цвет акцента', 'Accent color'),
                             style: theme.textTheme.bodySmall),
                         const SizedBox(height: 10),
-                        Wrap(spacing: 10, runSpacing: 10, children: [
-                          for (final color in const [
+                        _swatchPalette(
+                          context,
+                          colors: const [
                             Color(0xFF8BB9F4),
                             Color(0xFF9AA7FF),
                             Color(0xFF8DD4CB),
@@ -335,22 +356,24 @@ class _ThemeSettingsPanelState extends State<ThemeSettingsPanel> {
                             Color(0xFFDB6DD2),
                             Color(0xFFB6D947),
                             Color(0xFF42B8A6),
-                            Color(0xFFFFA64D)
-                          ])
-                            _swatch(context, color, controller.accent,
-                                () => controller.setCustom(accent: color)),
-                          _customButton(
+                            Color(0xFFFFA64D),
+                          ],
+                          selected: controller.accent,
+                          onSelected: (color) =>
+                              controller.setCustom(accent: color),
+                          trailing: _customButton(
                               context,
                               _s('Свой акцент', 'Custom accent'),
                               controller.customAccent,
                               false),
-                        ]),
+                        ),
                         const SizedBox(height: 18),
                         Text(_s('Фон', 'Background'),
                             style: theme.textTheme.bodySmall),
                         const SizedBox(height: 10),
-                        Wrap(spacing: 10, runSpacing: 10, children: [
-                          for (final color in const [
+                        _swatchPalette(
+                          context,
+                          colors: const [
                             Color(0xFF05080F),
                             Color(0xFF0A1220),
                             Color(0xFF111318),
@@ -375,16 +398,17 @@ class _ThemeSettingsPanelState extends State<ThemeSettingsPanel> {
                             Color(0xFFF7EEF3),
                             Color(0xFFF2F4EA),
                             Color(0xFFECEFF6),
-                            Color(0xFFFFF4E8)
-                          ])
-                            _swatch(context, color, controller.background,
-                                () => controller.setCustom(background: color)),
-                          _customButton(
+                            Color(0xFFFFF4E8),
+                          ],
+                          selected: controller.background,
+                          onSelected: (color) =>
+                              controller.setCustom(background: color),
+                          trailing: _customButton(
                               context,
                               _s('Свой фон', 'Custom background'),
                               controller.customBackground,
                               true),
-                        ]),
+                        ),
                       ]),
                 )),
     ]);
@@ -451,7 +475,6 @@ class _ThemeSettingsPanelState extends State<ThemeSettingsPanel> {
         onTap: () => controller.setIconVariant(id),
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 220),
-          width: 56,
           height: 62,
           decoration: BoxDecoration(
             color: selected ? controller.accent.withValues(alpha: .12) : null,
@@ -579,8 +602,48 @@ class _ThemeSettingsPanelState extends State<ThemeSettingsPanel> {
         ));
   }
 
-  Widget _swatch(BuildContext context, Color color, Color selected,
-          VoidCallback onTap) =>
+  Widget _swatchPalette(
+    BuildContext context, {
+    required List<Color> colors,
+    required Color selected,
+    required ValueChanged<Color> onSelected,
+    Widget? trailing,
+  }) =>
+      LayoutBuilder(builder: (context, bounds) {
+        const spacing = 10.0;
+        const minTileSize = 48.0;
+        const maxTileSize = 58.0;
+        final columns = ((bounds.maxWidth + spacing) / (minTileSize + spacing))
+            .floor()
+            .clamp(1, colors.length + (trailing == null ? 0 : 1));
+        final tileSize = ((bounds.maxWidth - spacing * (columns - 1)) / columns)
+            .clamp(minTileSize, maxTileSize)
+            .toDouble();
+        return Wrap(
+          alignment: WrapAlignment.center,
+          spacing: spacing,
+          runSpacing: spacing,
+          children: [
+            for (final color in colors)
+              _swatch(
+                context,
+                color,
+                selected,
+                () => onSelected(color),
+                size: tileSize,
+              ),
+            if (trailing != null)
+              SizedBox(
+                  width: tileSize,
+                  height: tileSize,
+                  child: Center(child: trailing)),
+          ],
+        );
+      });
+
+  Widget _swatch(
+          BuildContext context, Color color, Color selected, VoidCallback onTap,
+          {double size = 42}) =>
       Semantics(
         label: 'Цвет #${color.toARGB32().toRadixString(16).substring(2)}',
         selected: color == selected,
@@ -589,8 +652,8 @@ class _ThemeSettingsPanelState extends State<ThemeSettingsPanel> {
             borderRadius: BorderRadius.circular(16),
             child: AnimatedContainer(
               duration: const Duration(milliseconds: 220),
-              height: 42,
-              width: 42,
+              height: size,
+              width: size,
               decoration: BoxDecoration(
                   color: color,
                   borderRadius: BorderRadius.circular(14),

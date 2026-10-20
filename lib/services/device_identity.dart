@@ -14,7 +14,7 @@ class DeviceIdentity {
 
   static String get architecture => Abi.current().toString().split('.').last;
 
-  static String get subscriptionUserAgent => 'GhostBox-Alpha-v0.1';
+  static String get subscriptionUserAgent => 'GhostBox-Alpha-v1.0';
 
   static Future<String> get deviceModel async {
     if (Platform.isLinux) {
@@ -63,7 +63,7 @@ class DeviceIdentity {
       'X-Ver-OS': Platform.operatingSystemVersion,
       'X-Device-Model': model,
       'X-Device-Architecture': architecture,
-      'X-GhostBox-Client': 'GhostBox-Alpha-v0.1',
+      'X-GhostBox-Client': 'GhostBox-Alpha-v1.0',
       'X-GhostBox-OS': Platform.operatingSystem,
       'X-GhostBox-OS-Version': Platform.operatingSystemVersion,
       'X-GhostBox-Model': model,

@@ -51,7 +51,6 @@ class _HomePageState extends State<HomePage>
   final routingScroll = ScrollController();
   final routeListController = TextEditingController();
   bool refreshingSubscriptions = false;
-  int _previousTabIndex = 0;
   Timer? subscriptionRefreshTimer;
   Color get _surface => Theme.of(context).colorScheme.surface;
   Color get _subscriptionInfoSurface =>
@@ -246,6 +245,9 @@ class _HomePageState extends State<HomePage>
         'Reset core, theme and app preferences',
     'Вернуть параметры ядра к исходным': 'Restore default core parameters',
     'Удалить все серверы': 'Delete all servers',
+    'Очистить серверы и подписки': 'Clear servers and subscriptions',
+    'Подписки, серверы из них и отдельные профили будут удалены с этого устройства.':
+        'Subscriptions, their servers and standalone profiles will be removed from this device.',
     'Удалить профили и подписки с этого устройства':
         'Remove profiles and subscriptions from this device',
     'Оформление': 'Appearance',
@@ -2302,7 +2304,7 @@ class _HomePageState extends State<HomePage>
       ..findProxy = (_) => 'PROXY 127.0.0.1:$localPort';
     try {
       final request = await client.getUrl(uri).timeout(timeout);
-      request.headers.set(HttpHeaders.userAgentHeader, 'GhostBox-Alpha-v0.1');
+      request.headers.set(HttpHeaders.userAgentHeader, 'GhostBox-Alpha-v1.0');
       request.headers.set(HttpHeaders.connectionHeader, 'close');
       // The ping only needs the status line and headers. Draining the body can
       // turn a valid 404/204 into a false timeout if a test endpoint streams or
@@ -2884,15 +2886,42 @@ class _HomePageState extends State<HomePage>
         }
         break;
       case 'remove':
+        final subscriptionIds =
+            (sub['ids'] as List? ?? []).cast<String>().toSet();
+        final remainingIds = subscriptions
+            .where((item) => item['url'] != url)
+            .expand((item) => (item['ids'] as List? ?? []).cast<String>())
+            .toSet();
+        final removedIds = subscriptionIds.difference(remainingIds);
+        if (activeProfileId != null &&
+            removedIds.contains(activeProfileId) &&
+            backend.state != VpnState.disconnected) {
+          await _disconnectActive();
+        }
+        if (!mounted) break;
         setState(() {
           subscriptions.removeWhere((s) => s['url'] == url);
+          profiles.removeWhere((profile) => removedIds.contains(profile.id));
+          if (selectedId != null && removedIds.contains(selectedId)) {
+            selectedId = profiles.firstOrNull?.id;
+          }
+          if (activeProfileId != null && removedIds.contains(activeProfileId)) {
+            activeProfileId = null;
+            pendingReconnect = false;
+          }
+          subscriptionEndpointPings.remove(url);
+          checkingSubscriptionPings.remove(url);
+          collapsedSubscriptions.remove(url);
+          collapsedSubscriptionInfo.remove(url);
           subscriptionProfileIds = subscriptions
               .expand((s) => (s['ids'] as List? ?? []).cast<String>())
               .toSet()
               .toList();
         });
+        await _persist();
         await _saveSubscriptions();
-        _message('Подписка удалена; серверы сохранены в «Мои профили»');
+        _scheduleSubscriptionRefresh();
+        _message('Подписка и её серверы удалены');
         break;
     }
   }
@@ -3131,13 +3160,10 @@ class _HomePageState extends State<HomePage>
             child: Stack(children: [
               Positioned.fill(
                   child: IgnorePointer(
-                      child: AnimatedBuilder(
-                          animation: ambientMotion,
-                          builder: (context, _) => CustomPaint(
+                      child: RepaintBoundary(
+                          child: CustomPaint(
                               painter: _AmbientBackgroundPainter(
-                                  progress: animatedBackground
-                                      ? ambientMotion.value
-                                      : .12,
+                                  animation: ambientMotion,
                                   color: _accent,
                                   enabled: animatedBackground))))),
               Center(
@@ -3150,11 +3176,9 @@ class _HomePageState extends State<HomePage>
                             final page = ClipRRect(
                                 borderRadius: BorderRadius.circular(24),
                                 child: AnimatedSwitcher(
-                                    duration: const Duration(milliseconds: 270),
+                                    duration: const Duration(milliseconds: 220),
                                     reverseDuration:
-                                        const Duration(milliseconds: 220),
-                                    switchInCurve: Curves.easeOutCubic,
-                                    switchOutCurve: Curves.easeInCubic,
+                                        const Duration(milliseconds: 180),
                                     layoutBuilder: (current, previous) => Stack(
                                           fit: StackFit.passthrough,
                                           children: [
@@ -3163,40 +3187,13 @@ class _HomePageState extends State<HomePage>
                                           ],
                                         ),
                                     transitionBuilder: (child, animation) {
-                                      final childTab =
-                                          (child.key as ValueKey<int>).value;
-                                      final entering = childTab == _tabIndex;
-                                      final direction =
-                                          (_tabIndex - _previousTabIndex)
-                                              .sign
-                                              .toDouble();
-                                      final offset = entering
-                                          ? Offset(direction * .025, 0)
-                                          : Offset(-direction * .025, 0);
-                                      final motion = CurvedAnimation(
-                                          parent: animation,
-                                          curve: Curves.easeOutCubic,
-                                          reverseCurve: Curves.easeInCubic);
-                                      return FadeTransition(
-                                        opacity: animation,
-                                        child: SlideTransition(
-                                          position: Tween<Offset>(
-                                                  begin: entering
-                                                      ? offset
-                                                      : Offset.zero,
-                                                  end: entering
-                                                      ? Offset.zero
-                                                      : offset)
-                                              .animate(motion),
-                                          child: ScaleTransition(
-                                            scale: Tween<double>(
-                                                    begin: entering ? .99 : 1,
-                                                    end: entering ? 1 : .99)
-                                                .animate(motion),
-                                            child: child,
-                                          ),
-                                        ),
+                                      final fade = CurvedAnimation(
+                                        parent: animation,
+                                        curve: Curves.easeInOutCubic,
+                                        reverseCurve: Curves.easeInOutCubic,
                                       );
+                                      return FadeTransition(
+                                          opacity: fade, child: child);
                                     },
                                     child: KeyedSubtree(
                                         key: ValueKey(_tabIndex),
@@ -3539,7 +3536,6 @@ class _HomePageState extends State<HomePage>
           ]));
 
   void _openTab(int index) => setState(() {
-        _previousTabIndex = _tabIndex;
         routeListOpen = false;
         settings = index == 2;
         routingTab = index == 1;
@@ -4671,6 +4667,9 @@ class _HomePageState extends State<HomePage>
         metadata.supportUrl != null ||
         metadata.websiteUrl != null ||
         metadata.updateIntervalHours != null;
+    final hasProviderLinks =
+        metadata.websiteUrl != null || metadata.supportUrl != null;
+    final linksAtTop = MediaQuery.sizeOf(context).width >= 900;
     final progress = total != null && total > 0 && used != null
         ? (used / total).clamp(0.0, 1.0)
         : null;
@@ -4765,6 +4764,10 @@ class _HomePageState extends State<HomePage>
                   if (total != null && total > 0 && used != null)
                     Text('${(progress! * 100).round()}%',
                         style: TextStyle(color: _muted, fontSize: 11)),
+                  if (linksAtTop && hasProviderLinks) ...[
+                    const SizedBox(width: 6),
+                    _subscriptionProviderLinks(metadata),
+                  ],
                   IconButton(
                       tooltip: _localized('Свернуть детали'),
                       visualDensity: VisualDensity.compact,
@@ -4811,6 +4814,13 @@ class _HomePageState extends State<HomePage>
                         _muted),
                 ]),
               ],
+              if (linksAtTop &&
+                  hasProviderLinks &&
+                  used == null &&
+                  total == null)
+                Align(
+                    alignment: Alignment.centerRight,
+                    child: _subscriptionProviderLinks(metadata)),
               if (metadata.description?.isNotEmpty == true) ...[
                 SizedBox(height: 10),
                 Text(metadata.description!,
@@ -4851,24 +4861,38 @@ class _HomePageState extends State<HomePage>
                         'Updated ${_updatedLabel(sub['updatedAt'] as String)}'),
                     style: TextStyle(color: _muted, fontSize: 10)),
               ],
-              if (metadata.websiteUrl != null ||
-                  metadata.supportUrl != null) ...[
+              if (hasProviderLinks && !linksAtTop) ...[
                 SizedBox(height: 9),
-                Wrap(spacing: 8, runSpacing: 4, children: [
-                  if (metadata.websiteUrl != null)
-                    TextButton.icon(
-                        onPressed: () => _openProviderUrl(metadata.websiteUrl),
-                        icon: Icon(Icons.language_rounded, size: 16),
-                        label: Text(_localized('Сайт'))),
-                  if (metadata.supportUrl != null)
-                    TextButton.icon(
-                        onPressed: () => _openProviderUrl(metadata.supportUrl),
-                        icon: Icon(Icons.support_agent_rounded, size: 16),
-                        label: Text(_localized('Поддержка'))),
-                ]),
+                _subscriptionProviderLinks(metadata),
               ],
             ])));
   }
+
+  Widget _subscriptionProviderLinks(SubscriptionMetadata metadata) =>
+      Wrap(spacing: 2, runSpacing: 0, children: [
+        if (metadata.websiteUrl != null)
+          TextButton.icon(
+              style: TextButton.styleFrom(
+                  minimumSize: Size.zero,
+                  padding: const EdgeInsets.symmetric(horizontal: 6),
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  visualDensity: VisualDensity.compact,
+                  textStyle: const TextStyle(fontSize: 11)),
+              onPressed: () => _openProviderUrl(metadata.websiteUrl),
+              icon: const Icon(Icons.language_rounded, size: 15),
+              label: Text(_localized('Сайт'))),
+        if (metadata.supportUrl != null)
+          TextButton.icon(
+              style: TextButton.styleFrom(
+                  minimumSize: Size.zero,
+                  padding: const EdgeInsets.symmetric(horizontal: 6),
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  visualDensity: VisualDensity.compact,
+                  textStyle: const TextStyle(fontSize: 11)),
+              onPressed: () => _openProviderUrl(metadata.supportUrl),
+              icon: const Icon(Icons.support_agent_rounded, size: 15),
+              label: Text(_localized('Поддержка'))),
+      ]);
 
   String _updatedLabel(String value) {
     final date = DateTime.tryParse(value)?.toLocal();
@@ -5824,34 +5848,16 @@ class _HomePageState extends State<HomePage>
                 curve: Curves.easeInOutCubic,
                 alignment: Alignment.topCenter,
                 child: AnimatedSwitcher(
-                    duration: const Duration(milliseconds: 320),
-                    reverseDuration: const Duration(milliseconds: 260),
-                    switchInCurve: Curves.easeOutCubic,
-                    switchOutCurve: Curves.easeInCubic,
-                    transitionBuilder: (child, animation) {
-                      final isAdvanced = (child.key as ValueKey<bool>).value;
-                      final motion = CurvedAnimation(
-                          parent: animation,
-                          curve: Curves.easeOutCubic,
-                          reverseCurve: Curves.easeInCubic);
-                      final slide = Tween<Offset>(
-                        begin: Offset(isAdvanced ? .025 : -.025, 0),
-                        end: Offset.zero,
-                      ).animate(motion);
-                      return ClipRect(
-                        child: FadeTransition(
-                          opacity: animation,
-                          child: SlideTransition(
-                            position: slide,
-                            child: ScaleTransition(
-                              scale: Tween<double>(begin: .985, end: 1)
-                                  .animate(motion),
-                              child: child,
-                            ),
+                    duration: const Duration(milliseconds: 240),
+                    reverseDuration: const Duration(milliseconds: 190),
+                    transitionBuilder: (child, animation) => FadeTransition(
+                          opacity: CurvedAnimation(
+                            parent: animation,
+                            curve: Curves.easeInOutCubic,
+                            reverseCurve: Curves.easeInOutCubic,
                           ),
+                          child: child,
                         ),
-                      );
-                    },
                     child: KeyedSubtree(
                         key: ValueKey(advanced),
                         child: advanced
@@ -5956,6 +5962,21 @@ class _HomePageState extends State<HomePage>
                     'О приложении',
                     'Сборка, ядра и устройство',
                     const Icon(Icons.chevron_right_rounded))),
+            const SizedBox(height: 22),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: _deleteAllServers,
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: const Color(0xFFFF8B91),
+                  side: BorderSide(
+                      color: const Color(0xFFFF8B91).withValues(alpha: .42)),
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                ),
+                icon: const Icon(Icons.delete_sweep_outlined, size: 19),
+                label: Text(_localized('Очистить серверы и подписки')),
+              ),
+            ),
           ]);
 
   Future<void> _setAutoUpdateApp(bool enabled) async {
@@ -6879,14 +6900,6 @@ class _HomePageState extends State<HomePage>
                     tooltip: _localized('Сбросить настройки'),
                     onPressed: _resetCoreSettings,
                     icon: const Icon(Icons.restart_alt_rounded))),
-            _row(
-                Icons.delete_sweep_outlined,
-                'Удалить все серверы',
-                'Удалить профили и подписки с этого устройства',
-                IconButton(
-                    tooltip: _localized('Удалить все серверы'),
-                    onPressed: _deleteAllServers,
-                    icon: const Icon(Icons.delete_outline_rounded))),
             SizedBox(height: 15),
             _section('ДИАГНОСТИКА'),
             Container(
@@ -7735,36 +7748,40 @@ class _HomePageState extends State<HomePage>
 }
 
 class _AmbientBackgroundPainter extends CustomPainter {
-  const _AmbientBackgroundPainter(
-      {required this.progress, required this.color, required this.enabled});
-  final double progress;
+  _AmbientBackgroundPainter(
+      {required this.animation, required this.color, required this.enabled})
+      : super(repaint: animation);
+  final Animation<double> animation;
   final Color color;
   final bool enabled;
 
   @override
   void paint(Canvas canvas, Size size) {
-    final phase = progress * math.pi * 2;
+    final phase = (enabled ? animation.value : .12) * math.pi * 2;
     final opacity = enabled ? .095 : .025;
     final upperCenter = Offset(size.width * (.18 + math.sin(phase) * .16),
         size.height * (.10 + math.cos(phase) * .12));
-    final lowerCenter = Offset(size.width * (.88 + math.cos(phase * .7) * .10),
-        size.height * (.74 + math.sin(phase * .7) * .11));
-    for (final blob in [
-      (upperCenter, size.width * .66, color),
-      (lowerCenter, size.width * .52, Color.lerp(color, Colors.indigo, .30)!),
-    ]) {
+    // Both paths complete an integer number of turns per controller cycle,
+    // so their positions match at the loop boundary without a visible jump.
+    final lowerCenter = Offset(size.width * (.88 + math.cos(phase) * .10),
+        size.height * (.74 + math.sin(phase) * .11));
+    void drawBlob(Offset center, double radius, Color blobColor) {
       final paint = Paint()
         ..shader = RadialGradient(colors: [
-          blob.$3.withValues(alpha: opacity),
-          blob.$3.withValues(alpha: 0),
-        ]).createShader(Rect.fromCircle(center: blob.$1, radius: blob.$2));
-      canvas.drawCircle(blob.$1, blob.$2, paint);
+          blobColor.withValues(alpha: opacity),
+          blobColor.withValues(alpha: 0),
+        ]).createShader(Rect.fromCircle(center: center, radius: radius));
+      canvas.drawCircle(center, radius, paint);
     }
+
+    drawBlob(upperCenter, size.width * .66, color);
+    drawBlob(
+        lowerCenter, size.width * .52, Color.lerp(color, Colors.indigo, .30)!);
   }
 
   @override
   bool shouldRepaint(covariant _AmbientBackgroundPainter oldDelegate) =>
-      oldDelegate.progress != progress ||
+      oldDelegate.animation != animation ||
       oldDelegate.color != color ||
       oldDelegate.enabled != enabled;
 }
