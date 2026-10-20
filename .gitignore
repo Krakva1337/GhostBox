@@ -16,6 +16,7 @@ vendor/src/
 vendor/windows/
 vendor/macos/
 vendor/cores/
+vendor/experimental/
 /squashfs-root/
 ios/Pods/
 macos/Pods/

@@ -36,6 +36,9 @@ build_linux() {
   }
 
   "$project_dir/tool/build_desktop_cores.sh" linux "$arch"
+  if [[ "${GHOSTBOX_BUILD_SING_BOX_LX:-0}" == 1 ]]; then
+    "$project_dir/tool/build_sing_box_lx.sh" "$arch"
+  fi
   mkdir -p "$project_dir/vendor/bin"
   install -m 0755 "$project_dir/vendor/linux/$arch/bin/xray" "$project_dir/vendor/bin/xray"
   install -m 0755 "$project_dir/vendor/linux/$arch/bin/sing-box" "$project_dir/vendor/bin/sing-box"

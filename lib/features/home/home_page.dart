@@ -34,6 +34,7 @@ import '../../services/traffic_stats.dart';
 import '../../theme/theme_settings_panel.dart';
 import '../../theme/theme_controller.dart';
 import '../../theme/brand_icon.dart';
+import '../../theme/glass_switch.dart';
 import '../../widgets/ghost_notice.dart';
 
 class HomePage extends StatefulWidget {
@@ -55,6 +56,7 @@ class _HomePageState extends State<HomePage>
   final routeDomainController = TextEditingController();
   bool refreshingSubscriptions = false;
   Timer? subscriptionRefreshTimer;
+  DateTime? subscriptionRetryNotBefore;
   Color get _surface => Theme.of(context).colorScheme.surface;
   Color get _subscriptionInfoSurface =>
       Color.alphaBlend(Colors.white.withValues(alpha: .035), _surface);
@@ -62,7 +64,6 @@ class _HomePageState extends State<HomePage>
   Color get _foreground => Theme.of(context).colorScheme.onSurface;
   Color get _line => Theme.of(context).colorScheme.outlineVariant;
   Color get _muted => Theme.of(context).colorScheme.onSurfaceVariant;
-  bool get _glassMode => ThemeController.instance.glassMode;
   Color get _mint => Color(0xFF77D6B0);
   late final AnimationController glow;
   late final AnimationController ambientMotion;
@@ -78,12 +79,15 @@ class _HomePageState extends State<HomePage>
   String? selectedId;
   bool settings = false, routingTab = false, advanced = false;
   String? settingsSubpage;
+  Future<List<(String, String)>>? _aboutDetailsFuture;
   int trafficRangeDays = 7;
   final GlobalKey _settingsModeKey = GlobalKey();
   bool _draggingSettingsMode = false;
   final GlobalKey _bottomNavKey = GlobalKey();
   final GlobalKey _sideNavKey = GlobalKey();
   bool _draggingTabIndicator = false;
+  int? _hoveredNavTab;
+  bool _headerButtonHovered = false;
   int get _tabIndex => settings
       ? 2
       : routingTab
@@ -1074,10 +1078,14 @@ class _HomePageState extends State<HomePage>
               Duration(hours: _subscriptionRefreshIntervalHours(subscription)));
     }).reduce((a, b) => a.isBefore(b) ? a : b);
     final wait = nextDue.difference(now);
+    final retryWait = subscriptionRetryNotBefore?.difference(now);
+    final scheduledWait =
+        retryWait != null && retryWait > wait ? retryWait : wait;
     subscriptionRefreshTimer = Timer(
-        wait.isNegative || wait == Duration.zero
+        scheduledWait.isNegative || scheduledWait == Duration.zero
             ? const Duration(milliseconds: 100)
-            : wait, () async {
+            : scheduledWait, () async {
+      subscriptionRetryNotBefore = null;
       await _refreshDueSubscriptions();
       _scheduleSubscriptionRefresh();
     });
@@ -2877,6 +2885,11 @@ foreach ($route in $routes) {
   Future<void> _refreshSubscriptions(
       {required bool quiet, required bool dueOnly}) async {
     if (refreshingSubscriptions || subscriptions.isEmpty) return;
+    final retryAt = subscriptionRetryNotBefore;
+    if (quiet && retryAt != null && DateTime.now().isBefore(retryAt)) {
+      _scheduleSubscriptionRefresh();
+      return;
+    }
     final all = List<Map<String, dynamic>>.from(subscriptions);
     final targets = dueOnly
         ? all
@@ -2899,6 +2912,8 @@ foreach ($route in $routes) {
       }
     } finally {
       if (mounted) setState(() => refreshingSubscriptions = false);
+      subscriptionRetryNotBefore =
+          failed > 0 ? DateTime.now().add(const Duration(seconds: 10)) : null;
       _scheduleSubscriptionRefresh();
     }
     if (mounted && (!quiet || failed > 0)) {
@@ -3587,6 +3602,7 @@ foreach ($route in $routes) {
                 Theme.of(context).scaffoldBackgroundColor
               ])),
           child: SafeArea(
+            top: false,
             child: Stack(children: [
               Positioned.fill(
                   child: IgnorePointer(
@@ -3597,7 +3613,7 @@ foreach ($route in $routes) {
                                   color: _accent,
                                   enabled: animatedBackground))))),
               Padding(
-                  padding: EdgeInsets.fromLTRB(5, 12, 5, 12),
+                  padding: const EdgeInsets.fromLTRB(5, 16, 5, 12),
                   child: LayoutBuilder(builder: (context, bounds) {
                     final wideLayout = bounds.maxWidth >= 800;
                     final page = ClipRRect(
@@ -3637,43 +3653,47 @@ foreach ($route in $routes) {
                                         ? _scrollFrame(
                                             _routingPage(), routingScroll)
                                         : _scrollFrame(_home(), homeScroll))));
-                    return Column(children: [
-                      _header(wideLayout: wideLayout),
-                      const SizedBox(height: 8),
-                      Expanded(
-                        child: Stack(children: [
-                          Row(children: [
-                            AnimatedContainer(
-                              duration: const Duration(milliseconds: 220),
-                              curve: Curves.easeOutCubic,
-                              width: wideLayout ? 120 : 0,
-                              child: ClipRect(
-                                child: IgnorePointer(
-                                  ignoring: !wideLayout,
-                                  child: AnimatedOpacity(
-                                    duration: const Duration(milliseconds: 150),
-                                    curve: Curves.easeOutCubic,
-                                    opacity: wideLayout ? 1 : 0,
-                                    child: _sideNav(),
-                                  ),
+                    if (wideLayout) {
+                      return Row(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          SizedBox(
+                            width: 120,
+                            child: Padding(
+                              padding: const EdgeInsets.fromLTRB(0, 4, 0, 12),
+                              child: _sideNav(),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Stack(
+                              children: [
+                                Positioned.fill(child: page),
+                                Positioned(
+                                  top: 0,
+                                  left: 0,
+                                  right: 0,
+                                  child: _header(wideLayout: true),
                                 ),
-                              ),
+                              ],
                             ),
-                            AnimatedContainer(
-                              duration: const Duration(milliseconds: 220),
-                              curve: Curves.easeOutCubic,
-                              width: wideLayout ? 10 : 0,
-                            ),
-                            Expanded(child: page),
-                          ]),
-                          if (!wideLayout)
-                            Positioned(
-                              left: 10,
-                              right: 10,
-                              bottom: 8,
-                              child: _nav(),
-                            ),
-                        ]),
+                          ),
+                        ],
+                      );
+                    }
+                    return Stack(children: [
+                      Positioned.fill(child: page),
+                      Positioned(
+                        top: 0,
+                        left: 0,
+                        right: 0,
+                        child: _header(wideLayout: false),
+                      ),
+                      Positioned(
+                        left: 10,
+                        right: 10,
+                        bottom: 8,
+                        child: _nav(),
                       ),
                     ]);
                   }))
@@ -3693,7 +3713,7 @@ foreach ($route in $routes) {
               thickness: 3,
               radius: Radius.circular(8),
               child: Padding(
-                  padding: const EdgeInsets.fromLTRB(5, 0, 9, 0),
+                  padding: const EdgeInsets.fromLTRB(5, 58, 9, 0),
                   child: child)));
 
   Future<void> _openActionsMenu(BuildContext anchorContext) async {
@@ -3845,52 +3865,67 @@ foreach ($route in $routes) {
   Widget _header({required bool wideLayout}) => SizedBox(
       height: 48,
       child: Stack(alignment: Alignment.center, children: [
-        Positioned(
-          left: 0,
-          child: SizedBox(
-            width: 44,
-            height: 44,
-            child: AnimatedSwitcher(
-              duration: const Duration(milliseconds: 270),
-              reverseDuration: const Duration(milliseconds: 220),
-              switchInCurve: Curves.easeOutCubic,
-              switchOutCurve: Curves.easeInCubic,
-              transitionBuilder: (child, animation) {
-                final motion = CurvedAnimation(
-                    parent: animation, curve: Curves.easeOutBack);
-                return FadeTransition(
-                  opacity: animation,
-                  child: ScaleTransition(
-                    scale: Tween<double>(begin: .78, end: 1).animate(motion),
-                    child: RotationTransition(
-                      turns:
-                          Tween<double>(begin: -.035, end: 0).animate(motion),
-                      child: child,
+        if (!wideLayout)
+          Positioned(
+            left: 0,
+            child: SizedBox(
+              width: 44,
+              height: 44,
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 340),
+                reverseDuration: const Duration(milliseconds: 280),
+                switchInCurve: Curves.easeOutCubic,
+                switchOutCurve: Curves.easeInCubic,
+                transitionBuilder: (child, animation) {
+                  final motion = CurvedAnimation(
+                      parent: animation, curve: Curves.easeOutCubic);
+                  return FadeTransition(
+                    opacity: animation,
+                    child: SlideTransition(
+                      position: Tween<Offset>(
+                        begin: const Offset(0, .08),
+                        end: Offset.zero,
+                      ).animate(motion),
+                      child: ScaleTransition(
+                        scale: Tween<double>(begin: .9, end: 1).animate(motion),
+                        child: child,
+                      ),
                     ),
-                  ),
-                );
-              },
-              child: _topButton(
-                  routeListOpen || settings || routingTab
-                      ? Icons.arrow_back_ios_new_rounded
-                      : Icons.settings_rounded, () {
-                if (routeListOpen) {
-                  setState(() => routeListOpen = false);
-                } else if (settings && settingsSubpage != null) {
-                  setState(() => settingsSubpage = null);
-                } else {
-                  _openTab(settings || routingTab ? 0 : 2);
-                }
-              },
-                  key: ValueKey(
-                      'header-button-${routeListOpen || settings || routingTab ? 'back' : 'settings'}')),
+                  );
+                },
+                child: _topButton(
+                    routeListOpen || settings || routingTab
+                        ? Icons.arrow_back_ios_new_rounded
+                        : Icons.settings_rounded, () {
+                  if (routeListOpen) {
+                    setState(() => routeListOpen = false);
+                  } else if (settings && settingsSubpage != null) {
+                    setState(() => settingsSubpage = null);
+                  } else {
+                    _openTab(settings || routingTab ? 0 : 2);
+                  }
+                },
+                    key: ValueKey(
+                        'header-button-${routeListOpen || settings || routingTab ? 'back' : 'settings'}')),
+              ),
             ),
           ),
-        ),
         Center(
             child: Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 64),
                 child: _headerIsland(
+                    expanded: routeListOpen || settings || routingTab,
+                    width: math
+                        .min(
+                          settings || routeListOpen
+                              ? 210.0
+                              : routingTab
+                                  ? 194.0
+                                  : 174.0,
+                          (MediaQuery.sizeOf(context).width - 128)
+                              .clamp(150.0, 220.0),
+                        )
+                        .toDouble(),
                     child: AnimatedSwitcher(
                         duration: const Duration(milliseconds: 270),
                         reverseDuration: const Duration(milliseconds: 220),
@@ -3928,6 +3963,8 @@ foreach ($route in $routes) {
                                             'contacts' =>
                                               _localized('Контакты'),
                                             'release' => _localized('О релизе'),
+                                            'about' =>
+                                              _localized('О приложении'),
                                             _ => _localized('Настройки'),
                                           }
                                         : _localized('Маршрут'),
@@ -3989,57 +4026,96 @@ foreach ($route in $routes) {
                                 color: _foreground, size: 25)))))),
       ]));
 
-  Widget _headerIsland({required Widget child}) => ClipRRect(
+  Widget _headerIsland({
+    required Widget child,
+    required double width,
+    bool expanded = false,
+  }) =>
+      ClipRRect(
         borderRadius: BorderRadius.circular(20),
         child: BackdropFilter(
-          filter: ui.ImageFilter.blur(
-              sigmaX: _glassMode ? 24 : 0, sigmaY: _glassMode ? 24 : 0),
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 190),
-            curve: Curves.easeOutCubic,
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
-            decoration: BoxDecoration(
-              color: _surface.withValues(alpha: _glassMode ? .52 : .72),
-              borderRadius: BorderRadius.circular(20),
-              border: Border.all(
-                  color: Colors.white.withValues(alpha: _glassMode ? .22 : .1)),
-              gradient: _glassMode
-                  ? LinearGradient(
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                      colors: [
-                        Colors.white.withValues(alpha: .16),
-                        _accent.withValues(alpha: .055),
-                        _surface.withValues(alpha: .32),
-                      ],
-                    )
-                  : null,
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: .12),
-                  blurRadius: 12,
-                  offset: const Offset(0, 4),
+          filter: ui.ImageFilter.blur(sigmaX: 9, sigmaY: 9),
+          child: AnimatedScale(
+            scale: expanded ? 1.045 : 1,
+            duration: const Duration(milliseconds: 360),
+            curve: Curves.easeOutBack,
+            child: AnimatedSize(
+              duration: const Duration(milliseconds: 420),
+              curve: Curves.easeOutBack,
+              alignment: Alignment.center,
+              child: AnimatedContainer(
+                width: width,
+                duration: const Duration(milliseconds: 440),
+                curve: Curves.easeOutBack,
+                padding: EdgeInsets.symmetric(
+                    horizontal: expanded ? 16 : 12, vertical: 5),
+                decoration: BoxDecoration(
+                  color: Color.alphaBlend(_accent.withValues(alpha: .075),
+                      _surface.withValues(alpha: .82)),
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(
+                      color: Color.alphaBlend(_accent.withValues(alpha: .16),
+                          Colors.white.withValues(alpha: .1))),
+                  gradient: LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [
+                      Colors.white.withValues(alpha: .055),
+                      _accent.withValues(alpha: .045),
+                      _surface.withValues(alpha: .02),
+                    ],
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: .17),
+                      blurRadius: 16,
+                      offset: const Offset(0, 4),
+                    ),
+                    BoxShadow(
+                      color: _accent.withValues(alpha: .075),
+                      blurRadius: 18,
+                      spreadRadius: -5,
+                    ),
+                  ],
                 ),
-              ],
+                child: child,
+              ),
             ),
-            child: child,
           ),
         ),
       );
 
-  Widget _headerActionIsland({required Widget child}) => ClipRRect(
-        borderRadius: BorderRadius.circular(16),
+  Widget _headerActionIsland({required Widget child, bool circular = false}) =>
+      ClipRRect(
+        borderRadius: BorderRadius.circular(circular ? 22 : 16),
         child: BackdropFilter(
-          filter: ui.ImageFilter.blur(
-              sigmaX: _glassMode ? 20 : 0, sigmaY: _glassMode ? 20 : 0),
-          child: Container(
+          filter: ui.ImageFilter.blur(sigmaX: 8, sigmaY: 8),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 260),
+            curve: Curves.easeOutCubic,
             width: 44,
             height: 44,
             decoration: BoxDecoration(
-              color: _surface.withValues(alpha: _glassMode ? .54 : .48),
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(
-                  color: Colors.white.withValues(alpha: _glassMode ? .2 : .08)),
+              color: Color.alphaBlend(_accent.withValues(alpha: .065),
+                  _surface.withValues(alpha: .68)),
+              borderRadius: BorderRadius.circular(circular ? 22 : 16),
+              border: Border.all(color: Colors.white.withValues(alpha: .12)),
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [
+                  Colors.white.withValues(alpha: .07),
+                  _accent.withValues(alpha: .035),
+                  _surface.withValues(alpha: .02),
+                ],
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: .14),
+                  blurRadius: 14,
+                  offset: const Offset(0, 4),
+                ),
+              ],
             ),
             child: child,
           ),
@@ -4084,28 +4160,42 @@ foreach ($route in $routes) {
 
   void _openReleaseDetails() => _openSettingsPage('release');
 
-  Widget _topButton(IconData icon, VoidCallback onTap, {Key? key}) =>
-      _headerActionIsland(
-          child: IconButton(
-              key: key,
-              onPressed: onTap,
-              icon: AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 210),
-                  transitionBuilder: (child, animation) => FadeTransition(
-                      opacity: animation,
-                      child: RotationTransition(
-                          turns: Tween<double>(begin: -.08, end: 0).animate(
-                              CurvedAnimation(
-                                  parent: animation,
-                                  curve: Curves.easeOutCubic)),
-                          child: ScaleTransition(
-                              scale: Tween<double>(begin: .76, end: 1).animate(
-                                  CurvedAnimation(parent: animation, curve: Curves.easeOutBack)),
-                              child: child))),
-                  child: Icon(icon, key: ValueKey(icon.codePoint), size: 25, color: _foreground)),
-              padding: EdgeInsets.zero,
-              constraints: const BoxConstraints.tightFor(width: 44, height: 44),
-              style: IconButton.styleFrom(shape: const CircleBorder())));
+  Widget
+      _topButton(IconData icon, VoidCallback onTap, {Key? key}) => MouseRegion(
+            cursor: SystemMouseCursors.click,
+            onEnter: (_) => setState(() => _headerButtonHovered = true),
+            onExit: (_) => setState(() => _headerButtonHovered = false),
+            child: AnimatedScale(
+              scale: _headerButtonHovered ? 1.045 : 1,
+              duration: const Duration(milliseconds: 140),
+              curve: Curves.easeOutCubic,
+              child: _headerActionIsland(
+                circular: true,
+                child: IconButton(
+                    key: key,
+                    onPressed: onTap,
+                    icon: AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 210),
+                        transitionBuilder: (child, animation) => FadeTransition(
+                            opacity: animation,
+                            child: RotationTransition(
+                                turns: Tween<double>(begin: -.08, end: 0)
+                                    .animate(CurvedAnimation(
+                                        parent: animation,
+                                        curve: Curves.easeOutCubic)),
+                                child: ScaleTransition(
+                                    scale: Tween<double>(begin: .76, end: 1)
+                                        .animate(CurvedAnimation(
+                                            parent: animation,
+                                            curve: Curves.easeOutBack)),
+                                    child: child))),
+                        child: Icon(icon, key: ValueKey(icon.codePoint), size: 25, color: _foreground)),
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints.tightFor(width: 44, height: 44),
+                    style: IconButton.styleFrom(shape: const CircleBorder())),
+              ),
+            ),
+          );
 
   Widget _home() => SingleChildScrollView(
       controller: homeScroll,
@@ -4113,8 +4203,7 @@ foreach ($route in $routes) {
         ClipRRect(
             borderRadius: BorderRadius.circular(30),
             child: BackdropFilter(
-                filter: ui.ImageFilter.blur(
-                    sigmaX: _glassMode ? 28 : 10, sigmaY: _glassMode ? 28 : 10),
+                filter: ui.ImageFilter.blur(sigmaX: 7, sigmaY: 7),
                 child: Container(
                     width: double.infinity,
                     padding: EdgeInsets.fromLTRB(18, 12, 18, 16),
@@ -4123,8 +4212,8 @@ foreach ($route in $routes) {
                             begin: Alignment.topCenter,
                             end: Alignment.bottomCenter,
                             colors: [
-                              _accent.withValues(alpha: _glassMode ? .18 : .10),
-                              _surface.withValues(alpha: _glassMode ? .22 : .1)
+                              _accent.withValues(alpha: .10),
+                              _surface.withValues(alpha: .1)
                             ]),
                         borderRadius: BorderRadius.circular(30),
                         border:
@@ -4168,7 +4257,15 @@ foreach ($route in $routes) {
                           key: ValueKey(_pingLabel()))),
                   style: TextButton.styleFrom(
                       foregroundColor: _latencyColor(pingMs),
-                      textStyle: TextStyle(fontSize: 12)))),
+                      textStyle: TextStyle(fontSize: 12),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 11, vertical: 8),
+                      backgroundColor: _surface.withValues(alpha: .68),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(15),
+                        side: BorderSide(
+                            color: Colors.white.withValues(alpha: .10)),
+                      )))),
           Spacer(),
           if (checkingAll)
             Text('$pingAllDone/$pingAllTotal',
@@ -4176,7 +4273,15 @@ foreach ($route in $routes) {
           TextButton(
               onPressed: () => setState(() => hideProfiles = !hideProfiles),
               style: TextButton.styleFrom(
-                  foregroundColor: _muted, textStyle: TextStyle(fontSize: 12)),
+                  foregroundColor: _muted,
+                  textStyle: TextStyle(fontSize: 12),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 11, vertical: 8),
+                  backgroundColor: _surface.withValues(alpha: .68),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(15),
+                      side: BorderSide(
+                          color: Colors.white.withValues(alpha: .10)))),
               child: Text(_localized(
                   hideProfiles ? 'Показать серверы' : 'Скрыть серверы')))
         ]),
@@ -4216,7 +4321,8 @@ foreach ($route in $routes) {
                 onPressed: _showAddMenu,
                 style: OutlinedButton.styleFrom(
                     padding: EdgeInsets.symmetric(vertical: 19),
-                    side: BorderSide(color: _line),
+                    backgroundColor: _surface.withValues(alpha: .68),
+                    side: BorderSide(color: _accent.withValues(alpha: .28)),
                     shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(22))),
                 icon: Icon(Icons.add_rounded, size: 23),
@@ -5051,7 +5157,7 @@ foreach ($route in $routes) {
       widgets.add(ClipRRect(
           borderRadius: BorderRadius.circular(22),
           child: BackdropFilter(
-              filter: ui.ImageFilter.blur(sigmaX: 16, sigmaY: 16),
+              filter: ui.ImageFilter.blur(sigmaX: 8, sigmaY: 8),
               child: Container(
                   margin: EdgeInsets.only(bottom: 12),
                   decoration: BoxDecoration(
@@ -5972,7 +6078,7 @@ foreach ($route in $routes) {
     return ClipRRect(
         borderRadius: BorderRadius.circular(18),
         child: BackdropFilter(
-            filter: ui.ImageFilter.blur(sigmaX: 14, sigmaY: 14),
+            filter: ui.ImageFilter.blur(sigmaX: 8, sigmaY: 8),
             child: AnimatedContainer(
                 duration: Duration(milliseconds: 320),
                 curve: Curves.easeOutCubic,
@@ -6478,212 +6584,195 @@ foreach ($route in $routes) {
       _section(_text('СТАТИСТИКА ТРАФИКА', 'TRAFFIC STATISTICS')),
       ClipRRect(
         borderRadius: BorderRadius.circular(20),
-        child: BackdropFilter(
-          filter: ui.ImageFilter.blur(
-              sigmaX: _glassMode ? 22 : 0, sigmaY: _glassMode ? 22 : 0),
-          child: Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(15),
-            decoration: BoxDecoration(
-              color: _surface.withValues(alpha: _glassMode ? .58 : .78),
-              borderRadius: BorderRadius.circular(20),
-              border: Border.all(
-                  color: _line.withValues(alpha: _glassMode ? .58 : .45)),
-              gradient: _glassMode
-                  ? LinearGradient(
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                      colors: [
-                        Colors.white.withValues(alpha: .10),
-                        _surface.withValues(alpha: .42),
-                      ],
-                    )
-                  : null,
-            ),
-            child:
-                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Row(children: [
-                Expanded(
-                  child: _trafficTotal(
-                    _text('Загружено сегодня', 'Downloaded today'),
-                    formatTrafficBytes(today.received),
-                    Icons.south_rounded,
-                    color: downloadColor,
-                  ),
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(15),
+          decoration: BoxDecoration(
+            color: _surface.withValues(alpha: .78),
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: _line.withValues(alpha: .45)),
+          ),
+          child:
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Row(children: [
+              Expanded(
+                child: _trafficTotal(
+                  _text('Загружено сегодня', 'Downloaded today'),
+                  formatTrafficBytes(today.received),
+                  Icons.south_rounded,
+                  color: downloadColor,
                 ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: _trafficTotal(
-                    _text('Отправлено сегодня', 'Uploaded today'),
-                    formatTrafficBytes(today.sent),
-                    Icons.north_rounded,
-                    color: uploadColor,
-                  ),
-                ),
-              ]),
-              const SizedBox(height: 14),
-              Row(children: [
-                Expanded(
-                  child: Text(
-                      trafficRangeDays > 7
-                          ? _text('ИСТОРИЯ · ПО НЕДЕЛЯМ', 'HISTORY · WEEKLY')
-                          : _text('ИСТОРИЯ · ПО ДНЯМ', 'HISTORY · DAILY'),
-                      style: TextStyle(
-                          color: _muted,
-                          fontSize: 9,
-                          letterSpacing: 1.1,
-                          fontWeight: FontWeight.w700)),
-                ),
-                for (final range in const [7, 30, 90])
-                  Padding(
-                    padding: const EdgeInsets.only(left: 4),
-                    child: ChoiceChip(
-                      label: Text('$range${_text(' д', ' d')}'),
-                      selected: trafficRangeDays == range,
-                      onSelected: (_) =>
-                          setState(() => trafficRangeDays = range),
-                      visualDensity: VisualDensity.compact,
-                      labelStyle: TextStyle(
-                          fontSize: 9,
-                          color:
-                              trafficRangeDays == range ? _foreground : _muted),
-                      padding: EdgeInsets.zero,
-                      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                    ),
-                  ),
-              ]),
-              const SizedBox(height: 7),
-              Row(children: [
-                _trafficLegendDot(downloadColor),
-                const SizedBox(width: 4),
-                Text(_text('Загрузка', 'Download'),
-                    style: TextStyle(color: _muted, fontSize: 9)),
-                const SizedBox(width: 12),
-                _trafficLegendDot(uploadColor),
-                const SizedBox(width: 4),
-                Text(_text('Отдача', 'Upload'),
-                    style: TextStyle(color: _muted, fontSize: 9)),
-              ]),
-              const SizedBox(height: 8),
-              for (final row in rows)
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 5),
-                  child: Row(children: [
-                    SizedBox(
-                      width: 43,
-                      child: Text(
-                        '${row.$1.day.toString().padLeft(2, '0')}.${row.$1.month.toString().padLeft(2, '0')}',
-                        style: TextStyle(color: _muted, fontSize: 10),
-                      ),
-                    ),
-                    Expanded(
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(5),
-                        child: SizedBox(
-                          height: 7,
-                          child: Row(children: [
-                            if (row.$2.received > 0)
-                              Expanded(
-                                flex: row.$2.received,
-                                child: ColoredBox(color: downloadColor),
-                              ),
-                            if (row.$2.sent > 0)
-                              Expanded(
-                                flex: row.$2.sent,
-                                child: ColoredBox(color: uploadColor),
-                              ),
-                            if (row.$2.received + row.$2.sent == 0)
-                              Expanded(
-                                  child: ColoredBox(
-                                      color:
-                                          Colors.white.withValues(alpha: .07))),
-                            if (maxUsage > row.$2.received + row.$2.sent)
-                              Expanded(
-                                flex: maxUsage - row.$2.received - row.$2.sent,
-                                child: ColoredBox(
-                                    color: Colors.white.withValues(alpha: .07)),
-                              ),
-                          ]),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    SizedBox(
-                      width: 145,
-                      child: Text(
-                        '↓ ${formatTrafficBytes(row.$2.received)}   ↑ ${formatTrafficBytes(row.$2.sent)}',
-                        textAlign: TextAlign.right,
-                        style: TextStyle(
-                          color: _foreground,
-                          fontSize: 9,
-                          fontFeatures: const [ui.FontFeature.tabularFigures()],
-                        ),
-                      ),
-                    ),
-                  ]),
-                ),
-              const SizedBox(height: 9),
-              Divider(height: 1, color: _line.withOpacity(.45)),
-              const SizedBox(height: 9),
-              Row(children: [
-                Expanded(
-                  child: Text(
-                    _text('Всего за $trafficRangeDays дней',
-                        'Total for $trafficRangeDays days'),
-                    style: TextStyle(color: _muted, fontSize: 10),
-                  ),
-                ),
-                Text(
-                  '↓ ${formatTrafficBytes(total.received)}   ↑ ${formatTrafficBytes(total.sent)}',
-                  style: TextStyle(
-                    color: _foreground,
-                    fontSize: 10,
-                    fontWeight: FontWeight.w600,
-                    fontFeatures: const [ui.FontFeature.tabularFigures()],
-                  ),
-                ),
-              ]),
-              const SizedBox(height: 12),
-              Row(children: [
-                Expanded(
-                  child: _trafficTotal(
-                    _text('Скорость сейчас ↓', 'Current download ↓'),
-                    formatTrafficRate(trafficStats.receivedPerSecond),
-                    Icons.south_rounded,
-                    color: downloadColor,
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: _trafficTotal(
-                    _text('Скорость сейчас ↑', 'Current upload ↑'),
-                    formatTrafficRate(trafficStats.sentPerSecond),
-                    Icons.north_rounded,
-                    color: uploadColor,
-                  ),
-                ),
-              ]),
-              const SizedBox(height: 8),
-              Text(
-                '${_text('Пик за запуск', 'Peak since app launch')}: ↓ ${formatTrafficRate(trafficStats.peakReceivedPerSecond)} · ↑ ${formatTrafficRate(trafficStats.peakSentPerSecond)}',
-                style: TextStyle(color: _muted, fontSize: 10),
               ),
-              if (!trafficStats.available &&
-                  total.received + total.sent == 0) ...[
-                const SizedBox(height: 7),
-                Text(
-                  Platform.isAndroid || Platform.isIOS
-                      ? _text(
-                          'Системные счётчики трафика пока недоступны на этой платформе.',
-                          'System traffic counters are not available on this platform yet.')
-                      : _text(
-                          'Данные собираются во время TUN/Mixed подключения.',
-                          'Usage is collected while connected in TUN/Mixed mode.'),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _trafficTotal(
+                  _text('Отправлено сегодня', 'Uploaded today'),
+                  formatTrafficBytes(today.sent),
+                  Icons.north_rounded,
+                  color: uploadColor,
+                ),
+              ),
+            ]),
+            const SizedBox(height: 14),
+            Row(children: [
+              Expanded(
+                child: Text(
+                    trafficRangeDays > 7
+                        ? _text('ИСТОРИЯ · ПО НЕДЕЛЯМ', 'HISTORY · WEEKLY')
+                        : _text('ИСТОРИЯ · ПО ДНЯМ', 'HISTORY · DAILY'),
+                    style: TextStyle(
+                        color: _muted,
+                        fontSize: 9,
+                        letterSpacing: 1.1,
+                        fontWeight: FontWeight.w700)),
+              ),
+              for (final range in const [7, 30, 90])
+                Padding(
+                  padding: const EdgeInsets.only(left: 4),
+                  child: ChoiceChip(
+                    label: Text('$range${_text(' д', ' d')}'),
+                    selected: trafficRangeDays == range,
+                    onSelected: (_) => setState(() => trafficRangeDays = range),
+                    visualDensity: VisualDensity.compact,
+                    labelStyle: TextStyle(
+                        fontSize: 9,
+                        color:
+                            trafficRangeDays == range ? _foreground : _muted),
+                    padding: EdgeInsets.zero,
+                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                ),
+            ]),
+            const SizedBox(height: 7),
+            Row(children: [
+              _trafficLegendDot(downloadColor),
+              const SizedBox(width: 4),
+              Text(_text('Загрузка', 'Download'),
+                  style: TextStyle(color: _muted, fontSize: 9)),
+              const SizedBox(width: 12),
+              _trafficLegendDot(uploadColor),
+              const SizedBox(width: 4),
+              Text(_text('Отдача', 'Upload'),
+                  style: TextStyle(color: _muted, fontSize: 9)),
+            ]),
+            const SizedBox(height: 8),
+            for (final row in rows)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 5),
+                child: Row(children: [
+                  SizedBox(
+                    width: 43,
+                    child: Text(
+                      '${row.$1.day.toString().padLeft(2, '0')}.${row.$1.month.toString().padLeft(2, '0')}',
+                      style: TextStyle(color: _muted, fontSize: 10),
+                    ),
+                  ),
+                  Expanded(
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(5),
+                      child: SizedBox(
+                        height: 7,
+                        child: Row(children: [
+                          if (row.$2.received > 0)
+                            Expanded(
+                              flex: row.$2.received,
+                              child: ColoredBox(color: downloadColor),
+                            ),
+                          if (row.$2.sent > 0)
+                            Expanded(
+                              flex: row.$2.sent,
+                              child: ColoredBox(color: uploadColor),
+                            ),
+                          if (row.$2.received + row.$2.sent == 0)
+                            Expanded(
+                                child: ColoredBox(
+                                    color:
+                                        Colors.white.withValues(alpha: .07))),
+                          if (maxUsage > row.$2.received + row.$2.sent)
+                            Expanded(
+                              flex: maxUsage - row.$2.received - row.$2.sent,
+                              child: ColoredBox(
+                                  color: Colors.white.withValues(alpha: .07)),
+                            ),
+                        ]),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  SizedBox(
+                    width: 145,
+                    child: Text(
+                      '↓ ${formatTrafficBytes(row.$2.received)}   ↑ ${formatTrafficBytes(row.$2.sent)}',
+                      textAlign: TextAlign.right,
+                      style: TextStyle(
+                        color: _foreground,
+                        fontSize: 9,
+                        fontFeatures: const [ui.FontFeature.tabularFigures()],
+                      ),
+                    ),
+                  ),
+                ]),
+              ),
+            const SizedBox(height: 9),
+            Divider(height: 1, color: _line.withOpacity(.45)),
+            const SizedBox(height: 9),
+            Row(children: [
+              Expanded(
+                child: Text(
+                  _text('Всего за $trafficRangeDays дней',
+                      'Total for $trafficRangeDays days'),
                   style: TextStyle(color: _muted, fontSize: 10),
                 ),
-              ],
+              ),
+              Text(
+                '↓ ${formatTrafficBytes(total.received)}   ↑ ${formatTrafficBytes(total.sent)}',
+                style: TextStyle(
+                  color: _foreground,
+                  fontSize: 10,
+                  fontWeight: FontWeight.w600,
+                  fontFeatures: const [ui.FontFeature.tabularFigures()],
+                ),
+              ),
             ]),
-          ),
+            const SizedBox(height: 12),
+            Row(children: [
+              Expanded(
+                child: _trafficTotal(
+                  _text('Скорость сейчас ↓', 'Current download ↓'),
+                  formatTrafficRate(trafficStats.receivedPerSecond),
+                  Icons.south_rounded,
+                  color: downloadColor,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _trafficTotal(
+                  _text('Скорость сейчас ↑', 'Current upload ↑'),
+                  formatTrafficRate(trafficStats.sentPerSecond),
+                  Icons.north_rounded,
+                  color: uploadColor,
+                ),
+              ),
+            ]),
+            const SizedBox(height: 8),
+            Text(
+              '${_text('Пик за запуск', 'Peak since app launch')}: ↓ ${formatTrafficRate(trafficStats.peakReceivedPerSecond)} · ↑ ${formatTrafficRate(trafficStats.peakSentPerSecond)}',
+              style: TextStyle(color: _muted, fontSize: 10),
+            ),
+            if (!trafficStats.available &&
+                total.received + total.sent == 0) ...[
+              const SizedBox(height: 7),
+              Text(
+                Platform.isAndroid || Platform.isIOS
+                    ? _text(
+                        'Системные счётчики трафика пока недоступны на этой платформе.',
+                        'System traffic counters are not available on this platform yet.')
+                    : _text('Данные собираются во время TUN/Mixed подключения.',
+                        'Usage is collected while connected in TUN/Mixed mode.'),
+                style: TextStyle(color: _muted, fontSize: 10),
+              ),
+            ],
+          ]),
         ),
       ),
       const SizedBox(height: 14),
@@ -7010,6 +7099,7 @@ foreach ($route in $routes) {
   Widget _settingsSubpageContent() => switch (settingsSubpage) {
         'contacts' => _contactsPage(),
         'release' => _releaseDetailsPage(),
+        'about' => _aboutPage(),
         _ => _settingsHomeContent(),
       };
 
@@ -7494,7 +7584,7 @@ foreach ($route in $routes) {
     }
   }
 
-  Future<void> _showAbout() async {
+  Future<List<(String, String)>> _loadAboutDetails() async {
     final appVersion =
         GitHubUpdater.displayVersion(GitHubUpdater.currentVersion);
     const buildNumber = '1';
@@ -7506,136 +7596,86 @@ foreach ($route in $routes) {
     final dartVersion =
         RegExp(r'^\d+\.\d+\.\d+').firstMatch(Platform.version)?.group(0) ??
             _text('Неизвестно', 'Unknown');
-    final detailsFuture = () async {
-      final model = await DeviceIdentity.deviceModel;
-      final installId = await DeviceIdentity.installationId;
-      final xray = await _coreVersion('xray');
-      final singBox = await _coreVersion('sing-box');
-      return <(String, String)>[
-        ('GhostBox', appVersion),
-        ('Номер сборки', buildNumber),
-        ('Тип сборки', buildMode),
-        (
-          'Платформа сборки',
-          '${Platform.operatingSystem} · ${DeviceIdentity.architecture}'
-        ),
-        ('Dart', dartVersion),
-        ('Xray-core', xray),
-        ('sing-box', singBox),
-        ('Устройство', model),
-        ('Операционная система', Platform.operatingSystem),
-        ('Версия ОС', Platform.operatingSystemVersion),
-        ('Архитектура', DeviceIdentity.architecture),
-        ('ID устройства', installId),
-      ];
-    }();
+    final model = await DeviceIdentity.deviceModel;
+    final installId = await DeviceIdentity.installationId;
+    final xray = await _coreVersion('xray');
+    final singBox = await _coreVersion('sing-box');
+    return <(String, String)>[
+      ('GhostBox', appVersion),
+      ('Номер сборки', buildNumber),
+      ('Тип сборки', buildMode),
+      (
+        'Платформа сборки',
+        '${Platform.operatingSystem} · ${DeviceIdentity.architecture}'
+      ),
+      ('Dart', dartVersion),
+      ('Xray-core', xray),
+      ('sing-box', singBox),
+      ('Устройство', model),
+      ('Операционная система', Platform.operatingSystem),
+      ('Версия ОС', Platform.operatingSystemVersion),
+      ('Архитектура', DeviceIdentity.architecture),
+      ('ID устройства', installId),
+    ];
+  }
 
-    await showDialog<void>(
-      context: context,
-      builder: (dialogContext) => FutureBuilder<List<(String, String)>>(
-        future: detailsFuture,
-        builder: (dialogContext, snapshot) {
+  Future<void> _showAbout() async => _openSettingsPage('about');
+
+  Widget _aboutPage() => FutureBuilder<List<(String, String)>>(
+        future: _aboutDetailsFuture ??= _loadAboutDetails(),
+        builder: (context, snapshot) {
+          final intro = _settingsPageIntro(
+            Icons.info_outline_rounded,
+            _localized('О GhostBox'),
+            _text('Информация о приложении, сборке и устройстве',
+                'App, build and device information'),
+          );
           if (snapshot.connectionState != ConnectionState.done) {
-            return Dialog(
-              backgroundColor: _surface,
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(26)),
-              child: const SizedBox(
-                height: 190,
-                child: Center(child: CircularProgressIndicator()),
-              ),
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                intro,
+                const SizedBox(height: 22),
+                const Center(child: CircularProgressIndicator()),
+              ],
             );
           }
           final details = snapshot.data ?? const <(String, String)>[];
           final report = details
               .map((item) => '${_localized(item.$1)}: ${_messageText(item.$2)}')
               .join('\n');
-          return Dialog(
-            insetPadding:
-                const EdgeInsets.symmetric(horizontal: 20, vertical: 28),
-            backgroundColor: _surface,
-            shape:
-                RoundedRectangleBorder(borderRadius: BorderRadius.circular(26)),
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 520, maxHeight: 680),
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(22, 20, 22, 14),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(children: [
-                      Container(
-                        width: 42,
-                        height: 42,
-                        decoration: BoxDecoration(
-                          color: _accent.withOpacity(.14),
-                          borderRadius: BorderRadius.circular(14),
-                        ),
-                        child: Icon(Icons.shield_rounded, color: _accent),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(_localized('О GhostBox'),
-                                style: TextStyle(
-                                    fontSize: 19, fontWeight: FontWeight.w700)),
-                            SizedBox(height: 2),
-                            Text(_localized('Информация о сборке и устройстве'),
-                                style: TextStyle(fontSize: 11)),
-                          ],
-                        ),
-                      ),
-                      IconButton(
-                        tooltip: _localized('Закрыть'),
-                        onPressed: () => Navigator.pop(dialogContext),
-                        icon: const Icon(Icons.close_rounded),
-                      ),
-                    ]),
-                    const SizedBox(height: 14),
-                    Flexible(
-                      child: ListView(
-                        shrinkWrap: true,
-                        children: [
-                          _section('СБОРКА'),
-                          for (final item in details.take(5))
-                            _aboutDetail(item.$1, item.$2),
-                          const SizedBox(height: 10),
-                          _section('ЯДРА'),
-                          for (final item in details.skip(5).take(2))
-                            _aboutDetail(item.$1, item.$2),
-                          const SizedBox(height: 10),
-                          _section('УСТРОЙСТВО'),
-                          for (final item in details.skip(7))
-                            _aboutDetail(item.$1, item.$2),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    SizedBox(
-                      width: double.infinity,
-                      child: FilledButton.icon(
-                        onPressed: () async {
-                          await Clipboard.setData(ClipboardData(text: report));
-                          if (dialogContext.mounted)
-                            Navigator.pop(dialogContext);
-                          _message('Сведения скопированы');
-                        },
-                        icon: const Icon(Icons.copy_rounded, size: 17),
-                        label: Text(_localized('Скопировать сведения')),
-                      ),
-                    ),
-                  ],
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              intro,
+              const SizedBox(height: 18),
+              _section('СБОРКА'),
+              for (final item in details.take(5))
+                _aboutDetail(item.$1, item.$2),
+              const SizedBox(height: 8),
+              _section('ЯДРА'),
+              for (final item in details.skip(5).take(2))
+                _aboutDetail(item.$1, item.$2),
+              const SizedBox(height: 8),
+              _section('УСТРОЙСТВО'),
+              for (final item in details.skip(7))
+                _aboutDetail(item.$1, item.$2),
+              const SizedBox(height: 8),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton.icon(
+                  onPressed: () async {
+                    await Clipboard.setData(ClipboardData(text: report));
+                    _message('Сведения скопированы');
+                  },
+                  icon: const Icon(Icons.copy_rounded, size: 17),
+                  label: Text(_localized('Скопировать сведения')),
                 ),
               ),
-            ),
+            ],
           );
         },
-      ),
-    );
-  }
+      );
 
   Widget _aboutDetail(String label, String value) => Padding(
         padding: const EdgeInsets.only(bottom: 9),
@@ -7840,7 +7880,7 @@ foreach ($route in $routes) {
                 'Память ядра',
                 '${Platform.isIOS ? "Низкий бюджет" : "Мягкий бюджет"} · ${coreSettings.memoryMb} МБ',
                 SizedBox(
-                    width: 145,
+                    width: 180,
                     child: _compactSlider(
                         value: coreSettings.memoryMb.toDouble(),
                         min: Platform.isIOS ? 25 : 64,
@@ -7999,7 +8039,7 @@ foreach ($route in $routes) {
                 'Память ядра',
                 '${coreSettings.memoryMb} МБ · ${Platform.isIOS ? "25–50" : "64–256"} МБ',
                 SizedBox(
-                    width: 145,
+                    width: 180,
                     child: _compactSlider(
                         value: coreSettings.memoryMb.toDouble(),
                         min: Platform.isIOS ? 25 : 64,
@@ -8761,75 +8801,7 @@ foreach ($route in $routes) {
 
   Widget _compactSwitch(
       {required bool value, required ValueChanged<bool>? onChanged}) {
-    final enabled = onChanged != null;
-    final track = value
-        ? _accent
-        : Color.alphaBlend(Colors.white.withValues(alpha: .13), _surface);
-    void toggle() {
-      if (enabled) onChanged(!value);
-    }
-
-    return Semantics(
-      button: true,
-      toggled: value,
-      enabled: enabled,
-      onTap: enabled ? toggle : null,
-      child: ExcludeSemantics(
-        child: GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onTap: enabled ? toggle : null,
-          onHorizontalDragEnd: enabled
-              ? (details) {
-                  final velocity = details.primaryVelocity ?? 0;
-                  if (velocity.abs() > 80) onChanged(velocity > 0);
-                }
-              : null,
-          child: SizedBox(
-            width: 52,
-            height: 40,
-            child: Align(
-              alignment: Alignment.centerRight,
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 190),
-                curve: Curves.easeOutCubic,
-                width: 46,
-                height: 27,
-                padding: const EdgeInsets.all(4),
-                decoration: BoxDecoration(
-                  color: enabled ? track : track.withValues(alpha: .6),
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(
-                      color: value
-                          ? _accent.withValues(alpha: .8)
-                          : Colors.white.withValues(alpha: .17),
-                      width: 1),
-                ),
-                child: AnimatedAlign(
-                  duration: const Duration(milliseconds: 190),
-                  curve: Curves.easeOutCubic,
-                  alignment:
-                      value ? Alignment.centerRight : Alignment.centerLeft,
-                  child: Container(
-                    width: 17,
-                    height: 17,
-                    decoration: BoxDecoration(
-                      color: enabled ? Colors.white : Colors.white70,
-                      shape: BoxShape.circle,
-                      boxShadow: const [
-                        BoxShadow(
-                            color: Color(0x33000000),
-                            blurRadius: 3,
-                            offset: Offset(0, 1)),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
+    return GlassSwitch(value: value, onChanged: onChanged);
   }
 
   Widget _compactSlider({
@@ -8936,39 +8908,22 @@ foreach ($route in $routes) {
       child: ClipRRect(
         borderRadius: BorderRadius.circular(29),
         child: BackdropFilter(
-          filter: ui.ImageFilter.blur(
-              sigmaX: _glassMode ? 28 : 0, sigmaY: _glassMode ? 28 : 0),
+          // Keep the tab dock glassy even when the app-wide preview is off.
+          filter: ui.ImageFilter.blur(sigmaX: 3, sigmaY: 3),
           child: Container(
               key: _bottomNavKey,
               height: 84,
               padding: const EdgeInsets.all(6),
               decoration: BoxDecoration(
-                  color: _surface.withValues(alpha: _glassMode ? .62 : .94),
+                  color: _surface.withValues(alpha: .84),
                   borderRadius: BorderRadius.circular(27),
-                  border: Border.all(
-                      color: Colors.white
-                          .withValues(alpha: _glassMode ? .24 : .15)),
-                  gradient: _glassMode
-                      ? LinearGradient(
-                          begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
-                          colors: [
-                            Colors.white.withValues(alpha: .14),
-                            _accent.withValues(alpha: .07),
-                            _surface.withValues(alpha: .42),
-                          ],
-                        )
-                      : null,
+                  border:
+                      Border.all(color: Colors.white.withValues(alpha: .15)),
                   boxShadow: [
                     BoxShadow(
                         color: Colors.black.withOpacity(.24),
                         blurRadius: 25,
                         offset: const Offset(0, 10)),
-                    if (_glassMode)
-                      BoxShadow(
-                          color: Colors.white.withValues(alpha: .06),
-                          blurRadius: 1,
-                          spreadRadius: .5)
                   ]),
               child: LayoutBuilder(builder: (context, bounds) {
                 final itemWidth = bounds.maxWidth / 3;
@@ -8989,18 +8944,11 @@ foreach ($route in $routes) {
                               ]),
                               borderRadius: BorderRadius.circular(21),
                               border: Border.all(
-                                  color: _accent.withValues(
-                                      alpha: _glassMode ? .56 : .4)),
+                                  color: _accent.withValues(alpha: .4)),
                               boxShadow: [
                                 BoxShadow(
                                     color: _accent.withOpacity(.18),
                                     blurRadius: 17),
-                                if (_glassMode)
-                                  BoxShadow(
-                                      color:
-                                          Colors.white.withValues(alpha: .12),
-                                      blurRadius: 1,
-                                      offset: const Offset(0, 1))
                               ]))),
                   Row(children: [
                     _navItem(Icons.shield_outlined,
@@ -9015,32 +8963,17 @@ foreach ($route in $routes) {
         ),
       ));
   Widget _sideNav() => _draggableTabSurface(
-      vertical: true,
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(25),
-        child: BackdropFilter(
-          filter: ui.ImageFilter.blur(
-              sigmaX: _glassMode ? 24 : 0, sigmaY: _glassMode ? 24 : 0),
+        vertical: true,
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(25),
           child: Container(
               key: _sideNavKey,
               padding: const EdgeInsets.all(6),
               decoration: BoxDecoration(
-                  color: _surface.withValues(alpha: _glassMode ? .62 : .94),
+                  color: _surface.withValues(alpha: .94),
                   borderRadius: BorderRadius.circular(25),
-                  border: Border.all(
-                      color: Colors.white
-                          .withValues(alpha: _glassMode ? .23 : .15)),
-                  gradient: _glassMode
-                      ? LinearGradient(
-                          begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
-                          colors: [
-                            Colors.white.withValues(alpha: .13),
-                            _accent.withValues(alpha: .06),
-                            _surface.withValues(alpha: .42),
-                          ],
-                        )
-                      : null,
+                  border:
+                      Border.all(color: Colors.white.withValues(alpha: .15)),
                   boxShadow: [
                     BoxShadow(
                         color: Colors.black.withOpacity(.18),
@@ -9109,7 +9042,7 @@ foreach ($route in $routes) {
                 ]);
               })),
         ),
-      ));
+      );
 
   Widget _sideActionItem(IconData icon, String label, VoidCallback onTap) =>
       SizedBox(
@@ -9136,14 +9069,24 @@ foreach ($route in $routes) {
                                         color: _muted, fontSize: 9.5)))
                           ])))));
 
-  Widget _sideNavItem(IconData icon, String label, int index) =>
-      GestureDetector(
+  Widget _sideNavItem(IconData icon, String label, int index) => MouseRegion(
+      cursor: SystemMouseCursors.click,
+      onEnter: (_) {
+        if (_hoveredNavTab != index) setState(() => _hoveredNavTab = index);
+      },
+      onExit: (_) {
+        if (_hoveredNavTab == index) setState(() => _hoveredNavTab = null);
+      },
+      child: GestureDetector(
           behavior: HitTestBehavior.opaque,
           onTap: () => _openTab(index),
           child: AnimatedContainer(
-              duration: const Duration(milliseconds: 240),
+              duration: const Duration(milliseconds: 150),
+              curve: Curves.easeOutCubic,
               decoration: BoxDecoration(
-                  color: Colors.transparent,
+                  color: _hoveredNavTab == index
+                      ? _accent.withValues(alpha: .16)
+                      : Colors.transparent,
                   borderRadius: BorderRadius.circular(19)),
               child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
@@ -9173,42 +9116,53 @@ foreach ($route in $routes) {
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis),
                         ))
-                  ])));
+                  ]))));
 
   Widget _navItem(IconData icon, String label, int index) => Expanded(
-      child: GestureDetector(
-          onTap: () => _openTab(index),
-          child: AnimatedContainer(
-              duration: Duration(milliseconds: 210),
-              curve: Curves.easeOutCubic,
-              margin: EdgeInsets.symmetric(horizontal: 4),
-              decoration: BoxDecoration(
-                  color: Colors.transparent,
-                  borderRadius: BorderRadius.circular(20)),
-              child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    AnimatedScale(
-                      scale: _tabIndex == index ? 1.08 : 1,
-                      duration: const Duration(milliseconds: 190),
-                      curve: Curves.easeOutBack,
-                      child: Icon(icon,
-                          size: 24,
-                          color: _tabIndex == index ? Colors.white : _muted),
-                    ),
-                    SizedBox(height: 5),
-                    AnimatedDefaultTextStyle(
-                      duration: const Duration(milliseconds: 180),
-                      curve: Curves.easeOutCubic,
-                      style: TextStyle(
-                          color: _tabIndex == index ? _foreground : _muted,
-                          fontSize: 11,
-                          fontWeight: _tabIndex == index
-                              ? FontWeight.w600
-                              : FontWeight.w400),
-                      child: Text(label),
-                    )
-                  ]))));
+      child: MouseRegion(
+          cursor: SystemMouseCursors.click,
+          onEnter: (_) {
+            if (_hoveredNavTab != index) setState(() => _hoveredNavTab = index);
+          },
+          onExit: (_) {
+            if (_hoveredNavTab == index) setState(() => _hoveredNavTab = null);
+          },
+          child: GestureDetector(
+              onTap: () => _openTab(index),
+              child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 150),
+                  curve: Curves.easeOutCubic,
+                  margin: const EdgeInsets.symmetric(horizontal: 4),
+                  decoration: BoxDecoration(
+                      color: _hoveredNavTab == index
+                          ? Colors.white.withValues(alpha: .095)
+                          : Colors.transparent,
+                      borderRadius: BorderRadius.circular(20)),
+                  child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        AnimatedScale(
+                          scale: _tabIndex == index ? 1.08 : 1,
+                          duration: const Duration(milliseconds: 190),
+                          curve: Curves.easeOutBack,
+                          child: Icon(icon,
+                              size: 24,
+                              color:
+                                  _tabIndex == index ? Colors.white : _muted),
+                        ),
+                        SizedBox(height: 5),
+                        AnimatedDefaultTextStyle(
+                          duration: const Duration(milliseconds: 180),
+                          curve: Curves.easeOutCubic,
+                          style: TextStyle(
+                              color: _tabIndex == index ? _foreground : _muted,
+                              fontSize: 11,
+                              fontWeight: _tabIndex == index
+                                  ? FontWeight.w600
+                                  : FontWeight.w400),
+                          child: Text(label),
+                        )
+                      ])))));
   Widget _segment(String label, bool active, VoidCallback onTap) => Expanded(
       child: GestureDetector(
           onTap: onTap,

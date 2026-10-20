@@ -58,46 +58,6 @@ class _ThemeSettingsPanelState extends State<ThemeSettingsPanel> {
           _s('Тёмные и светлые темы с настраиваемым акцентом.',
               'Dark and light themes with a custom accent.'),
           style: theme.textTheme.bodySmall),
-      const SizedBox(height: 12),
-      AnimatedContainer(
-        duration: const Duration(milliseconds: 200),
-        curve: Curves.easeOutCubic,
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-        decoration: BoxDecoration(
-          color: controller.glassMode
-              ? controller.accent.withValues(alpha: .09)
-              : theme.colorScheme.surface.withValues(alpha: .62),
-          borderRadius: BorderRadius.circular(17),
-          border: Border.all(
-              color: controller.glassMode
-                  ? controller.accent.withValues(alpha: .30)
-                  : theme.colorScheme.outline.withValues(alpha: .35)),
-        ),
-        child: Row(children: [
-          Icon(Icons.blur_on_rounded,
-              size: 19,
-              color: controller.glassMode
-                  ? controller.accent
-                  : theme.colorScheme.onSurfaceVariant),
-          const SizedBox(width: 10),
-          Expanded(
-              child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                Text(_s('Glass Mode · тестовый стиль', 'Glass Mode · preview'),
-                    style: theme.textTheme.bodyMedium
-                        ?.copyWith(fontWeight: FontWeight.w600)),
-                Text(
-                    _s('Стеклянные панели, мягкое размытие и блики',
-                        'Glass surfaces, soft blur and highlights'),
-                    style: theme.textTheme.bodySmall),
-              ])),
-          Switch.adaptive(
-            value: controller.glassMode,
-            onChanged: controller.setGlassMode,
-          ),
-        ]),
-      ),
       const SizedBox(height: 14),
       ScrollConfiguration(
           behavior: const MaterialScrollBehavior().copyWith(dragDevices: {

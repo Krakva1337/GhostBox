@@ -4,7 +4,7 @@
 
 <h1 align="center">GhostBox</h1>
 
-<p align="center"><strong>v1.3-Alpha · Linux x86_64/ARM64 · Windows x64 · Xray-core + sing-box</strong></p>
+<p align="center"><strong>v1.4-Alpha · Linux x86_64/ARM64 · Windows x64 · Xray-core + sing-box</strong></p>
 
 ## Русский
 
@@ -49,18 +49,18 @@ iOS выдаёт только unsigned compile artifact и libbox XCFramework, �
 `x86_64` подходит для Intel/AMD 64-bit, `aarch64` — для ARM64 Linux.
 
 ```bash
-chmod +x GhostBox-1.3.0-alpha-linux-x86_64.AppImage
-./GhostBox-1.3.0-alpha-linux-x86_64.AppImage
+chmod +x GhostBox-1.4.0-alpha-linux-x86_64.AppImage
+./GhostBox-1.4.0-alpha-linux-x86_64.AppImage
 ```
 
 Пакеты для x86_64 и ARM64 содержат нативные бинарники и не взаимозаменяемы.
 Чтобы установить приложение в меню рабочего стола без прав root, из клона репозитория выполни:
 
 ```bash
-./tool/install_appimage.sh ./dist/GhostBox-1.3.0-alpha-linux-x86_64.AppImage
+./tool/install_appimage.sh ./dist/GhostBox-1.4.0-alpha-linux-x86_64.AppImage
 ```
 
-Добавь ссылку-подписку или сервер, выбери профиль и нажми кнопку подключения. TUN включён по умолчанию. Если AppImage не запускается из-за отсутствия FUSE, попробуй `APPIMAGE_EXTRACT_AND_RUN=1 ./GhostBox-1.3.0-alpha-linux-x86_64.AppImage`.
+Добавь ссылку-подписку или сервер, выбери профиль и нажми кнопку подключения. TUN включён по умолчанию. Если AppImage не запускается из-за отсутствия FUSE, попробуй `APPIMAGE_EXTRACT_AND_RUN=1 ./GhostBox-1.4.0-alpha-linux-x86_64.AppImage`.
 
 ### TUN без запуска VPN от root
 
@@ -111,11 +111,13 @@ base64 -w0 ghostbox-release.jks
 
 Для локальной сборки используй скрипт. Он скачает зависимости, соберёт ядра и приложение, а на Linux создаст AppImage:
 
+Для локальной проверки форка sing-box с XHTTP на Linux добавь `GHOSTBOX_BUILD_SING_BOX_LX=1` перед той же командой. Он будет собран в `vendor/experimental/linux/<arch>/sing-box-lx` и не попадёт в AppImage или GitHub-релизы.
+
 ```bash
 ./build.sh
 ```
 
-Чтобы выбрать Linux без меню: `./build.sh linux`. После сборки установить AppImage в меню можно командой `./tool/install_appimage.sh ./dist/GhostBox-1.3.0-alpha-linux-x86_64.AppImage`. Другие платформы выбираются в меню скрипта; требования платформ описаны в [deploy/PLATFORMS.md](deploy/PLATFORMS.md).
+Чтобы выбрать Linux без меню: `./build.sh linux`. После сборки установить AppImage в меню можно командой `./tool/install_appimage.sh ./dist/GhostBox-1.4.0-alpha-linux-x86_64.AppImage`. Другие платформы выбираются в меню скрипта; требования платформ описаны в [deploy/PLATFORMS.md](deploy/PLATFORMS.md).
 
 ### Приватность и диагностика
 
@@ -166,27 +168,27 @@ development artifacts are available in **Actions → Build GhostBox for Apple
 platforms**. The macOS `.app` is ad-hoc signed for local testing; the iOS output
 is only an unsigned compile artifact and libbox XCFramework, not a VPN release.
 
-Download `GhostBox-1.3.0-alpha-linux-x86_64.AppImage` from GitHub Releases and run:
+Download `GhostBox-1.4.0-alpha-linux-x86_64.AppImage` from GitHub Releases and run:
 
 ```bash
-chmod +x GhostBox-1.3.0-alpha-linux-x86_64.AppImage
-./GhostBox-1.3.0-alpha-linux-x86_64.AppImage
+chmod +x GhostBox-1.4.0-alpha-linux-x86_64.AppImage
+./GhostBox-1.4.0-alpha-linux-x86_64.AppImage
 ```
 
 To add GhostBox to the desktop app menu without root access, run this from a repository checkout:
 
 ```bash
-./tool/install_appimage.sh ./dist/GhostBox-1.3.0-alpha-linux-x86_64.AppImage
+./tool/install_appimage.sh ./dist/GhostBox-1.4.0-alpha-linux-x86_64.AppImage
 ```
 
 On macOS, install a built `.app` bundle or ZIP into `/Applications` and launch it with:
 
 ```bash
-./tool/install_macos.sh ./dist/GhostBox-1.3.0-alpha-macOS-arm64.zip
+./tool/install_macos.sh ./dist/GhostBox-1.4.0-alpha-macOS-arm64.zip
 ```
 The script asks for administrator authorization to replace `/Applications/GhostBox.app`.
 
-Add a subscription URL or server, select a profile and press Connect. TUN is enabled by default. If AppImage cannot start because FUSE is unavailable, try `APPIMAGE_EXTRACT_AND_RUN=1 ./GhostBox-1.3.0-alpha-linux-x86_64.AppImage`.
+Add a subscription URL or server, select a profile and press Connect. TUN is enabled by default. If AppImage cannot start because FUSE is unavailable, try `APPIMAGE_EXTRACT_AND_RUN=1 ./GhostBox-1.4.0-alpha-linux-x86_64.AppImage`.
 
 ### TUN without running the VPN as root
 

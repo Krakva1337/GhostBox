@@ -216,74 +216,75 @@ class _NoticeState extends State<_Notice> with SingleTickerProviderStateMixin {
             child: ScaleTransition(
                 scale: Tween<double>(begin: .97, end: 1).animate(_animation),
                 child: Semantics(
-                  liveRegion: true,
-                  container: true,
-                  child: Material(
-                    color: Color.alphaBlend(
-                      accent.withValues(alpha: .05),
-                      colors.surface,
-                    ),
-                    elevation: 16,
-                    shadowColor: Colors.black.withValues(alpha: .35),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(22),
-                      side: BorderSide(color: accent.withValues(alpha: .25)),
-                    ),
-                    clipBehavior: Clip.antiAlias,
-                    child: ConstrainedBox(
-                      constraints: BoxConstraints(
-                        maxWidth: 480,
-                        maxHeight: MediaQuery.sizeOf(context).height * .42,
+                    liveRegion: true,
+                    container: true,
+                    child: Material(
+                      color: Color.alphaBlend(
+                        accent.withValues(alpha: .05),
+                        colors.surface,
                       ),
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Padding(
-                            padding: const EdgeInsets.fromLTRB(16, 17, 12, 16),
-                            child: Icon(
-                              widget.icon ??
-                                  (widget.error
-                                      ? Icons.warning_amber_rounded
-                                      : Icons.check_circle_outline_rounded),
-                              color: accent,
-                              size: 21,
+                      elevation: 16,
+                      shadowColor: Colors.black.withValues(alpha: .35),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(22),
+                        side: BorderSide(color: accent.withValues(alpha: .25)),
+                      ),
+                      clipBehavior: Clip.antiAlias,
+                      child: ConstrainedBox(
+                        constraints: BoxConstraints(
+                          maxWidth: 480,
+                          maxHeight: MediaQuery.sizeOf(context).height * .42,
+                        ),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Padding(
+                              padding:
+                                  const EdgeInsets.fromLTRB(16, 17, 12, 16),
+                              child: Icon(
+                                widget.icon ??
+                                    (widget.error
+                                        ? Icons.warning_amber_rounded
+                                        : Icons.check_circle_outline_rounded),
+                                color: accent,
+                                size: 21,
+                              ),
                             ),
-                          ),
-                          Expanded(
-                            child: SingleChildScrollView(
-                              padding: const EdgeInsets.symmetric(vertical: 17),
-                              child: Text(
-                                widget.message,
-                                style: theme.textTheme.bodySmall?.copyWith(
-                                  color: colors.onSurface,
-                                  fontSize: 13,
-                                  height: 1.45,
+                            Expanded(
+                              child: SingleChildScrollView(
+                                padding:
+                                    const EdgeInsets.symmetric(vertical: 17),
+                                child: Text(
+                                  widget.message,
+                                  style: theme.textTheme.bodySmall?.copyWith(
+                                    color: colors.onSurface,
+                                    fontSize: 13,
+                                    height: 1.45,
+                                  ),
                                 ),
                               ),
                             ),
-                          ),
-                          Padding(
-                            padding: const EdgeInsets.only(top: 7, right: 7),
-                            child: SizedBox(
-                              width: 30,
-                              height: 30,
-                              child: IconButton(
-                                padding: EdgeInsets.zero,
-                                visualDensity: VisualDensity.compact,
-                                alignment: Alignment.center,
-                                onPressed: _dismiss,
-                                tooltip: widget.dismissTooltip,
-                                iconSize: 17,
-                                color: colors.onSurfaceVariant,
-                                icon: const Icon(Icons.close),
+                            Padding(
+                              padding: const EdgeInsets.only(top: 7, right: 7),
+                              child: SizedBox(
+                                width: 30,
+                                height: 30,
+                                child: IconButton(
+                                  padding: EdgeInsets.zero,
+                                  visualDensity: VisualDensity.compact,
+                                  alignment: Alignment.center,
+                                  onPressed: _dismiss,
+                                  tooltip: widget.dismissTooltip,
+                                  iconSize: 17,
+                                  color: colors.onSurfaceVariant,
+                                  icon: const Icon(Icons.close),
+                                ),
                               ),
                             ),
-                          ),
-                        ],
+                          ],
+                        ),
                       ),
-                    ),
-                  ),
-                )),
+                    ))),
           ),
         ),
       ),

@@ -35,10 +35,8 @@ class ThemeController extends ChangeNotifier {
   String _iconVariant = 'aurora';
   Color _iconForeground = const Color(0xFF8BB9F4);
   Color _iconBackground = const Color(0xFF080D16);
-  bool _glassMode = false;
   bool _loaded = false;
   ThemePreset get preset => _preset;
-  bool get glassMode => _glassMode;
   Color get accent => switch (_preset) {
         ThemePreset.midnight => const Color(0xFF8BB9F4),
         ThemePreset.graphite => const Color(0xFFB6BDC9),
@@ -127,7 +125,7 @@ class ThemeController extends ChangeNotifier {
         _iconForeground.toARGB32());
     _iconBackground = Color(prefs.getInt('appearance.iconBackground') ??
         _iconBackground.toARGB32());
-    _glassMode = prefs.getBool('appearance.glassMode') ?? false;
+    await prefs.remove('appearance.glassMode');
     notifyListeners();
     await _applyPlatformIcon();
   }
@@ -176,14 +174,6 @@ class ThemeController extends ChangeNotifier {
     _preset = value;
     notifyListeners();
     await _save();
-  }
-
-  Future<void> setGlassMode(bool enabled) async {
-    if (_glassMode == enabled) return;
-    _glassMode = enabled;
-    notifyListeners();
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool('appearance.glassMode', enabled);
   }
 
   Future<void> setCustom({Color? accent, Color? background}) async {
@@ -316,23 +306,22 @@ class ThemeController extends ChangeNotifier {
       switchTheme: SwitchThemeData(
         trackColor: WidgetStateProperty.resolveWith((states) {
           if (states.contains(WidgetState.selected)) {
-            return accent.withValues(alpha: _glassMode ? .74 : .92);
+            return accent.withValues(alpha: .92);
           }
-          return (_glassMode ? foreground : muted)
-              .withValues(alpha: _glassMode ? .12 : .28);
+          return muted.withValues(alpha: .28);
         }),
         thumbColor: WidgetStateProperty.resolveWith((states) =>
             states.contains(WidgetState.selected) ? Colors.white : foreground),
-        trackOutlineColor: WidgetStatePropertyAll(
-            foreground.withValues(alpha: _glassMode ? .24 : .12)),
-        trackOutlineWidth: WidgetStatePropertyAll(_glassMode ? 1 : .5),
+        trackOutlineColor:
+            WidgetStatePropertyAll(foreground.withValues(alpha: .12)),
+        trackOutlineWidth: const WidgetStatePropertyAll(.5),
         splashRadius: 20,
       ),
       sliderTheme: base.sliderTheme.copyWith(
           activeTrackColor: accent,
           thumbColor: accent,
-          overlayColor: accent.withValues(alpha: _glassMode ? .13 : .08),
-          trackHeight: _glassMode ? 4.5 : 4),
+          overlayColor: accent.withValues(alpha: .08),
+          trackHeight: 4),
       scrollbarTheme: ScrollbarThemeData(
           thickness: const WidgetStatePropertyAll(3),
           radius: const Radius.circular(10),
