@@ -25,6 +25,15 @@ class CoreSettings {
     this.killSwitchEndpoint = '',
     this.killSwitchProfileId = '',
     this.aggressiveXhttpCleanup = false,
+    this.tlsFragmentEnabled = false,
+    this.fragmentPackets = 'tlshello',
+    this.fragmentLength = '100-200',
+    this.fragmentInterval = '10-20',
+    this.fragmentRecord = false,
+    this.fragmentFallbackDelayMs = 500,
+    this.sniffingEnabled = true,
+    this.tcpFastOpen = false,
+    this.udpFragment = false,
     this.pingMode = 'proxy',
     this.proxyGetUrl = 'https://example.com/ghostbox-probe-404',
     this.pingView = 'full',
@@ -48,6 +57,10 @@ class CoreSettings {
   final String killSwitchEndpoint, killSwitchProfileId;
   final bool showRamUsage;
   final bool aggressiveXhttpCleanup, autoLocalPort;
+  final bool tlsFragmentEnabled, fragmentRecord, sniffingEnabled;
+  final bool tcpFastOpen, udpFragment;
+  final String fragmentPackets, fragmentLength, fragmentInterval;
+  final int fragmentFallbackDelayMs;
   final List<String> blockedDomains,
       adBlockDomains,
       directDomains,
@@ -78,6 +91,15 @@ class CoreSettings {
           String? killSwitchEndpoint,
           String? killSwitchProfileId,
           bool? aggressiveXhttpCleanup,
+          bool? tlsFragmentEnabled,
+          String? fragmentPackets,
+          String? fragmentLength,
+          String? fragmentInterval,
+          bool? fragmentRecord,
+          int? fragmentFallbackDelayMs,
+          bool? sniffingEnabled,
+          bool? tcpFastOpen,
+          bool? udpFragment,
           List<String>? blockedDomains,
           List<String>? adBlockDomains,
           List<String>? directDomains,
@@ -115,6 +137,17 @@ class CoreSettings {
           killSwitchProfileId: killSwitchProfileId ?? this.killSwitchProfileId,
           aggressiveXhttpCleanup:
               aggressiveXhttpCleanup ?? this.aggressiveXhttpCleanup,
+          tlsFragmentEnabled: tlsFragmentEnabled ?? this.tlsFragmentEnabled,
+          fragmentPackets: fragmentPackets ?? this.fragmentPackets,
+          fragmentLength: fragmentLength ?? this.fragmentLength,
+          fragmentInterval: fragmentInterval ?? this.fragmentInterval,
+          fragmentRecord: fragmentRecord ?? this.fragmentRecord,
+          fragmentFallbackDelayMs:
+              (fragmentFallbackDelayMs ?? this.fragmentFallbackDelayMs)
+                  .clamp(100, 3000),
+          sniffingEnabled: sniffingEnabled ?? this.sniffingEnabled,
+          tcpFastOpen: tcpFastOpen ?? this.tcpFastOpen,
+          udpFragment: udpFragment ?? this.udpFragment,
           blockedDomains: blockedDomains ?? this.blockedDomains,
           adBlockDomains: adBlockDomains ?? this.adBlockDomains,
           directDomains: directDomains ?? this.directDomains,
@@ -166,6 +199,20 @@ class CoreSettings {
       killSwitchEndpoint: data['killSwitchEndpoint'] as String? ?? '',
       killSwitchProfileId: data['killSwitchProfileId'] as String? ?? '',
       aggressiveXhttpCleanup: data['aggressiveXhttpCleanup'] == true,
+      tlsFragmentEnabled: data['tlsFragmentEnabled'] == true,
+      fragmentPackets:
+          choice('fragmentPackets', ['tlshello', '1-3'], 'tlshello'),
+      fragmentLength:
+          choice('fragmentLength', ['50-100', '100-200', '200-300'], '100-200'),
+      fragmentInterval: choice(
+          'fragmentInterval', ['0-0', '5-10', '10-20', '20-30'], '10-20'),
+      fragmentRecord: data['fragmentRecord'] == true,
+      fragmentFallbackDelayMs:
+          ((data['fragmentFallbackDelayMs'] as num?)?.toInt() ?? 500)
+              .clamp(100, 3000),
+      sniffingEnabled: data['sniffingEnabled'] != false,
+      tcpFastOpen: data['tcpFastOpen'] == true,
+      udpFragment: data['udpFragment'] == true,
       pingMode: choice('pingMode', ['proxy', 'tcp', 'icmp'], 'proxy'),
       proxyGetUrl: data['proxyGetUrl'] == 'https://httpbin.org/status/404'
           ? 'https://example.com/ghostbox-probe-404'
@@ -212,6 +259,15 @@ class CoreSettings {
         'killSwitchEndpoint': killSwitchEndpoint,
         'killSwitchProfileId': killSwitchProfileId,
         'aggressiveXhttpCleanup': aggressiveXhttpCleanup,
+        'tlsFragmentEnabled': tlsFragmentEnabled,
+        'fragmentPackets': fragmentPackets,
+        'fragmentLength': fragmentLength,
+        'fragmentInterval': fragmentInterval,
+        'fragmentRecord': fragmentRecord,
+        'fragmentFallbackDelayMs': fragmentFallbackDelayMs,
+        'sniffingEnabled': sniffingEnabled,
+        'tcpFastOpen': tcpFastOpen,
+        'udpFragment': udpFragment,
         'pingMode': pingMode,
         'proxyGetUrl': proxyGetUrl,
         'pingView': pingView,

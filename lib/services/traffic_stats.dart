@@ -41,6 +41,8 @@ class TrafficStats {
   DateTime? _previousAt;
   double receivedPerSecond = 0;
   double sentPerSecond = 0;
+  double peakReceivedPerSecond = 0;
+  double peakSentPerSecond = 0;
   bool available = false;
   bool _loaded = false;
 
@@ -94,6 +96,12 @@ class TrafficStats {
     final sent = current.sent - previous.sent;
     receivedPerSecond = received / elapsed;
     sentPerSecond = sent / elapsed;
+    if (receivedPerSecond > peakReceivedPerSecond) {
+      peakReceivedPerSecond = receivedPerSecond;
+    }
+    if (sentPerSecond > peakSentPerSecond) {
+      peakSentPerSecond = sentPerSecond;
+    }
     if (received == 0 && sent == 0) return;
 
     final key = _dayKey(now);

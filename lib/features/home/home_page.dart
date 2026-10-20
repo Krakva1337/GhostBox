@@ -11,6 +11,7 @@ import 'package:flutter/services.dart';
 import 'package:file_selector/file_selector.dart';
 import 'package:app_links/app_links.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
 
 import '../../backends/sing_box_backend.dart';
 import '../../backends/android_vpn_backend.dart';
@@ -74,15 +75,22 @@ class _HomePageState extends State<HomePage>
   SharedPreferences? prefs;
   List<ServerProfile> profiles = [];
   String? selectedId;
-  bool settings = false, routingTab = false, advanced = false;
+  bool settings = false,
+      routingTab = false,
+      contactsTab = false,
+      advanced = false;
+  String? settingsSubpage;
+  int trafficRangeDays = 7;
   final GlobalKey _bottomNavKey = GlobalKey();
   final GlobalKey _sideNavKey = GlobalKey();
   bool _draggingTabIndicator = false;
-  int get _tabIndex => settings
-      ? 2
-      : routingTab
-          ? 1
-          : 0;
+  int get _tabIndex => contactsTab
+      ? 3
+      : settings
+          ? 2
+          : routingTab
+              ? 1
+              : 0;
   CoreSettings coreSettings = CoreSettings(memoryMb: Platform.isIOS ? 32 : 128);
   final DnsAdBlocklist dnsAdBlocklist = DnsAdBlocklist();
   bool loadingAdBlocklist = false;
@@ -151,6 +159,13 @@ class _HomePageState extends State<HomePage>
     'Список доменов': 'Domain list',
     'Основные': 'Basic',
     'Для профи': 'Advanced',
+    'Контакты': 'Contacts',
+    'О релизе': 'About this release',
+    'О GhostBox': 'About GhostBox',
+    'Информация о сборке и устройстве': 'Build and device information',
+    'Сведения о сборке, ядрах и устройстве':
+        'Build, core and device information',
+    'Открыть': 'Open',
     'Управление локальным прокси и ядром': 'Manage the local proxy and core',
     'Соединение': 'Connection',
     'ЯДРО': 'CORE',
@@ -173,11 +188,57 @@ class _HomePageState extends State<HomePage>
     'Мягкое движение цветового свечения': 'Subtle ambient color animation',
     'Выключен · меньше графической нагрузки': 'Off · lower graphics usage',
     'Язык интерфейса': 'Language',
+    'Сканировать QR-код': 'Scan QR code',
+    'Сканировать QR': 'Scan QR',
     'Показывать расход RAM': 'Show RAM usage',
     'Память ядра': 'Core memory',
     'Мягкий бюджет': 'Soft memory budget',
     'Низкий бюджет': 'Low memory target',
     'Уровень журнала': 'Log level',
+    'ФРАГМЕНТАЦИЯ TLS': 'TLS FRAGMENTATION',
+    'Фрагментация TLS ClientHello': 'Fragment TLS ClientHello',
+    'Разбивать TLS handshake на части': 'Split TLS handshake into fragments',
+    'Тип фрагментации': 'Fragment type',
+    'Размер фрагментов': 'Fragment size',
+    'Интервал между частями': 'Fragment interval',
+    'TLS hello или первые TCP отправки': 'TLS hello or first TCP writes',
+    'TLS hello или первые записи TCP': 'TLS hello or first TCP writes',
+    'В байтах · Xray': 'Bytes · Xray',
+    'В миллисекундах · Xray': 'Milliseconds · Xray',
+    'Sing-box · другая стратегия разделения':
+        'Sing-box · alternate TLS splitting strategy',
+    'TLS hello': 'TLS hello',
+    'Первые 3 отправки': 'First 3 writes',
+    '200 мс': '200 ms',
+    '500 мс': '500 ms',
+    '1000 мс': '1000 ms',
+    '0': '0',
+    '5–10': '5–10',
+    '10–20': '10–20',
+    '20–30': '20–30',
+    '50–100': '50–100',
+    '100–200': '100–200',
+    '200–300': '200–300',
+    'Фрагментация TLS-записей': 'Fragment TLS records',
+    'Резервная задержка': 'Fallback delay',
+    'РАСШИРЕННЫЕ ПАРАМЕТРЫ ЯДРА': 'ADVANCED CORE OPTIONS',
+    'Анализ протоколов': 'Protocol sniffing',
+    'Нужен для доменных правил маршрутизации':
+        'Required for domain based routing rules',
+    'TCP Fast Open': 'TCP Fast Open',
+    'Ускоряет TCP handshake, если поддерживается ОС':
+        'Can reduce TCP handshake latency when supported by the OS',
+    'Фрагментация UDP': 'UDP fragmentation',
+    'Может помочь с крупными UDP-пакетами; зависит от ядра и ОС':
+        'May help with large UDP packets; support depends on core and OS',
+    'Фрагментация отключена': 'Fragmentation is off',
+    'Параметры вступят в силу после переподключения':
+        'Settings take effect after reconnecting',
+    'ПО ДНЯМ · ПОСЛЕДНЯЯ НЕДЕЛЯ': 'DAILY · LAST 7 DAYS',
+    'ИСТОРИЯ ТРАФИКА': 'TRAFFIC HISTORY',
+    'Скорость сейчас ↓': 'Current download ↓',
+    'Скорость сейчас ↑': 'Current upload ↑',
+    'Пик за запуск': 'Peak since app launch',
     'Ошибки': 'Errors',
     'Предупреждения': 'Warnings',
     'Подробно': 'Verbose',
@@ -331,9 +392,8 @@ class _HomePageState extends State<HomePage>
     'Удалить сервер': 'Delete server',
     'Свой DNS-резолвер': 'Custom DNS resolver',
     'Ссылка для Proxy GET': 'Proxy GET URL',
-    'О GhostBox': 'About GhostBox',
-    'Информация о сборке и устройстве': 'Build and device information',
     'Скопировать сведения': 'Copy information',
+    'Скопировать ссылку': 'Copy link',
     'Проверить и применить': 'Validate and apply',
     'Сбросить настройки приложения?': 'Reset app settings?',
     'Вернутся стандартные параметры ядра, тема и поведение приложения. Серверы останутся.':
@@ -2872,6 +2932,70 @@ foreach ($route in $routes) {
                               runSpacing: 6,
                               alignment: WrapAlignment.spaceBetween,
                               children: [
+                                if (Platform.isAndroid || Platform.isIOS)
+                                  TextButton.icon(
+                                    onPressed: () async {
+                                      final scanned = await showDialog<String>(
+                                        context: ctx,
+                                        builder: (scanContext) => Dialog(
+                                          backgroundColor: _surface,
+                                          clipBehavior: Clip.antiAlias,
+                                          child: SizedBox(
+                                            width: 420,
+                                            height: 500,
+                                            child: Column(
+                                              children: [
+                                                ListTile(
+                                                  title: Text(_localized(
+                                                      'Сканировать QR-код')),
+                                                  trailing: IconButton(
+                                                    onPressed: () =>
+                                                        Navigator.pop(
+                                                            scanContext),
+                                                    icon: const Icon(
+                                                        Icons.close_rounded),
+                                                  ),
+                                                ),
+                                                Expanded(
+                                                  child: MobileScanner(
+                                                    onDetect: (capture) {
+                                                      final value = capture
+                                                          .barcodes
+                                                          .map((barcode) =>
+                                                              barcode.rawValue)
+                                                          .firstWhere(
+                                                              (value) =>
+                                                                  value !=
+                                                                      null &&
+                                                                  value
+                                                                      .trim()
+                                                                      .isNotEmpty,
+                                                              orElse: () =>
+                                                                  null);
+                                                      if (value != null &&
+                                                          scanContext.mounted) {
+                                                        Navigator.pop(
+                                                            scanContext, value);
+                                                      }
+                                                    },
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                        ),
+                                      );
+                                      if (scanned != null && ctx.mounted) {
+                                        controller
+                                          ..text = scanned.trim()
+                                          ..selection = TextSelection.collapsed(
+                                              offset: controller.text.length);
+                                      }
+                                    },
+                                    icon: const Icon(Icons.qr_code_scanner,
+                                        size: 18),
+                                    label: Text(_localized('Сканировать QR')),
+                                  ),
                                 TextButton.icon(
                                     onPressed: () async {
                                       final data = await Clipboard.getData(
@@ -3407,97 +3531,105 @@ foreach ($route in $routes) {
                                   animation: ambientMotion,
                                   color: _accent,
                                   enabled: animatedBackground))))),
-              Center(
-                  child: ConstrainedBox(
-                      constraints: BoxConstraints(maxWidth: 1200),
-                      child: Padding(
-                          padding: EdgeInsets.fromLTRB(5, 12, 5, 12),
-                          child: LayoutBuilder(builder: (context, bounds) {
-                            final wideLayout = bounds.maxWidth >= 800;
-                            final page = ClipRRect(
-                                borderRadius: BorderRadius.circular(24),
-                                child: AnimatedSwitcher(
-                                    duration: const Duration(milliseconds: 220),
-                                    reverseDuration:
-                                        const Duration(milliseconds: 180),
-                                    layoutBuilder: (current, previous) => Stack(
-                                          fit: StackFit.passthrough,
-                                          children: [
-                                            ...previous,
-                                            if (current != null) current,
-                                          ],
-                                        ),
-                                    transitionBuilder: (child, animation) {
-                                      final fade = CurvedAnimation(
-                                        parent: animation,
-                                        curve: Curves.easeInOutCubic,
-                                        reverseCurve: Curves.easeInOutCubic,
-                                      );
-                                      return FadeTransition(
-                                          opacity: fade, child: child);
-                                    },
-                                    child: KeyedSubtree(
-                                        key: ValueKey(_tabIndex),
-                                        child: settings
+              Padding(
+                  padding: EdgeInsets.fromLTRB(5, 12, 5, 12),
+                  child: LayoutBuilder(builder: (context, bounds) {
+                    final wideLayout = bounds.maxWidth >= 800;
+                    final page = ClipRRect(
+                        borderRadius: BorderRadius.circular(24),
+                        child: AnimatedSwitcher(
+                            duration: const Duration(milliseconds: 280),
+                            reverseDuration: const Duration(milliseconds: 180),
+                            layoutBuilder: (current, previous) => Stack(
+                                  fit: StackFit.passthrough,
+                                  children: [
+                                    ...previous,
+                                    if (current != null) current,
+                                  ],
+                                ),
+                            transitionBuilder: (child, animation) {
+                              final fade = CurvedAnimation(
+                                parent: animation,
+                                curve: Curves.easeInOutCubic,
+                                reverseCurve: Curves.easeInOutCubic,
+                              );
+                              return FadeTransition(
+                                opacity: fade,
+                                child: SlideTransition(
+                                  position: Tween<Offset>(
+                                          begin: const Offset(0, .012),
+                                          end: Offset.zero)
+                                      .animate(fade),
+                                  child: child,
+                                ),
+                              );
+                            },
+                            child: KeyedSubtree(
+                                key: ValueKey(_tabIndex),
+                                child: settings
+                                    ? _scrollFrame(_settings(), settingsScroll)
+                                    : routingTab
+                                        ? _scrollFrame(
+                                            _routingPage(), routingScroll)
+                                        : contactsTab
                                             ? _scrollFrame(
-                                                _settings(), settingsScroll)
-                                            : routingTab
-                                                ? _scrollFrame(_routingPage(),
-                                                    routingScroll)
-                                                : _scrollFrame(
-                                                    _home(), homeScroll))));
-                            return Column(children: [
-                              _header(wideLayout: wideLayout),
-                              const SizedBox(height: 8),
-                              Expanded(
-                                  child: Row(children: [
-                                AnimatedContainer(
-                                  duration: const Duration(milliseconds: 280),
-                                  curve: Curves.easeInOutCubic,
-                                  width: wideLayout ? 120 : 0,
-                                  child: ClipRect(
-                                    child: IgnorePointer(
-                                      ignoring: !wideLayout,
-                                      child: AnimatedOpacity(
-                                        duration:
-                                            const Duration(milliseconds: 180),
-                                        curve: Curves.easeOutCubic,
-                                        opacity: wideLayout ? 1 : 0,
-                                        child: _sideNav(),
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                                AnimatedContainer(
-                                  duration: const Duration(milliseconds: 280),
-                                  curve: Curves.easeInOutCubic,
-                                  width: wideLayout ? 10 : 0,
-                                ),
-                                Expanded(child: page),
-                              ])),
-                              const SizedBox(height: 8),
-                              ClipRect(
-                                child: AnimatedSize(
-                                  duration: const Duration(milliseconds: 260),
-                                  curve: Curves.easeInOutCubic,
-                                  alignment: Alignment.topCenter,
-                                  child: Align(
-                                    heightFactor: wideLayout ? 0 : 1,
-                                    child: IgnorePointer(
-                                      ignoring: wideLayout,
-                                      child: AnimatedOpacity(
-                                        duration:
-                                            const Duration(milliseconds: 180),
-                                        curve: Curves.easeOutCubic,
-                                        opacity: wideLayout ? 0 : 1,
-                                        child: _nav(),
-                                      ),
-                                    ),
-                                  ),
-                                ),
+                                                SingleChildScrollView(
+                                                  controller: settingsScroll,
+                                                  child: _contactsPage(),
+                                                ),
+                                                settingsScroll)
+                                            : _scrollFrame(
+                                                _home(), homeScroll))));
+                    return Column(children: [
+                      _header(wideLayout: wideLayout),
+                      const SizedBox(height: 8),
+                      Expanded(
+                          child: Row(children: [
+                        AnimatedContainer(
+                          duration: const Duration(milliseconds: 280),
+                          curve: Curves.easeInOutCubic,
+                          width: wideLayout ? 120 : 0,
+                          child: ClipRect(
+                            child: IgnorePointer(
+                              ignoring: !wideLayout,
+                              child: AnimatedOpacity(
+                                duration: const Duration(milliseconds: 180),
+                                curve: Curves.easeOutCubic,
+                                opacity: wideLayout ? 1 : 0,
+                                child: _sideNav(),
                               ),
-                            ]);
-                          }))))
+                            ),
+                          ),
+                        ),
+                        AnimatedContainer(
+                          duration: const Duration(milliseconds: 280),
+                          curve: Curves.easeInOutCubic,
+                          width: wideLayout ? 10 : 0,
+                        ),
+                        Expanded(child: page),
+                      ])),
+                      const SizedBox(height: 8),
+                      ClipRect(
+                        child: AnimatedSize(
+                          duration: const Duration(milliseconds: 260),
+                          curve: Curves.easeInOutCubic,
+                          alignment: Alignment.topCenter,
+                          child: Align(
+                            heightFactor: wideLayout ? 0 : 1,
+                            child: IgnorePointer(
+                              ignoring: wideLayout,
+                              child: AnimatedOpacity(
+                                duration: const Duration(milliseconds: 180),
+                                curve: Curves.easeOutCubic,
+                                opacity: wideLayout ? 0 : 1,
+                                child: _nav(),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ]);
+                  }))
             ]),
           )));
 
@@ -3680,23 +3812,33 @@ foreach ($route in $routes) {
                   ),
                 );
               },
-              child: wideLayout && !routeListOpen && !settings && !routingTab
+              child: wideLayout &&
+                      !routeListOpen &&
+                      !settings &&
+                      !routingTab &&
+                      !contactsTab
                   ? Center(
                       key: const ValueKey('header-brand-mark'),
-                      child: _brandMark(36),
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(14),
+                        onTap: _showAbout,
+                        child: _brandMark(36),
+                      ),
                     )
                   : _topButton(
-                      routeListOpen || settings || routingTab
+                      routeListOpen || settings || routingTab || contactsTab
                           ? Icons.arrow_back_ios_new_rounded
                           : Icons.settings_rounded, () {
                       if (routeListOpen) {
                         setState(() => routeListOpen = false);
+                      } else if (settings && settingsSubpage != null) {
+                        setState(() => settingsSubpage = null);
                       } else {
-                        _openTab(settings || routingTab ? 0 : 2);
+                        _openTab(settings || routingTab || contactsTab ? 0 : 2);
                       }
                     },
                       key: ValueKey(
-                          'header-button-${routeListOpen || settings || routingTab ? 'back' : 'settings'}')),
+                          'header-button-${routeListOpen || settings || routingTab || contactsTab ? 'back' : 'settings'}')),
             ),
           ),
         ),
@@ -3725,18 +3867,30 @@ foreach ($route in $routes) {
                         ),
                       );
                     },
-                    child: routeListOpen || settings || routingTab
+                    child: routeListOpen ||
+                            settings ||
+                            routingTab ||
+                            contactsTab
                         ? Text(
                             key: ValueKey(routeListOpen
                                 ? 'header-domains'
-                                : settings
-                                    ? 'header-settings'
-                                    : 'header-routing'),
+                                : contactsTab
+                                    ? 'header-contacts'
+                                    : settings
+                                        ? 'header-settings-$settingsSubpage'
+                                        : 'header-routing'),
                             routeListOpen
                                 ? _localized('Список доменов')
-                                : settings
-                                    ? _localized('Настройки')
-                                    : _localized('Маршрут'),
+                                : contactsTab
+                                    ? _localized('Контакты')
+                                    : settings
+                                        ? switch (settingsSubpage) {
+                                            'contacts' =>
+                                              _localized('Контакты'),
+                                            'release' => _localized('О релизе'),
+                                            _ => _localized('Настройки'),
+                                          }
+                                        : _localized('Маршрут'),
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             textAlign: TextAlign.center,
@@ -3752,7 +3906,11 @@ foreach ($route in $routes) {
                               mainAxisSize: MainAxisSize.min,
                               children: [
                                 if (!wideLayout) ...[
-                                  _brandMark(23),
+                                  InkWell(
+                                    borderRadius: BorderRadius.circular(10),
+                                    onTap: _showAbout,
+                                    child: _brandMark(23),
+                                  ),
                                   const SizedBox(width: 8),
                                 ],
                                 Text('GhostBox',
@@ -3761,7 +3919,11 @@ foreach ($route in $routes) {
                                         fontWeight: FontWeight.w700,
                                         letterSpacing: .2)),
                                 const SizedBox(width: 7),
-                                _versionMark(),
+                                InkWell(
+                                  borderRadius: BorderRadius.circular(8),
+                                  onTap: _openReleaseDetails,
+                                  child: _versionMark(),
+                                ),
                               ],
                             ),
                           )))),
@@ -3812,9 +3974,21 @@ foreach ($route in $routes) {
 
   void _openTab(int index) => setState(() {
         routeListOpen = false;
+        settingsSubpage = null;
+        contactsTab = index == 3;
         settings = index == 2;
         routingTab = index == 1;
       });
+
+  void _openSettingsPage(String page) => setState(() {
+        settingsSubpage = page;
+        contactsTab = false;
+        settings = true;
+        routingTab = false;
+        routeListOpen = false;
+      });
+
+  void _openReleaseDetails() => _openSettingsPage('release');
 
   Widget _topButton(IconData icon, VoidCallback onTap, {Key? key}) => IconButton(
       key: key,
@@ -6180,21 +6354,27 @@ foreach ($route in $routes) {
         '${date.year.toString().padLeft(4, '0')}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
     final now = DateTime.now();
     final today = trafficStats.days[keyFor(now)] ?? const DailyTraffic();
-    final days = List.generate(
-      7,
-      (index) => DateTime(now.year, now.month, now.day)
-          .subtract(Duration(days: 6 - index)),
-    );
-    final rows = [
-      for (final date in days)
-        (date, trafficStats.days[keyFor(date)] ?? const DailyTraffic()),
-    ];
+    final bucketDays = trafficRangeDays > 7 ? 7 : 1;
+    final rows = <(DateTime, DailyTraffic)>[];
+    for (var offset = 0; offset < trafficRangeDays; offset += bucketDays) {
+      final start = DateTime(now.year, now.month, now.day)
+          .subtract(Duration(days: trafficRangeDays - 1 - offset));
+      var bucket = const DailyTraffic();
+      for (var day = 0;
+          day < bucketDays && offset + day < trafficRangeDays;
+          day++) {
+        final date = start.add(Duration(days: day));
+        final value = trafficStats.days[keyFor(date)] ?? const DailyTraffic();
+        bucket = bucket.add(received: value.received, sent: value.sent);
+      }
+      rows.add((start, bucket));
+    }
     final maxUsage = rows
         .map((row) => row.$2.received + row.$2.sent)
         .fold<int>(0, (maximum, value) => math.max(maximum, value));
-    final total = trafficStats.days.values.fold<DailyTraffic>(
+    final total = rows.fold<DailyTraffic>(
       const DailyTraffic(),
-      (sum, day) => sum.add(received: day.received, sent: day.sent),
+      (sum, row) => sum.add(received: row.$2.received, sent: row.$2.sent),
     );
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       _section(_text('СТАТИСТИКА ТРАФИКА', 'TRAFFIC STATISTICS')),
@@ -6225,12 +6405,34 @@ foreach ($route in $routes) {
             ),
           ]),
           const SizedBox(height: 14),
-          Text(_text('ПО ДНЯМ · ПОСЛЕДНЯЯ НЕДЕЛЯ', 'DAILY · LAST 7 DAYS'),
-              style: TextStyle(
-                  color: _muted,
-                  fontSize: 9,
-                  letterSpacing: 1.1,
-                  fontWeight: FontWeight.w700)),
+          Row(children: [
+            Expanded(
+              child: Text(
+                  trafficRangeDays > 7
+                      ? _text('ИСТОРИЯ · ПО НЕДЕЛЯМ', 'HISTORY · WEEKLY')
+                      : _text('ИСТОРИЯ · ПО ДНЯМ', 'HISTORY · DAILY'),
+                  style: TextStyle(
+                      color: _muted,
+                      fontSize: 9,
+                      letterSpacing: 1.1,
+                      fontWeight: FontWeight.w700)),
+            ),
+            for (final range in const [7, 30, 90])
+              Padding(
+                padding: const EdgeInsets.only(left: 4),
+                child: ChoiceChip(
+                  label: Text('$range${_text(' д', ' d')}'),
+                  selected: trafficRangeDays == range,
+                  onSelected: (_) => setState(() => trafficRangeDays = range),
+                  visualDensity: VisualDensity.compact,
+                  labelStyle: TextStyle(
+                      fontSize: 9,
+                      color: trafficRangeDays == range ? _foreground : _muted),
+                  padding: EdgeInsets.zero,
+                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+              ),
+          ]),
           const SizedBox(height: 8),
           for (final row in rows)
             Padding(
@@ -6280,8 +6482,8 @@ foreach ($route in $routes) {
           Row(children: [
             Expanded(
               child: Text(
-                _text('Сохранено за последние 90 дней',
-                    'Stored for the last 90 days'),
+                _text('Всего за $trafficRangeDays дней',
+                    'Total for $trafficRangeDays days'),
                 style: TextStyle(color: _muted, fontSize: 10),
               ),
             ),
@@ -6295,6 +6497,29 @@ foreach ($route in $routes) {
               ),
             ),
           ]),
+          const SizedBox(height: 12),
+          Row(children: [
+            Expanded(
+              child: _trafficTotal(
+                _text('Скорость сейчас ↓', 'Current download ↓'),
+                formatTrafficRate(trafficStats.receivedPerSecond),
+                Icons.south_rounded,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: _trafficTotal(
+                _text('Скорость сейчас ↑', 'Current upload ↑'),
+                formatTrafficRate(trafficStats.sentPerSecond),
+                Icons.north_rounded,
+              ),
+            ),
+          ]),
+          const SizedBox(height: 8),
+          Text(
+            '${_text('Пик за запуск', 'Peak since app launch')}: ↓ ${formatTrafficRate(trafficStats.peakReceivedPerSecond)} · ↑ ${formatTrafficRate(trafficStats.peakSentPerSecond)}',
+            style: TextStyle(color: _muted, fontSize: 10),
+          ),
           if (!trafficStats.available && total.received + total.sent == 0) ...[
             const SizedBox(height: 7),
             Text(
@@ -6337,224 +6562,543 @@ foreach ($route in $routes) {
       );
 
   Widget _settings() => ListView(
-          controller: settingsScroll,
-          key: PageStorageKey('settings'),
-          padding: EdgeInsets.only(bottom: 24),
-          children: [
-            SizedBox(height: 12),
-            Text(_localized('Настройки'),
-                style: TextStyle(
-                    fontSize: 25,
-                    fontWeight: FontWeight.w700,
-                    letterSpacing: -.7)),
-            SizedBox(height: 5),
-            Text(_localized('Управление локальным прокси и ядром'),
-                style: TextStyle(color: _muted, fontSize: 13)),
-            SizedBox(height: 24),
-            Container(
-              height: 48,
-              padding: const EdgeInsets.all(4),
-              decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(.065),
-                  borderRadius: BorderRadius.circular(17),
-                  border: Border.all(color: Colors.white.withOpacity(.09))),
-              child: Stack(
-                children: [
-                  AnimatedAlign(
-                    alignment:
-                        advanced ? Alignment.centerRight : Alignment.centerLeft,
-                    duration: const Duration(milliseconds: 300),
-                    curve: Curves.easeOutCubic,
-                    child: FractionallySizedBox(
-                      widthFactor: .5,
-                      heightFactor: 1,
-                      child: AnimatedContainer(
-                        duration: const Duration(milliseconds: 240),
-                        curve: Curves.easeOutCubic,
-                        decoration: BoxDecoration(
-                          color: _accent.withOpacity(.19),
-                          borderRadius: BorderRadius.circular(13),
-                          border: Border.all(
-                              color: _accent.withOpacity(.25), width: .8),
-                          boxShadow: [
-                            BoxShadow(
-                                color: _accent.withOpacity(.10),
-                                blurRadius: 12,
-                                offset: const Offset(0, 2)),
-                          ],
-                        ),
+        controller: settingsScroll,
+        key: const PageStorageKey('settings'),
+        padding: const EdgeInsets.only(bottom: 24),
+        children: [
+          const SizedBox(height: 8),
+          AnimatedSwitcher(
+            duration: const Duration(milliseconds: 280),
+            reverseDuration: const Duration(milliseconds: 210),
+            switchInCurve: Curves.easeOutCubic,
+            switchOutCurve: Curves.easeInCubic,
+            transitionBuilder: (child, animation) => FadeTransition(
+              opacity: CurvedAnimation(
+                  parent: animation, curve: Curves.easeInOutCubic),
+              child: SlideTransition(
+                position: Tween<Offset>(
+                        begin: const Offset(0, .018), end: Offset.zero)
+                    .animate(CurvedAnimation(
+                        parent: animation, curve: Curves.easeOutCubic)),
+                child: child,
+              ),
+            ),
+            child: KeyedSubtree(
+              key: ValueKey(settingsSubpage ?? 'settings-home'),
+              child: settingsSubpage == null
+                  ? _settingsHomeContent()
+                  : _settingsSubpageContent(),
+            ),
+          ),
+        ],
+      );
+
+  Widget _settingsHomeContent() => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(height: 12),
+          Text(_localized('Настройки'),
+              style: TextStyle(
+                  fontSize: 25,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: -.7)),
+          SizedBox(height: 5),
+          Text(_localized('Управление локальным прокси и ядром'),
+              style: TextStyle(color: _muted, fontSize: 13)),
+          SizedBox(height: 24),
+          Container(
+            height: 48,
+            padding: const EdgeInsets.all(4),
+            decoration: BoxDecoration(
+                color: Colors.white.withOpacity(.065),
+                borderRadius: BorderRadius.circular(17),
+                border: Border.all(color: Colors.white.withOpacity(.09))),
+            child: Stack(
+              children: [
+                AnimatedAlign(
+                  alignment:
+                      advanced ? Alignment.centerRight : Alignment.centerLeft,
+                  duration: const Duration(milliseconds: 300),
+                  curve: Curves.easeOutCubic,
+                  child: FractionallySizedBox(
+                    widthFactor: .5,
+                    heightFactor: 1,
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 240),
+                      curve: Curves.easeOutCubic,
+                      decoration: BoxDecoration(
+                        color: _accent.withOpacity(.19),
+                        borderRadius: BorderRadius.circular(13),
+                        border: Border.all(
+                            color: _accent.withOpacity(.25), width: .8),
+                        boxShadow: [
+                          BoxShadow(
+                              color: _accent.withOpacity(.10),
+                              blurRadius: 12,
+                              offset: const Offset(0, 2)),
+                        ],
                       ),
                     ),
                   ),
-                  Row(children: [
-                    _segment(_localized('Основные'), !advanced,
-                        () => setState(() => advanced = false)),
-                    _segment(_localized('Для профи'), advanced,
-                        () => setState(() => advanced = true)),
-                  ]),
-                ],
-              ),
-            ),
-            _animatedReconnectBanner(
-                visible: pendingReconnect,
-                child: Padding(
-                    padding: const EdgeInsets.only(top: 16),
-                    child: Container(
-                        padding: EdgeInsets.all(14),
-                        decoration: BoxDecoration(
-                            color: _accent.withOpacity(.13),
-                            borderRadius: BorderRadius.circular(17),
-                            border:
-                                Border.all(color: _accent.withOpacity(.35))),
-                        child: Row(children: [
-                          Icon(Icons.info_outline_rounded,
-                              color: _accent, size: 19),
-                          SizedBox(width: 10),
-                          Expanded(
-                              child: Text(
-                                  'Изменения вступят в силу после переподключения',
-                                  style: TextStyle(fontSize: 12))),
-                          TextButton(
-                              onPressed: _applyPendingReconnect,
-                              child: Text(_localized('Применить'))),
-                        ])))),
-            SizedBox(height: 22),
-            AnimatedSize(
-                duration: const Duration(milliseconds: 290),
-                curve: Curves.easeInOutCubic,
-                alignment: Alignment.topCenter,
-                child: AnimatedSwitcher(
-                    duration: const Duration(milliseconds: 240),
-                    reverseDuration: const Duration(milliseconds: 190),
-                    transitionBuilder: (child, animation) => FadeTransition(
-                          opacity: CurvedAnimation(
-                            parent: animation,
-                            curve: Curves.easeInOutCubic,
-                            reverseCurve: Curves.easeInOutCubic,
-                          ),
-                          child: child,
-                        ),
-                    child: KeyedSubtree(
-                        key: ValueKey(advanced),
-                        child: advanced
-                            ? _advancedSettings()
-                            : _basicSettings()))),
-            _trafficStatsPanel(),
-            SizedBox(height: 18),
-            _section('ЖУРНАЛ'),
-            _row(
-                Icons.history_rounded,
-                _text('Хранить подключения', 'Retain connection sessions'),
-                _text('Последние $logRetainedConnections',
-                    'Last $logRetainedConnections'),
-                _menu(
-                    '$logRetainedConnections',
-                    const {
-                      '5': '5 подключений',
-                      '10': '10 подключений',
-                      '25': '25 подключений',
-                      '50': '50 подключений',
-                      '100': '100 подключений',
-                    },
-                    (value) => _setLogRetainedConnections(int.parse(value)))),
-            _row(
-                Icons.storage_rounded,
-                _text('Максимальный размер', 'Maximum journal size'),
-                _text('$logMaxSizeMb МБ', '$logMaxSizeMb MB'),
-                _menu(
-                    '$logMaxSizeMb',
-                    const {
-                      '1': '1 МБ',
-                      '2': '2 МБ',
-                      '5': '5 МБ',
-                      '10': '10 МБ',
-                      '25': '25 МБ',
-                    },
-                    (value) => _setLogMaxSize(int.parse(value)))),
-            _row(
-                Icons.article_outlined,
-                _text('Подробные логи ядра', 'Detailed core logs'),
-                logCoreOutput
-                    ? _text('В файл записываются сообщения Xray и sing-box',
-                        'Record Xray and sing-box output to the file')
-                    : _text('В файле останутся события приложения',
-                        'Keep app events only'),
-                _compactSwitch(
-                    value: logCoreOutput, onChanged: _setLogCoreOutput)),
-            _row(
-                Icons.delete_sweep_outlined,
-                _text('Очистить журнал', 'Clear journal'),
-                _text('Удалить записи из файла журнала',
-                    'Delete all records from the journal file'),
-                IconButton(
-                    tooltip: _text('Очистить журнал', 'Clear journal'),
-                    onPressed: _clearJournal,
-                    icon: const Icon(Icons.delete_outline_rounded))),
-            const SizedBox(height: 12),
-            _section('GHOSTBOX'),
-            _row(
-                Icons.system_update_alt_rounded,
-                _text('Автообновление приложения', 'App auto-update'),
-                autoUpdateApp
-                    ? _text('Скачать и установить при запуске',
-                        'Download and install at launch')
-                    : _text('Только сообщать о новой версии',
-                        'Notify when a new version is available'),
-                _compactSwitch(
-                    value: autoUpdateApp, onChanged: _setAutoUpdateApp)),
-            _row(
-                Icons.cloud_download_outlined,
-                _text('Версия приложения', 'App version'),
-                appUpdateStatus ??
-                    _text(
-                        'Установлена ${GitHubUpdater.displayVersion(GitHubUpdater.currentVersion)} · ветка ${GitHubUpdater.updateBranch}',
-                        'Installed ${GitHubUpdater.displayVersion(GitHubUpdater.currentVersion)} · branch ${GitHubUpdater.updateBranch}'),
-                IconButton(
-                    tooltip: _text('Проверить обновления', 'Check for updates'),
-                    onPressed: checkingAppUpdate || installingAppUpdate
-                        ? null
-                        : () => _checkAppUpdate(),
-                    icon: checkingAppUpdate || installingAppUpdate
-                        ? const SizedBox(
-                            width: 18,
-                            height: 18,
-                            child: CircularProgressIndicator(strokeWidth: 2))
-                        : const Icon(Icons.refresh_rounded))),
-            _row(
-                Icons.system_update_alt_rounded,
-                _text('Принудительная установка', 'Force update'),
-                _text('Повторно скачать и установить последнюю версию',
-                    'Download and reinstall the latest release'),
-                IconButton(
-                    tooltip: _text('Принудительная установка', 'Force update'),
-                    onPressed: checkingAppUpdate || installingAppUpdate
-                        ? null
-                        : () => _checkAppUpdate(forceLatest: true),
-                    icon: const Icon(Icons.download_for_offline_rounded))),
-            InkWell(
-                borderRadius: BorderRadius.circular(16),
-                onTap: _showAbout,
-                child: _row(
-                    Icons.info_outline_rounded,
-                    'О приложении',
-                    'Сборка, ядра и устройство',
-                    const Icon(Icons.chevron_right_rounded))),
-            const SizedBox(height: 22),
-            SizedBox(
-              width: double.infinity,
-              child: OutlinedButton.icon(
-                onPressed: _deleteAllServers,
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: const Color(0xFFFF8B91),
-                  side: BorderSide(
-                      color: const Color(0xFFFF8B91).withValues(alpha: .42)),
-                  padding: const EdgeInsets.symmetric(vertical: 14),
                 ),
-                icon: const Icon(Icons.delete_sweep_outlined, size: 19),
-                label: Text(_localized('Очистить серверы и подписки')),
-              ),
+                Row(children: [
+                  _segment(_localized('Основные'), !advanced,
+                      () => setState(() => advanced = false)),
+                  _segment(_localized('Для профи'), advanced,
+                      () => setState(() => advanced = true)),
+                ]),
+              ],
             ),
-          ]);
+          ),
+          _animatedReconnectBanner(
+              visible: pendingReconnect,
+              child: Padding(
+                  padding: const EdgeInsets.only(top: 16),
+                  child: Container(
+                      padding: EdgeInsets.all(14),
+                      decoration: BoxDecoration(
+                          color: _accent.withOpacity(.13),
+                          borderRadius: BorderRadius.circular(17),
+                          border: Border.all(color: _accent.withOpacity(.35))),
+                      child: Row(children: [
+                        Icon(Icons.info_outline_rounded,
+                            color: _accent, size: 19),
+                        SizedBox(width: 10),
+                        Expanded(
+                            child: Text(
+                                'Изменения вступят в силу после переподключения',
+                                style: TextStyle(fontSize: 12))),
+                        TextButton(
+                            onPressed: _applyPendingReconnect,
+                            child: Text(_localized('Применить'))),
+                      ])))),
+          SizedBox(height: 22),
+          AnimatedSize(
+              duration: const Duration(milliseconds: 290),
+              curve: Curves.easeInOutCubic,
+              alignment: Alignment.topCenter,
+              child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 240),
+                  reverseDuration: const Duration(milliseconds: 190),
+                  transitionBuilder: (child, animation) => FadeTransition(
+                        opacity: CurvedAnimation(
+                          parent: animation,
+                          curve: Curves.easeInOutCubic,
+                          reverseCurve: Curves.easeInOutCubic,
+                        ),
+                        child: child,
+                      ),
+                  child: KeyedSubtree(
+                      key: ValueKey(advanced),
+                      child:
+                          advanced ? _advancedSettings() : _basicSettings()))),
+          _trafficStatsPanel(),
+          SizedBox(height: 18),
+          _section('ЖУРНАЛ'),
+          _row(
+              Icons.history_rounded,
+              _text('Хранить подключения', 'Retain connection sessions'),
+              _text('Последние $logRetainedConnections',
+                  'Last $logRetainedConnections'),
+              _menu(
+                  '$logRetainedConnections',
+                  const {
+                    '5': '5 подключений',
+                    '10': '10 подключений',
+                    '25': '25 подключений',
+                    '50': '50 подключений',
+                    '100': '100 подключений',
+                  },
+                  (value) => _setLogRetainedConnections(int.parse(value)))),
+          _row(
+              Icons.storage_rounded,
+              _text('Максимальный размер', 'Maximum journal size'),
+              _text('$logMaxSizeMb МБ', '$logMaxSizeMb MB'),
+              _menu(
+                  '$logMaxSizeMb',
+                  const {
+                    '1': '1 МБ',
+                    '2': '2 МБ',
+                    '5': '5 МБ',
+                    '10': '10 МБ',
+                    '25': '25 МБ',
+                  },
+                  (value) => _setLogMaxSize(int.parse(value)))),
+          _row(
+              Icons.article_outlined,
+              _text('Подробные логи ядра', 'Detailed core logs'),
+              logCoreOutput
+                  ? _text('В файл записываются сообщения Xray и sing-box',
+                      'Record Xray and sing-box output to the file')
+                  : _text('В файле останутся события приложения',
+                      'Keep app events only'),
+              _compactSwitch(
+                  value: logCoreOutput, onChanged: _setLogCoreOutput)),
+          _row(
+              Icons.delete_sweep_outlined,
+              _text('Очистить журнал', 'Clear journal'),
+              _text('Удалить записи из файла журнала',
+                  'Delete all records from the journal file'),
+              IconButton(
+                  tooltip: _text('Очистить журнал', 'Clear journal'),
+                  onPressed: _clearJournal,
+                  icon: const Icon(Icons.delete_outline_rounded))),
+          const SizedBox(height: 12),
+          _section('GHOSTBOX'),
+          _row(
+              Icons.system_update_alt_rounded,
+              _text('Автообновление приложения', 'App auto-update'),
+              autoUpdateApp
+                  ? _text('Скачать и установить при запуске',
+                      'Download and install at launch')
+                  : _text('Только сообщать о новой версии',
+                      'Notify when a new version is available'),
+              _compactSwitch(
+                  value: autoUpdateApp, onChanged: _setAutoUpdateApp)),
+          _row(
+              Icons.cloud_download_outlined,
+              _text('Версия приложения', 'App version'),
+              appUpdateStatus ??
+                  _text(
+                      'Установлена ${GitHubUpdater.displayVersion(GitHubUpdater.currentVersion)} · ветка ${GitHubUpdater.updateBranch}',
+                      'Installed ${GitHubUpdater.displayVersion(GitHubUpdater.currentVersion)} · branch ${GitHubUpdater.updateBranch}'),
+              IconButton(
+                  tooltip: _text('Проверить обновления', 'Check for updates'),
+                  onPressed: checkingAppUpdate || installingAppUpdate
+                      ? null
+                      : () => _checkAppUpdate(),
+                  icon: checkingAppUpdate || installingAppUpdate
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2))
+                      : const Icon(Icons.refresh_rounded))),
+          _row(
+              Icons.system_update_alt_rounded,
+              _text('Принудительная установка', 'Force update'),
+              _text('Повторно скачать и установить последнюю версию',
+                  'Download and reinstall the latest release'),
+              IconButton(
+                  tooltip: _text('Принудительная установка', 'Force update'),
+                  onPressed: checkingAppUpdate || installingAppUpdate
+                      ? null
+                      : () => _checkAppUpdate(forceLatest: true),
+                  icon: const Icon(Icons.download_for_offline_rounded))),
+          InkWell(
+              borderRadius: BorderRadius.circular(16),
+              onTap: () => _openSettingsPage('release'),
+              child: _row(
+                  Icons.new_releases_outlined,
+                  'О релизе',
+                  _text('Примечания, канал и подробности версии',
+                      'Release notes, channel and version details'),
+                  const Icon(Icons.chevron_right_rounded))),
+          InkWell(
+              borderRadius: BorderRadius.circular(16),
+              onTap: () => _openSettingsPage('contacts'),
+              child: _row(
+                  Icons.alternate_email_rounded,
+                  'Контакты',
+                  _text('Репозиторий, релизы и сайты',
+                      'Repository, releases and websites'),
+                  const Icon(Icons.chevron_right_rounded))),
+          InkWell(
+              borderRadius: BorderRadius.circular(16),
+              onTap: _showAbout,
+              child: _row(
+                  Icons.info_outline_rounded,
+                  'О приложении',
+                  'Сборка, ядра и устройство',
+                  const Icon(Icons.chevron_right_rounded))),
+          const SizedBox(height: 22),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: _deleteAllServers,
+              style: OutlinedButton.styleFrom(
+                foregroundColor: const Color(0xFFFF8B91),
+                side: BorderSide(
+                    color: const Color(0xFFFF8B91).withValues(alpha: .42)),
+                padding: const EdgeInsets.symmetric(vertical: 14),
+              ),
+              icon: const Icon(Icons.delete_sweep_outlined, size: 19),
+              label: Text(_localized('Очистить серверы и подписки')),
+            ),
+          ),
+        ],
+      );
+
+  Widget _settingsSubpageContent() => switch (settingsSubpage) {
+        'contacts' => _contactsPage(),
+        'release' => _releaseDetailsPage(),
+        _ => _settingsHomeContent(),
+      };
+
+  Widget _contactsPage() => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _settingsPageIntro(
+            Icons.alternate_email_rounded,
+            _text('Связаться и открыть ссылки', 'Links and contacts'),
+            _text('Проект, релизы и страницы разработчика',
+                'Project, releases and developer pages'),
+          ),
+          const SizedBox(height: 18),
+          _contactLink(
+            Icons.code_rounded,
+            'GitHub · GhostBox',
+            'github.com/Krakva1337/GhostBox',
+            'https://github.com/Krakva1337/GhostBox',
+          ),
+          _contactLink(
+            Icons.new_releases_outlined,
+            _text('Релизы GitHub', 'GitHub releases'),
+            'github.com/Krakva1337/GhostBox/releases',
+            GitHubUpdater.releasesPage,
+          ),
+          _contactLink(
+            Icons.language_rounded,
+            _text('Сайт GhostBox', 'GhostBox website'),
+            'ghostbox.krakva1337.ru',
+            'https://ghostbox.krakva1337.ru',
+          ),
+          _contactLink(
+            Icons.person_outline_rounded,
+            _text('Сайт разработчика', 'Developer website'),
+            'krakva1337.ru',
+            'https://krakva1337.ru',
+          ),
+          const SizedBox(height: 14),
+          _row(
+              Icons.info_outline_rounded,
+              'О приложении',
+              _text('Сведения о сборке, ядрах и устройстве',
+                  'Build, core and device information'),
+              IconButton(
+                  tooltip: _localized('Открыть'),
+                  onPressed: _showAbout,
+                  icon: const Icon(Icons.chevron_right_rounded))),
+        ],
+      );
+
+  Widget _releaseDetailsPage() {
+    final release = availableAppRelease;
+    final installed =
+        GitHubUpdater.displayVersion(GitHubUpdater.currentVersion);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _settingsPageIntro(
+          Icons.new_releases_rounded,
+          _text('Информация о релизе', 'Release information'),
+          _text('Версии, канал обновлений и примечания',
+              'Versions, update channel and release notes'),
+        ),
+        const SizedBox(height: 18),
+        _releaseInfoCard(
+          _text('УСТАНОВЛЕННАЯ ВЕРСИЯ', 'INSTALLED VERSION'),
+          installed,
+          _text('Ветка обновлений: ${GitHubUpdater.updateBranch}',
+              'Update branch: ${GitHubUpdater.updateBranch}'),
+          Icons.verified_rounded,
+        ),
+        const SizedBox(height: 10),
+        _releaseInfoCard(
+          _text('ПОСЛЕДНИЙ РЕЛИЗ', 'LATEST RELEASE'),
+          release == null
+              ? _text('Пока не проверено', 'Not checked yet')
+              : GitHubUpdater.displayVersion(release.version),
+          appUpdateStatus ??
+              _text('Проверь GitHub, чтобы загрузить сведения о релизе.',
+                  'Check GitHub to load release details.'),
+          Icons.cloud_sync_rounded,
+        ),
+        const SizedBox(height: 14),
+        Wrap(
+          spacing: 10,
+          runSpacing: 10,
+          children: [
+            FilledButton.icon(
+              onPressed: checkingAppUpdate || installingAppUpdate
+                  ? null
+                  : () => _checkAppUpdate(),
+              icon: checkingAppUpdate
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2))
+                  : const Icon(Icons.refresh_rounded, size: 18),
+              label: Text(_text('Проверить обновления', 'Check for updates')),
+            ),
+            if (release != null)
+              OutlinedButton.icon(
+                onPressed: installingAppUpdate
+                    ? null
+                    : release.version == GitHubUpdater.currentVersion
+                        ? _openReleasePage
+                        : _installAppUpdate,
+                icon: Icon(release.version == GitHubUpdater.currentVersion
+                    ? Icons.open_in_new_rounded
+                    : Icons.download_rounded),
+                label: Text(release.version == GitHubUpdater.currentVersion
+                    ? _text('Открыть релиз', 'View release')
+                    : _text('Установить обновление', 'Install update')),
+              ),
+            OutlinedButton.icon(
+              onPressed: _openReleasePage,
+              icon: const Icon(Icons.open_in_new_rounded, size: 18),
+              label: Text(_text('Все релизы', 'All releases')),
+            ),
+          ],
+        ),
+        if (release != null && release.notes.trim().isNotEmpty) ...[
+          const SizedBox(height: 22),
+          _section(_text('ПРИМЕЧАНИЯ К РЕЛИЗУ', 'RELEASE NOTES')),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: _surface,
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(color: _line.withValues(alpha: .45)),
+            ),
+            child: SelectableText(
+              release.notes.trim(),
+              style: TextStyle(color: _foreground, height: 1.5, fontSize: 12),
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _settingsPageIntro(IconData icon, String title, String subtitle) =>
+      Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(18),
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            colors: [_accent.withValues(alpha: .20), _surface],
+          ),
+          borderRadius: BorderRadius.circular(22),
+          border: Border.all(color: _accent.withValues(alpha: .22)),
+        ),
+        child: Row(children: [
+          Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              color: _accent.withValues(alpha: .16),
+              borderRadius: BorderRadius.circular(15),
+            ),
+            child: Icon(icon, color: _accent),
+          ),
+          const SizedBox(width: 13),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title,
+                    style: const TextStyle(
+                        fontSize: 17, fontWeight: FontWeight.w700)),
+                const SizedBox(height: 4),
+                Text(subtitle, style: TextStyle(color: _muted, fontSize: 11)),
+              ],
+            ),
+          ),
+        ]),
+      );
+
+  Widget _releaseInfoCard(
+          String label, String value, String subtitle, IconData icon) =>
+      Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: _surface,
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: _line.withValues(alpha: .45)),
+        ),
+        child: Row(children: [
+          Icon(icon, color: _accent, size: 21),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(label,
+                    style: TextStyle(
+                        color: _muted,
+                        fontSize: 9,
+                        letterSpacing: 1,
+                        fontWeight: FontWeight.w700)),
+                const SizedBox(height: 5),
+                Text(value,
+                    style: const TextStyle(
+                        fontSize: 17, fontWeight: FontWeight.w700)),
+                const SizedBox(height: 3),
+                Text(subtitle, style: TextStyle(color: _muted, fontSize: 11)),
+              ],
+            ),
+          ),
+        ]),
+      );
+
+  Widget _contactLink(
+          IconData icon, String title, String address, String url) =>
+      Padding(
+        padding: const EdgeInsets.only(bottom: 9),
+        child: Material(
+          color: _surface,
+          borderRadius: BorderRadius.circular(17),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(17),
+            onTap: () => _openProviderUrl(url),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 14),
+              child: Row(children: [
+                Container(
+                  width: 38,
+                  height: 38,
+                  decoration: BoxDecoration(
+                    color: _accent.withValues(alpha: .13),
+                    borderRadius: BorderRadius.circular(13),
+                  ),
+                  child: Icon(icon, size: 19, color: _accent),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(title,
+                          style: const TextStyle(
+                              fontSize: 13, fontWeight: FontWeight.w600)),
+                      const SizedBox(height: 3),
+                      Text(address,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(color: _muted, fontSize: 11)),
+                    ],
+                  ),
+                ),
+                IconButton(
+                  tooltip: _localized('Скопировать ссылку'),
+                  visualDensity: VisualDensity.compact,
+                  onPressed: () async {
+                    await Clipboard.setData(ClipboardData(text: url));
+                    if (mounted) {
+                      _message(_text('Ссылка скопирована', 'Link copied'));
+                    }
+                  },
+                  icon: Icon(Icons.copy_rounded, color: _muted, size: 17),
+                ),
+                Icon(Icons.open_in_new_rounded, color: _muted, size: 17),
+              ]),
+            ),
+          ),
+        ),
+      );
 
   Future<void> _setAutoUpdateApp(bool enabled) async {
     setState(() => autoUpdateApp = enabled);
@@ -6770,12 +7314,6 @@ foreach ($route in $routes) {
   }
 
   Future<void> _showAbout() async {
-    final model = await DeviceIdentity.deviceModel;
-    final installId = await DeviceIdentity.installationId;
-    final xray = await _coreVersion('xray');
-    final singBox = await _coreVersion('sing-box');
-    if (!mounted) return;
-
     final appVersion =
         GitHubUpdater.displayVersion(GitHubUpdater.currentVersion);
     const buildNumber = '1';
@@ -6787,127 +7325,133 @@ foreach ($route in $routes) {
     final dartVersion =
         RegExp(r'^\d+\.\d+\.\d+').firstMatch(Platform.version)?.group(0) ??
             _text('Неизвестно', 'Unknown');
-    final details = <(String, String)>[
-      ('GhostBox', appVersion),
-      ('Номер сборки', buildNumber),
-      ('Тип сборки', buildMode),
-      (
-        'Платформа сборки',
-        '${Platform.operatingSystem} · ${DeviceIdentity.architecture}'
-      ),
-      ('Dart', dartVersion),
-      ('Xray-core', xray),
-      ('sing-box', singBox),
-      ('Устройство', model),
-      ('Операционная система', Platform.operatingSystem),
-      ('Версия ОС', Platform.operatingSystemVersion),
-      ('Архитектура', DeviceIdentity.architecture),
-      ('ID устройства', installId),
-    ];
-    final report = details
-        .map((item) => '${_localized(item.$1)}: ${_messageText(item.$2)}')
-        .join('\n');
+    final detailsFuture = () async {
+      final model = await DeviceIdentity.deviceModel;
+      final installId = await DeviceIdentity.installationId;
+      final xray = await _coreVersion('xray');
+      final singBox = await _coreVersion('sing-box');
+      return <(String, String)>[
+        ('GhostBox', appVersion),
+        ('Номер сборки', buildNumber),
+        ('Тип сборки', buildMode),
+        (
+          'Платформа сборки',
+          '${Platform.operatingSystem} · ${DeviceIdentity.architecture}'
+        ),
+        ('Dart', dartVersion),
+        ('Xray-core', xray),
+        ('sing-box', singBox),
+        ('Устройство', model),
+        ('Операционная система', Platform.operatingSystem),
+        ('Версия ОС', Platform.operatingSystemVersion),
+        ('Архитектура', DeviceIdentity.architecture),
+        ('ID устройства', installId),
+      ];
+    }();
 
     await showDialog<void>(
       context: context,
-      builder: (dialogContext) => Dialog(
-        insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 28),
-        backgroundColor: _surface,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(26)),
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 520, maxHeight: 680),
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(22, 20, 22, 14),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(children: [
-                  Container(
-                    width: 42,
-                    height: 42,
-                    decoration: BoxDecoration(
-                      color: _accent.withOpacity(.14),
-                      borderRadius: BorderRadius.circular(14),
+      builder: (dialogContext) => FutureBuilder<List<(String, String)>>(
+        future: detailsFuture,
+        builder: (dialogContext, snapshot) {
+          if (snapshot.connectionState != ConnectionState.done) {
+            return Dialog(
+              backgroundColor: _surface,
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(26)),
+              child: const SizedBox(
+                height: 190,
+                child: Center(child: CircularProgressIndicator()),
+              ),
+            );
+          }
+          final details = snapshot.data ?? const <(String, String)>[];
+          final report = details
+              .map((item) => '${_localized(item.$1)}: ${_messageText(item.$2)}')
+              .join('\n');
+          return Dialog(
+            insetPadding:
+                const EdgeInsets.symmetric(horizontal: 20, vertical: 28),
+            backgroundColor: _surface,
+            shape:
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(26)),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 520, maxHeight: 680),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(22, 20, 22, 14),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(children: [
+                      Container(
+                        width: 42,
+                        height: 42,
+                        decoration: BoxDecoration(
+                          color: _accent.withOpacity(.14),
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                        child: Icon(Icons.shield_rounded, color: _accent),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(_localized('О GhostBox'),
+                                style: TextStyle(
+                                    fontSize: 19, fontWeight: FontWeight.w700)),
+                            SizedBox(height: 2),
+                            Text(_localized('Информация о сборке и устройстве'),
+                                style: TextStyle(fontSize: 11)),
+                          ],
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: _localized('Закрыть'),
+                        onPressed: () => Navigator.pop(dialogContext),
+                        icon: const Icon(Icons.close_rounded),
+                      ),
+                    ]),
+                    const SizedBox(height: 14),
+                    Flexible(
+                      child: ListView(
+                        shrinkWrap: true,
+                        children: [
+                          _section('СБОРКА'),
+                          for (final item in details.take(5))
+                            _aboutDetail(item.$1, item.$2),
+                          const SizedBox(height: 10),
+                          _section('ЯДРА'),
+                          for (final item in details.skip(5).take(2))
+                            _aboutDetail(item.$1, item.$2),
+                          const SizedBox(height: 10),
+                          _section('УСТРОЙСТВО'),
+                          for (final item in details.skip(7))
+                            _aboutDetail(item.$1, item.$2),
+                        ],
+                      ),
                     ),
-                    child: Icon(Icons.shield_rounded, color: _accent),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(_localized('О GhostBox'),
-                            style: TextStyle(
-                                fontSize: 19, fontWeight: FontWeight.w700)),
-                        SizedBox(height: 2),
-                        Text(_localized('Информация о сборке и устройстве'),
-                            style: TextStyle(fontSize: 11)),
-                      ],
+                    const SizedBox(height: 10),
+                    SizedBox(
+                      width: double.infinity,
+                      child: FilledButton.icon(
+                        onPressed: () async {
+                          await Clipboard.setData(ClipboardData(text: report));
+                          if (dialogContext.mounted)
+                            Navigator.pop(dialogContext);
+                          _message('Сведения скопированы');
+                        },
+                        icon: const Icon(Icons.copy_rounded, size: 17),
+                        label: Text(_localized('Скопировать сведения')),
+                      ),
                     ),
-                  ),
-                  IconButton(
-                    tooltip: _localized('Закрыть'),
-                    onPressed: () => Navigator.pop(dialogContext),
-                    icon: const Icon(Icons.close_rounded),
-                  ),
-                ]),
-                const SizedBox(height: 14),
-                Flexible(
-                  child: ListView(
-                    shrinkWrap: true,
-                    children: [
-                      _section('СБОРКА'),
-                      for (final item in details.take(5))
-                        _aboutDetail(item.$1, item.$2),
-                      const SizedBox(height: 10),
-                      _section('ЯДРА'),
-                      for (final item in details.skip(5).take(2))
-                        _aboutDetail(item.$1, item.$2),
-                      const SizedBox(height: 10),
-                      _section('УСТРОЙСТВО'),
-                      for (final item in details.skip(7))
-                        _aboutDetail(item.$1, item.$2),
-                    ],
-                  ),
+                  ],
                 ),
-                const SizedBox(height: 10),
-                SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton.icon(
-                    onPressed: () => _openProviderUrl(
-                        'https://github.com/Krakva1337/GhostBox'),
-                    icon: const Icon(Icons.code_rounded, size: 16),
-                    label: const Text('GitHub.com/Krakva1337/GhostBox'),
-                  ),
-                ),
-                const SizedBox(height: 6),
-                SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton.icon(
-                    onPressed: () =>
-                        _openProviderUrl('https://ghostbox.krakva1337.ru'),
-                    icon: const Icon(Icons.language_rounded, size: 16),
-                    label: const Text('ghostbox.krakva1337.ru'),
-                  ),
-                ),
-                const SizedBox(height: 6),
-                SizedBox(
-                  width: double.infinity,
-                  child: FilledButton.icon(
-                    onPressed: () async {
-                      await Clipboard.setData(ClipboardData(text: report));
-                      if (dialogContext.mounted) Navigator.pop(dialogContext);
-                      _message('Сведения скопированы');
-                    },
-                    icon: const Icon(Icons.copy_rounded, size: 17),
-                    label: Text(_localized('Скопировать сведения')),
-                  ),
-                ),
-              ],
+              ),
             ),
-          ),
-        ),
+          );
+        },
       ),
     );
   }
@@ -7239,6 +7783,13 @@ foreach ($route in $routes) {
           key: ValueKey('advanced'),
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            _settingsPageIntro(
+              Icons.tune_rounded,
+              _text('Параметры для профи', 'Advanced configuration'),
+              _text('Тонкая настройка ядра и сетевого поведения',
+                  'Fine tune the core and network behavior'),
+            ),
+            const SizedBox(height: 14),
             _section('ЯДРО'),
             Row(children: [
               _choice('sing-box', process?.name == 'sing-box',
@@ -7282,6 +7833,113 @@ foreach ($route in $routes) {
                       'info': 'Подробно'
                     },
                     (v) => _saveCore(coreSettings.copyWith(logLevel: v)))),
+            SizedBox(height: 15),
+            _section('ФРАГМЕНТАЦИЯ TLS'),
+            _row(
+                Icons.call_split_rounded,
+                'Фрагментация TLS ClientHello',
+                coreSettings.tlsFragmentEnabled
+                    ? 'Разбивать TLS handshake на части'
+                    : 'Фрагментация отключена',
+                _compactSwitch(
+                    value: coreSettings.tlsFragmentEnabled,
+                    onChanged: (v) => _saveCore(
+                        coreSettings.copyWith(tlsFragmentEnabled: v)))),
+            if (coreSettings.tlsFragmentEnabled &&
+                coreSettings.core == 'xray') ...[
+              _row(
+                  Icons.tune_rounded,
+                  'Тип фрагментации',
+                  'TLS hello или первые TCP отправки',
+                  _menu(
+                      coreSettings.fragmentPackets,
+                      const {
+                        'tlshello': 'TLS hello',
+                        '1-3': 'Первые 3 отправки',
+                      },
+                      (v) => _saveCore(
+                          coreSettings.copyWith(fragmentPackets: v)))),
+              _row(
+                  Icons.view_week_outlined,
+                  'Размер фрагментов',
+                  'В байтах · Xray',
+                  _menu(
+                      coreSettings.fragmentLength,
+                      const {
+                        '50-100': '50–100',
+                        '100-200': '100–200',
+                        '200-300': '200–300',
+                      },
+                      (v) =>
+                          _saveCore(coreSettings.copyWith(fragmentLength: v)))),
+              _row(
+                  Icons.timer_outlined,
+                  'Интервал между частями',
+                  'В миллисекундах · Xray',
+                  _menu(
+                      coreSettings.fragmentInterval,
+                      const {
+                        '0-0': '0',
+                        '5-10': '5–10',
+                        '10-20': '10–20',
+                        '20-30': '20–30',
+                      },
+                      (v) => _saveCore(
+                          coreSettings.copyWith(fragmentInterval: v)))),
+            ],
+            if (coreSettings.core == 'sing-box') ...[
+              _row(
+                  Icons.data_array_rounded,
+                  'Фрагментация TLS-записей',
+                  'Sing-box · другая стратегия разделения',
+                  _compactSwitch(
+                      value: coreSettings.fragmentRecord,
+                      onChanged: (v) =>
+                          _saveCore(coreSettings.copyWith(fragmentRecord: v)))),
+              if (coreSettings.tlsFragmentEnabled ||
+                  coreSettings.fragmentRecord)
+                _row(
+                    Icons.hourglass_bottom_rounded,
+                    'Резервная задержка',
+                    '${coreSettings.fragmentFallbackDelayMs} мс · sing-box',
+                    _menu(
+                        '${coreSettings.fragmentFallbackDelayMs}',
+                        const {
+                          '200': '200 мс',
+                          '500': '500 мс',
+                          '1000': '1000 мс',
+                        },
+                        (v) => _saveCore(coreSettings.copyWith(
+                            fragmentFallbackDelayMs: int.parse(v))))),
+            ],
+            SizedBox(height: 15),
+            _section('РАСШИРЕННЫЕ ПАРАМЕТРЫ ЯДРА'),
+            _row(
+                Icons.travel_explore_rounded,
+                'Анализ протоколов',
+                'Нужен для доменных правил маршрутизации',
+                _compactSwitch(
+                    value: coreSettings.sniffingEnabled,
+                    onChanged: (v) =>
+                        _saveCore(coreSettings.copyWith(sniffingEnabled: v)))),
+            _row(
+                Icons.bolt_rounded,
+                'TCP Fast Open',
+                'Ускоряет TCP handshake, если поддерживается ОС',
+                _compactSwitch(
+                    value: coreSettings.tcpFastOpen,
+                    onChanged: (v) =>
+                        _saveCore(coreSettings.copyWith(tcpFastOpen: v)))),
+            _row(
+                Icons.data_usage_rounded,
+                'Фрагментация UDP',
+                'Может помочь с крупными UDP-пакетами; зависит от ядра и ОС',
+                _compactSwitch(
+                    value: coreSettings.udpFragment,
+                    onChanged: coreSettings.core == 'sing-box'
+                        ? (v) =>
+                            _saveCore(coreSettings.copyWith(udpFragment: v))
+                        : null)),
             _row(
                 Icons.lan_rounded,
                 'Локальный порт',
@@ -8047,17 +8705,17 @@ foreach ($route in $routes) {
     int? target;
     if (vertical) {
       const inset = 6.0;
-      const rowStride = 88.0;
-      const tabAreaHeight = 3 * 80.0 + 2 * 8.0;
+      const rowStride = 80.0;
+      const tabAreaHeight = 4 * 72.0 + 3 * 8.0;
       final offset = local.dy - inset;
       if (offset < 0 || offset >= tabAreaHeight) return;
-      target = (offset / rowStride).floor().clamp(0, 2);
+      target = (offset / rowStride).floor().clamp(0, 3);
     } else {
       const inset = 6.0;
       final contentWidth = box.size.width - inset * 2;
       final offset = local.dx - inset;
       if (offset < 0 || offset >= contentWidth) return;
-      target = (offset / (contentWidth / 3)).floor().clamp(0, 2);
+      target = (offset / (contentWidth / 4)).floor().clamp(0, 3);
     }
     if (target != _tabIndex) _openTab(target);
   }
@@ -8094,7 +8752,7 @@ foreach ($route in $routes) {
                     offset: const Offset(0, 12))
               ]),
           child: LayoutBuilder(builder: (context, bounds) {
-            final itemWidth = bounds.maxWidth / 3;
+            final itemWidth = bounds.maxWidth / 4;
             return Stack(children: [
               AnimatedPositioned(
                   duration: const Duration(milliseconds: 280),
@@ -8122,6 +8780,8 @@ foreach ($route in $routes) {
                 _navItem(
                     Icons.alt_route_rounded, _text('Маршрут', 'Routing'), 1),
                 _navItem(Icons.tune_rounded, _text('Настройки', 'Settings'), 2),
+                _navItem(Icons.alternate_email_rounded,
+                    _text('Контакты', 'Contacts'), 3),
               ]),
             ]);
           })));
@@ -8141,7 +8801,7 @@ foreach ($route in $routes) {
                     offset: const Offset(0, 8))
               ]),
           child: LayoutBuilder(builder: (context, _) {
-            const itemHeight = 80.0;
+            const itemHeight = 72.0;
             const itemGap = 8.0;
             const selectedHeight = 72.0;
             return Stack(children: [
@@ -8181,6 +8841,11 @@ foreach ($route in $routes) {
                     height: itemHeight,
                     child: _sideNavItem(
                         Icons.tune_rounded, _text('Настройки', 'Settings'), 2)),
+                const SizedBox(height: itemGap),
+                SizedBox(
+                    height: itemHeight,
+                    child: _sideNavItem(Icons.alternate_email_rounded,
+                        _text('Контакты', 'Contacts'), 3)),
                 const Spacer(),
                 Divider(
                     height: 16,

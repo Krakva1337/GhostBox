@@ -74,8 +74,8 @@ build_linux() {
   fi
   cp "$project_dir/packaging/appimage/AppRun" "$appdir/AppRun"
   cp "$project_dir/packaging/appimage/ghostbox.desktop" "$appdir/ghostbox.desktop"
-  cp "$project_dir/assets/ghostbox_logo.svg" "$appdir/ghostbox.svg"
-  cp "$project_dir/assets/ghostbox_logo.png" "$appdir/ghostbox.png"
+  cp "$project_dir/assets/icons/aurora.svg" "$appdir/ghostbox.svg"
+  cp "$project_dir/assets/icons/aurora.png" "$appdir/ghostbox.png"
   install -m 0755 "$project_dir/vendor/bin/xray" "$appdir/vendor/bin/xray"
   install -m 0755 "$project_dir/vendor/bin/sing-box" "$appdir/vendor/bin/sing-box"
   install -m 0644 "$project_dir/vendor/bin/BUILD-INFO.txt" "$appdir/vendor/bin/BUILD-INFO.txt"
@@ -167,9 +167,12 @@ case "$target" in
     ;;
   macos)
     [[ "$(uname -s)" == Darwin ]] || { echo 'macOS app builds require macOS and Xcode.' >&2; exit 1; }
-    for command in flutter go git xcodebuild; do need "$command"; done
+    for command in flutter go git xcodebuild swift; do need "$command"; done
     "$project_dir/tool/build_desktop_cores.sh" macos "$arch"
     cd "$project_dir"
+    swift "$project_dir/tool/generate_macos_app_icon.swift" \
+      "$project_dir/assets/icons/aurora.png" \
+      "$project_dir/macos/Runner/Assets.xcassets/AppIcon.appiconset"
     flutter pub get
     ghostbox_version="$(awk '/^version:/ {split($2,v,"+"); print v[1]}' pubspec.yaml)"
     update_branch="${GHOSTBOX_UPDATE_BRANCH:-main}"

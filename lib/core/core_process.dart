@@ -216,7 +216,11 @@ class CoreProcessBackend implements VpnBackend {
     await logFile.writeAsString('', flush: true);
     _macElevatedLog = logFile;
     _macLogLineCount = 0;
-    final command = 'umask 022; nohup ${_shellQuote(executable)} run -c '
+    // `do shell script` has no controlling terminal. macOS nohup still tries
+    // to detach from one and can fail with ENOTTY before launching the core.
+    // Redirect all standard streams and background the command directly; the
+    // non-interactive shell exits while the privileged core keeps running.
+    final command = 'umask 022; ${_shellQuote(executable)} run -c '
         '${_shellQuote(_runtimeConfig!.path)} > ${_shellQuote(logFile.path)} 2>&1 '
         '< /dev/null & echo ${String.fromCharCode(36)}!';
     final script = 'do shell script ${_appleScriptQuote(command)} '
@@ -676,6 +680,11 @@ class CoreProcessBackend implements VpnBackend {
   Map<String, dynamic> makeConfig(ServerProfile p) {
     final q = p.raw.map((k, v) => MapEntry(k, v?.toString()))
       ..removeWhere((_, value) => value == null || value.isEmpty);
+    final usesTls = p.security == 'tls' ||
+        p.security == 'reality' ||
+        p.protocol == 'hysteria' ||
+        p.protocol == 'hysteria2' ||
+        p.protocol == 'tuic';
     if (name == 'sing-box') {
       final outbound = <String, dynamic>{
         'type': p.protocol,
@@ -721,11 +730,18 @@ class CoreProcessBackend implements VpnBackend {
             q['congestion_control'] ?? q['congestionControl'] ?? 'bbr';
         outbound['udp_relay_mode'] = q['udp_relay_mode'] ?? 'native';
       }
+      if (settings.tcpFastOpen) outbound['tcp_fast_open'] = true;
+      if (settings.udpFragment) outbound['udp_fragment'] = true;
       if (p.security == 'tls' ||
           p.security == 'reality' ||
           ['hysteria2', 'tuic'].contains(p.protocol)) {
         outbound['tls'] = {
           'enabled': true,
+          if (settings.tlsFragmentEnabled) ...{
+            'fragment': true,
+            'fragment_fallback_delay': '${settings.fragmentFallbackDelayMs}ms',
+          },
+          if (settings.fragmentRecord) 'record_fragment': true,
           if ((q['sni'] ?? q['serverName']) != null)
             'server_name': q['sni'] ?? q['serverName'],
           if (q['alpn'] != null)
@@ -912,8 +928,9 @@ class CoreProcessBackend implements VpnBackend {
             if (settings.connectionMode == 'tun' ||
                 settings.connectionMode == 'mixed')
               {'protocol': 'dns', 'action': 'hijack-dns'},
-            if ((settings.routing == 'rules' && routeDomains.isNotEmpty) ||
-                (settings.routing == 'exclude' && routeDomains.isNotEmpty))
+            if (settings.sniffingEnabled &&
+                ((settings.routing == 'rules' && routeDomains.isNotEmpty) ||
+                    (settings.routing == 'exclude' && routeDomains.isNotEmpty)))
               {'action': 'sniff'},
             ...rules,
           ],
@@ -1055,6 +1072,11 @@ class CoreProcessBackend implements VpnBackend {
         if (q['headerType'] != null) 'header': {'type': q['headerType']},
       };
     }
+    stream['sockopt'] = {
+      'tcpFastOpen': settings.tcpFastOpen,
+      if (settings.tlsFragmentEnabled && usesTls)
+        'dialerProxy': 'ghostbox-fragment',
+    };
     final blocked = settings.effectiveBlockedDomains;
     final routeEntries = settings.routing == 'exclude'
         ? settings.directDomains
@@ -1127,7 +1149,7 @@ class CoreProcessBackend implements VpnBackend {
               'autoOutboundsInterface': 'auto',
             },
             'sniffing': {
-              'enabled': true,
+              'enabled': settings.sniffingEnabled,
               'destOverride': ['http', 'tls', 'quic'],
               // Use the sniffed SNI/Host for routing only. Replacing the
               // original destination can break TLS on CDN/virtual-host sites.
@@ -1141,7 +1163,7 @@ class CoreProcessBackend implements VpnBackend {
           'protocol': 'socks',
           'settings': {'auth': 'noauth', 'udp': true},
           'sniffing': {
-            'enabled': true,
+            'enabled': settings.sniffingEnabled,
             'destOverride': ['http', 'tls', 'quic'],
             'routeOnly': true,
           }
@@ -1188,6 +1210,18 @@ class CoreProcessBackend implements VpnBackend {
               : _xrayLegacySettings(p, q),
           'streamSettings': stream
         },
+        if (settings.tlsFragmentEnabled && usesTls)
+          {
+            'tag': 'ghostbox-fragment',
+            'protocol': 'freedom',
+            'settings': {
+              'fragment': {
+                'packets': settings.fragmentPackets,
+                'length': settings.fragmentLength,
+                'interval': settings.fragmentInterval,
+              }
+            }
+          },
         {'tag': 'direct', 'protocol': 'freedom'},
         {'tag': 'block', 'protocol': 'blackhole'},
         if (settings.connectionMode == 'tun' ||

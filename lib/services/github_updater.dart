@@ -44,13 +44,17 @@ class GitHubUpdater {
   );
   static const currentVersion = String.fromEnvironment(
     'GHOSTBOX_VERSION',
-    defaultValue: '1.2.0-alpha',
+    defaultValue: '1.3.0-alpha',
   );
   static const _androidUpdateChannel =
       MethodChannel('app.ghostbox.ghostbox/app_update');
 
   static String displayVersion(String version) {
     final normalized = version.replaceFirst(RegExp(r'^v'), '');
+    if (RegExp(r'^1\.3(?:\.0)?-alpha$', caseSensitive: false)
+        .hasMatch(normalized)) {
+      return 'v1.3-Alpha';
+    }
     if (RegExp(r'^1\.2(?:\.0)?-alpha$', caseSensitive: false)
         .hasMatch(normalized)) {
       return 'v1.2-Alpha';

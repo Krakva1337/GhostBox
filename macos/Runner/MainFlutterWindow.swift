@@ -20,6 +20,16 @@ private func renderMacAppIcon(foreground: NSColor, background: NSColor) -> NSIma
   let image = NSImage(size: NSSize(width: size, height: size))
   image.lockFocus()
   let canvas = NSRect(x: 0, y: 0, width: size, height: size)
+  let iconFrame = canvas.insetBy(dx: 48, dy: 48)
+  let iconShape = NSBezierPath(
+    roundedRect: iconFrame,
+    xRadius: 218,
+    yRadius: 218
+  )
+  NSColor.clear.setFill()
+  canvas.fill()
+  iconShape.addClip()
+
   let top = background.blended(withFraction: 0.14, of: .white) ?? background
   NSGradient(starting: top, ending: background)?.draw(in: canvas, angle: -90)
 
@@ -34,8 +44,12 @@ private func renderMacAppIcon(foreground: NSColor, background: NSColor) -> NSIma
     options: [.drawsAfterEndingLocation]
   )
 
-  // macOS applies its own rounded mask to app icons, so draw a full-bleed
-  // square and keep the GhostBox mark inset to a regular macOS icon safe area.
+  // A faint inner rim gives the rounded tile definition without restoring the
+  // hard square edge that clashes with macOS app icons.
+  foreground.withAlphaComponent(0.12).setStroke()
+  iconShape.lineWidth = 2
+  iconShape.stroke()
+
   func point(_ x: CGFloat, _ y: CGFloat) -> NSPoint {
     NSPoint(x: x * 14.5 + 48, y: size - (y * 14.5 + 41))
   }
@@ -104,7 +118,7 @@ class MainFlutterWindow: NSWindow {
         return
       }
       let palettes: [String: (UInt32, UInt32)] = [
-        "classic": (0xffb9_cbe7, 0xff10_1a2c), "midnight": (0xff8b_b9f4, 0xff07_0612),
+        "midnight": (0xff8b_b9f4, 0xff07_0612),
         "graphite": (0xffb6_bdc9, 0xff0d_0f13), "ocean": (0xff4d_c9e8, 0xff06_1522),
         "emerald": (0xff7c_ddb6, 0xff09_1812), "amethyst": (0xffb9_a0ff, 0xff12_0d20),
         "sapphire": (0xff78_a9ff, 0xff09_1426), "ruby": (0xffff_8295, 0xff1a_1018),

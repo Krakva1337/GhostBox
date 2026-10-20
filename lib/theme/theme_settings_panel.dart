@@ -13,10 +13,12 @@ class ThemeSettingsPanel extends StatefulWidget {
 
 class _ThemeSettingsPanelState extends State<ThemeSettingsPanel> {
   final ScrollController _presetScroll = ScrollController();
+  final ScrollController _iconScroll = ScrollController();
 
   @override
   void dispose() {
     _presetScroll.dispose();
+    _iconScroll.dispose();
     super.dispose();
   }
 
@@ -255,35 +257,58 @@ class _ThemeSettingsPanelState extends State<ThemeSettingsPanel> {
               'Independent from the app theme. Presets change the app icon; custom colors apply in the UI and on desktop.'),
           style: theme.textTheme.bodySmall),
       const SizedBox(height: 12),
-      LayoutBuilder(builder: (context, bounds) {
-        const spacing = 9.0;
-        const minTileWidth = 56.0;
-        final columns = ((bounds.maxWidth + spacing) / (minTileWidth + spacing))
-            .floor()
-            .clamp(1, _iconOptions.length + 1);
-        final tileWidth = (bounds.maxWidth - spacing * (columns - 1)) / columns;
-        return Wrap(
-          alignment: WrapAlignment.center,
-          spacing: spacing,
-          runSpacing: spacing,
-          children: [
-            for (final icon in _iconOptions)
-              SizedBox(
-                  width: tileWidth,
-                  child: _iconOption(context, controller, icon.$1,
-                      _presetName(icon.$2), icon.$3, icon.$4)),
-            SizedBox(
-                width: tileWidth,
-                child: _iconOption(
-                    context,
-                    controller,
-                    'custom',
-                    _s('Своя', 'Custom'),
-                    controller.iconForeground,
-                    controller.iconBackground)),
-          ],
-        );
-      }),
+      ScrollConfiguration(
+        behavior: const MaterialScrollBehavior().copyWith(dragDevices: {
+          PointerDeviceKind.touch,
+          PointerDeviceKind.mouse,
+          PointerDeviceKind.trackpad,
+        }),
+        child: Listener(
+          onPointerSignal: (signal) {
+            if (signal is! PointerScrollEvent || !_iconScroll.hasClients) {
+              return;
+            }
+            GestureBinding.instance.pointerSignalResolver.register(signal, (_) {
+              if (!_iconScroll.hasClients) return;
+              final delta = signal.scrollDelta.dx != 0
+                  ? signal.scrollDelta.dx
+                  : signal.scrollDelta.dy;
+              _iconScroll.position.pointerScroll(delta);
+            });
+          },
+          child: SizedBox(
+            height: 82,
+            child: SingleChildScrollView(
+              controller: _iconScroll,
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  for (final icon in _iconOptions) ...[
+                    SizedBox(
+                      width: 72,
+                      child: _iconOption(context, controller, icon.$1,
+                          _presetName(icon.$2), icon.$3, icon.$4),
+                    ),
+                    const SizedBox(width: 8),
+                  ],
+                  SizedBox(
+                    width: 72,
+                    child: _iconOption(
+                      context,
+                      controller,
+                      'custom',
+                      _s('Своя', 'Custom'),
+                      controller.iconForeground,
+                      controller.iconBackground,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
       AnimatedSize(
         duration: const Duration(milliseconds: 260),
         curve: Curves.easeInOutCubic,
@@ -415,7 +440,6 @@ class _ThemeSettingsPanelState extends State<ThemeSettingsPanel> {
   }
 
   static const _iconOptions = <(String, String, Color, Color)>[
-    ('classic', 'Классика', Color(0xFFD9D9D9), Color(0xFF10101B)),
     ('midnight', 'Полночь', Color(0xFF8BB9F4), Color(0xFF070612)),
     ('graphite', 'Графит', Color(0xFFB6BDC9), Color(0xFF0D0F13)),
     ('ocean', 'Океан', Color(0xFF4DC9E8), Color(0xFF061522)),

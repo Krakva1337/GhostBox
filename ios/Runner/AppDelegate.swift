@@ -32,7 +32,7 @@ import UIKit
         result(false)
         return
       }
-      let iconName = variant == "classic" ? nil : "AppIcon_\(variant.capitalized)"
+      let iconName = variant == "aurora" ? nil : "AppIcon_\(variant.capitalized)"
       UIApplication.shared.setAlternateIconName(iconName) { error in
         if let error = error {
           result(FlutterError(code: "icon_change_failed", message: error.localizedDescription, details: nil))

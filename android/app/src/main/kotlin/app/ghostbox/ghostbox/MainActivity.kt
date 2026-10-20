@@ -86,17 +86,28 @@ class MainActivity : FlutterActivity() {
                 }
                 try {
                     val aliases = listOf(
-                        "IconClassic", "IconMidnight", "IconGraphite", "IconOcean",
+                        "IconMidnight", "IconGraphite", "IconOcean",
                         "IconEmerald", "IconAmethyst", "IconSapphire", "IconRuby",
                         "IconLavender", "IconForest", "IconSand", "IconDaylight",
                         "IconPaper", "IconMist", "IconAurora", "IconObsidian",
                         "IconSunset", "IconArctic",
                     )
-                    aliases.forEach { alias ->
+                    val targetAlias = android.content.ComponentName(
+                        this,
+                        "$packageName.$component",
+                    )
+                    // Enable the requested launcher entry first. Disabling the
+                    // previous alias before that can leave some launchers with
+                    // no resolvable MAIN/LAUNCHER activity and a stale icon.
+                    packageManager.setComponentEnabledSetting(
+                        targetAlias,
+                        PackageManager.COMPONENT_ENABLED_STATE_ENABLED,
+                        PackageManager.DONT_KILL_APP,
+                    )
+                    aliases.filter { it != component }.forEach { alias ->
                         packageManager.setComponentEnabledSetting(
                             android.content.ComponentName(this, "$packageName.$alias"),
-                            if (alias == component) PackageManager.COMPONENT_ENABLED_STATE_ENABLED
-                            else PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+                            PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
                             PackageManager.DONT_KILL_APP,
                         )
                     }
@@ -155,7 +166,6 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun iconAlias(variant: String?): String? = when (variant) {
-        "classic" -> "IconClassic"
         "midnight" -> "IconMidnight"
         "graphite" -> "IconGraphite"
         "ocean" -> "IconOcean"

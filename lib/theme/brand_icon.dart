@@ -59,9 +59,7 @@ class GhostBoxBrandIcon extends StatelessWidget {
                       foreground: foreground, background: background),
                 )
               : Image.asset(
-                  variant == 'classic'
-                      ? 'assets/icons/classic.png'
-                      : 'assets/icons/$variant.png',
+                  'assets/icons/$variant.png',
                   key: ValueKey('icon-$variant'),
                   width: size,
                   height: size,

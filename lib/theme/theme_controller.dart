@@ -32,7 +32,7 @@ class ThemeController extends ChangeNotifier {
   ThemePreset _preset = ThemePreset.midnight;
   Color _customAccent = const Color(0xFF8BB9F4);
   Color _customBackground = const Color(0xFF080D16);
-  String _iconVariant = 'classic';
+  String _iconVariant = 'aurora';
   Color _iconForeground = const Color(0xFF8BB9F4);
   Color _iconBackground = const Color(0xFF080D16);
   bool _loaded = false;
@@ -113,7 +113,14 @@ class ThemeController extends ChangeNotifier {
         Color(prefs.getInt('appearance.accent') ?? _customAccent.toARGB32());
     _customBackground = Color(
         prefs.getInt('appearance.background') ?? _customBackground.toARGB32());
-    _iconVariant = prefs.getString('appearance.iconVariant') ?? 'classic';
+    final savedIcon = prefs.getString('appearance.iconVariant');
+    // `classic` was the old launcher artwork. Migrate saved preferences so
+    // existing installs stop restoring that icon after an app update.
+    _iconVariant =
+        savedIcon == null || savedIcon == 'classic' ? 'aurora' : savedIcon;
+    if (savedIcon != _iconVariant) {
+      await prefs.setString('appearance.iconVariant', _iconVariant);
+    }
     _iconForeground = Color(prefs.getInt('appearance.iconForeground') ??
         _iconForeground.toARGB32());
     _iconBackground = Color(prefs.getInt('appearance.iconBackground') ??
