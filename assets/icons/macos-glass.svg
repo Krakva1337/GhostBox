@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="backdrop" x1="0" y1="0" x2="0.8" y2="1">
+      <stop stop-color="#17243A"/>
+      <stop offset="0.55" stop-color="#101A2C"/>
+      <stop offset="1" stop-color="#0A1220"/>
+    </linearGradient>
+    <radialGradient id="glass" cx="0" cy="0" r="1" gradientTransform="translate(330 170) rotate(48) scale(760 680)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#8BB9F4" stop-opacity=".2"/>
+      <stop offset="1" stop-color="#8BB9F4" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="ghost" x1="512" y1="260" x2="512" y2="865" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#E4EDFC"/>
+      <stop offset=".48" stop-color="#B9CBE7"/>
+      <stop offset="1" stop-color="#7897BD"/>
+    </linearGradient>
+    <linearGradient id="eyes" x1="0" y1="400" x2="0" y2="510" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#172235"/>
+      <stop offset="1" stop-color="#0D1522"/>
+    </linearGradient>
+  </defs>
+  <!-- Full-bleed square: macOS applies the rounded app-icon mask itself. -->
+  <rect width="1024" height="1024" fill="url(#backdrop)"/>
+  <rect width="1024" height="1024" fill="url(#glass)"/>
+  <path fill="url(#ghost)" d="M17.6 22.4 A14.4 14.4 0 0 1 46.4 22.4 L46.4 30 C46.4 40 49 44 48.7 50.1 C48.7 54 46.6 56 44.5 56 C41 56 38.8 52 38 46.5 C37.9 45 37.1 45 37 46.5 C36.4 52 35 57 32 57 C29 57 27.6 52 27 46.5 C26.9 45 26.1 45 26 46.5 C25.2 52 23 56 19.5 56 C17.4 56 15.3 54 15.3 50.1 C15 44 17.6 40 17.6 30 Z" transform="translate(48 41) scale(14.5)"/>
+  <ellipse cx="438" cy="345" rx="48" ry="54" fill="url(#eyes)"/>
+  <ellipse cx="586" cy="345" rx="48" ry="54" fill="url(#eyes)"/>
+  <circle cx="424" cy="332" r="12" fill="#F5F8FF" fill-opacity=".7"/>
+  <circle cx="572" cy="332" r="12" fill="#F5F8FF" fill-opacity=".7"/>
+</svg>

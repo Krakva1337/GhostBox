@@ -85,8 +85,18 @@ jobs:
         shell: pwsh
         run: |
           $release = 'build/windows/x64/runner/Release'
+          $application = Join-Path $release 'GhostBox.exe'
+          $manifest = Join-Path $env:RUNNER_TEMP 'ghostbox-manifest.xml'
           $wintun = Join-Path $release 'vendor/bin/wintun.dll'
           $singBox = Join-Path $release 'vendor/bin/sing-box.exe'
+          if (-not (Test-Path $application)) { throw "Missing app executable: $application" }
+          & mt.exe "-inputresource:$application;#1" "-out:$manifest"
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path $manifest)) {
+            throw 'Could not inspect the embedded GhostBox application manifest.'
+          }
+          if ((Get-Content -Raw $manifest) -notmatch 'requestedExecutionLevel[^>]+level="requireAdministrator"') {
+            throw 'GhostBox.exe does not request administrator rights for TUN support.'
+          }
           $crtDlls = @('vcruntime140.dll', 'vcruntime140_1.dll', 'msvcp140.dll')
           if (-not (Test-Path $wintun)) { throw "Missing bundled TUN runtime: $wintun" }
           if (-not (Test-Path $singBox)) { throw "Missing sing-box core: $singBox" }

@@ -408,10 +408,6 @@ class MacOSSystemProxy {
     };
   }
 
-  Future<void> _runNetworkSetup(List<String> args) async {
-    await _runNetworkSetupBatch([args]);
-  }
-
   Future<void> _runNetworkSetupBatch(List<List<String>> commands) async {
     Object? directError;
     for (final args in commands) {

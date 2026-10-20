@@ -82,7 +82,7 @@ class _HomePageState extends State<HomePage>
       : routingTab
           ? 1
           : 0;
-  CoreSettings coreSettings = CoreSettings();
+  CoreSettings coreSettings = CoreSettings(memoryMb: Platform.isIOS ? 32 : 128);
   final DnsAdBlocklist dnsAdBlocklist = DnsAdBlocklist();
   bool loadingAdBlocklist = false;
   List<String> customDnsBlocklistUrls = <String>[];
@@ -175,6 +175,7 @@ class _HomePageState extends State<HomePage>
     'Показывать расход RAM': 'Show RAM usage',
     'Память ядра': 'Core memory',
     'Мягкий бюджет': 'Soft memory budget',
+    'Низкий бюджет': 'Low memory target',
     'Уровень журнала': 'Log level',
     'Ошибки': 'Errors',
     'Предупреждения': 'Warnings',
@@ -374,8 +375,15 @@ class _HomePageState extends State<HomePage>
     'Системный TUN-маршрут активен через sing-box':
         'System TUN route is active through sing-box',
     'TUN-интерфейс ghostbox0 поднят': 'TUN interface ghostbox0 is up',
+    'TUN-интерфейс utun поднят': 'TUN interface utun is up',
     'Туннельный маршрутизатор sing-box остановился':
         'sing-box tunnel router stopped',
+    'Windows не предоставила ядру права администратора для TUN. Закройте GhostBox, запустите его через «Запуск от имени администратора» и подтвердите запрос UAC.':
+        'Windows did not grant the core administrator access for TUN. Close GhostBox, run it as administrator, and accept the UAC prompt.',
+    'Windows не смогла загрузить sing-box или Wintun. Переустановите полный GhostBox Setup/ZIP: рядом с vendor/bin/sing-box.exe должны быть wintun.dll и библиотеки Visual C++.':
+        'Windows could not load sing-box or Wintun. Reinstall the full GhostBox Setup/ZIP; wintun.dll and the Visual C++ runtime must be next to vendor/bin/sing-box.exe.',
+    'macOS не разрешила ядру создать TUN. Подтвердите системный запрос администратора и повторите подключение.':
+        'macOS did not allow the core to create a TUN interface. Accept the administrator prompt and try connecting again.',
     'Не удалось переподключиться': 'Could not reconnect',
     'Все подписки обновлены': 'All subscriptions updated',
     'Ошибка обновления подписки. Проверьте подключение и повторите.':
@@ -829,7 +837,8 @@ class _HomePageState extends State<HomePage>
       final rawCore = p.getString('coreSettings');
       coreSettings = rawCore == null
           ? CoreSettings(
-              memoryMb: (p.getInt('memoryMb') ?? 128).clamp(64, 256),
+              memoryMb: CoreSettings.clampMemoryMb(
+                  p.getInt('memoryMb') ?? (Platform.isIOS ? 32 : 128)),
               autoConnect: p.getBool('autoConnect') ?? false)
           : CoreSettings.fromJson(
               Map<String, dynamic>.from(jsonDecode(rawCore) as Map));
@@ -1176,7 +1185,9 @@ class _HomePageState extends State<HomePage>
         if (coreSettings.connectionMode == 'tun' ||
             coreSettings.connectionMode == 'mixed') {
           await _waitForTunInterface();
-          _recordAppLog('TUN-интерфейс ghostbox0 поднят');
+          _recordAppLog(Platform.isMacOS
+              ? 'TUN-интерфейс utun поднят'
+              : 'TUN-интерфейс ghostbox0 поднят');
           await _verifyTunRoute('1.1.1.1');
           await _tunHttpsGet(
               Duration(seconds: coreSettings.pingTimeoutSeconds + 2));
@@ -5186,10 +5197,11 @@ foreach ($route in $routes) {
       ]);
 
   Future<void> _showProfileJson(ServerProfile profile) async {
-    final isXrayTun = (Platform.isLinux || Platform.isWindows) &&
-        coreSettings.core == 'xray' &&
-        (coreSettings.connectionMode == 'tun' ||
-            coreSettings.connectionMode == 'mixed');
+    final isXrayTun =
+        (Platform.isLinux || Platform.isWindows || Platform.isMacOS) &&
+            coreSettings.core == 'xray' &&
+            (coreSettings.connectionMode == 'tun' ||
+                coreSettings.connectionMode == 'mixed');
     var runtimeProfile = profile;
     if (isXrayTun) {
       try {
@@ -5202,9 +5214,10 @@ foreach ($route in $routes) {
     runtimeProfile = await _withDeviceMetadata(runtimeProfile);
     final runtimePort = activeLocalPort ?? coreSettings.localPort;
     final xraySettings = coreSettings.copyWith(
-        connectionMode: (Platform.isLinux || Platform.isWindows)
-            ? 'proxy'
-            : coreSettings.connectionMode,
+        connectionMode:
+            (Platform.isLinux || Platform.isWindows || Platform.isMacOS)
+                ? 'proxy'
+                : coreSettings.connectionMode,
         localPort: runtimePort);
     final xrayBackend =
         CoreProcessBackend(name: 'xray', executable: '', configPath: '')
@@ -7000,14 +7013,14 @@ foreach ($route in $routes) {
             _row(
                 Icons.memory_rounded,
                 'Память ядра',
-                'Мягкий бюджет · ${coreSettings.memoryMb} МБ',
+                '${Platform.isIOS ? "Низкий бюджет" : "Мягкий бюджет"} · ${coreSettings.memoryMb} МБ',
                 SizedBox(
                     width: 145,
                     child: _compactSlider(
                         value: coreSettings.memoryMb.toDouble(),
-                        min: 64,
-                        max: 256,
-                        divisions: 12,
+                        min: Platform.isIOS ? 25 : 64,
+                        max: Platform.isIOS ? 50 : 256,
+                        divisions: Platform.isIOS ? 5 : 12,
                         onChanged: (v) => _saveCore(
                             coreSettings.copyWith(memoryMb: v.round()))))),
             _section('ЗАЩИТА ТРАФИКА'),
@@ -7147,14 +7160,14 @@ foreach ($route in $routes) {
             _row(
                 Icons.memory_rounded,
                 'Память ядра',
-                '${coreSettings.memoryMb} МБ · 64–256 МБ',
+                '${coreSettings.memoryMb} МБ · ${Platform.isIOS ? "25–50" : "64–256"} МБ',
                 SizedBox(
                     width: 145,
                     child: _compactSlider(
                         value: coreSettings.memoryMb.toDouble(),
-                        min: 64,
-                        max: 256,
-                        divisions: 12,
+                        min: Platform.isIOS ? 25 : 64,
+                        max: Platform.isIOS ? 50 : 256,
+                        divisions: Platform.isIOS ? 5 : 12,
                         onChanged: (v) => _saveCore(
                             coreSettings.copyWith(memoryMb: v.round()))))),
             _row(

@@ -1,21 +1,59 @@
-MIT License
+GhostBox Community Source License (GCSL) 1.0
+Copyright (c) 2026 Krakva_ and the respective contributors.
 
-Copyright (c) 2026 Krakva_
+This is a custom source-available license. It is not an OSI-approved Open Source
+License. It applies to the GhostBox project files unless a file or component
+contains a separate license notice. Third-party components remain under their
+own licenses; see their notices and the dependency documentation.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+1. Permission
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+You may use, study, copy, modify, and redistribute this project's source code,
+and may create and distribute derivative projects, including for commercial
+purposes, provided that you comply with every condition below. You may charge
+for copies, support, hosting, or modified products.
+
+2. Conditions for redistribution and derivative projects
+
+When you distribute this project or a derivative of it, in source or binary
+form, you must:
+
+  a. include this license and preserve existing copyright and attribution
+     notices;
+  b. identify that your product is derived from GhostBox and provide a link to
+     the GhostBox source repository;
+  c. use a product name, logo, and visual identity that do not imply that your
+     product is the official GhostBox project or is endorsed by its authors;
+  d. make and describe a substantial, meaningful contribution of your own to
+     the functionality, design, or operation of the derivative before
+     distributing it as a separate project. Merely changing the name, logo,
+     colors, version, package metadata, or documentation, or making only
+     trivial edits, does not satisfy this condition; and
+  e. publish the source code of the modifications you distribute under this
+     license or another license that preserves the conditions in this section.
+
+You may make private changes for personal use without publishing them.
+Contributions submitted to GhostBox remain yours; by submitting them, you grant
+the project maintainer the rights needed to use, modify, and redistribute them
+as part of GhostBox.
+
+3. Trademarks
+
+This license does not grant permission to use the GhostBox name, logo, or other
+project marks to brand a derivative product, except for factual attribution as
+required above. All other trademark rights are reserved.
+
+4. Termination
+
+The permissions above terminate automatically if you fail to comply with these
+terms. They are reinstated when the violation is cured, subject to applicable
+law.
+
+5. Disclaimer
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+IMPLIED, INCLUDING BUT NOT LIMITED TO WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS
+OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY,
+WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF, OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.

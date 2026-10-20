@@ -80,6 +80,12 @@ Kill Switch пока работает в Linux с установленными `
 3. Выбери ветку `main` и нажми **Run workflow**.
 4. Дождись завершения workflow, открой его запуск и скачай нужные артефакты: `GhostBox-Linux-x86_64-AppImage`, `GhostBox-Linux-ARM64-AppImage` или `GhostBox-Windows-x64` (ZIP и установщик).
 
+Скачанные ZIP-архивы Actions можно распаковать одной командой. Она сложит сборки в `~/GhostBoxBin`, распакует вложенные ZIP и удалит исходные архивы после успешной распаковки:
+
+```bash
+./tool/import_github_builds.sh ~/Downloads/GhostBox-Windows-x64.zip ~/Downloads/GhostBox-Linux-x86_64-AppImage.zip
+```
+
 Артефакты ручного запуска хранятся 14 дней. Чтобы выпустить релиз, сначала закоммить изменения в `main`, затем запусти скрипт с коротким описанием обновления:
 
 ```bash
@@ -169,6 +175,13 @@ To add GhostBox to the desktop app menu without root access, run this from a rep
 ./tool/install_appimage.sh ./dist/GhostBox-1.0.0-alpha-linux-x86_64.AppImage
 ```
 
+On macOS, install a built `.app` bundle or ZIP into `/Applications` and launch it with:
+
+```bash
+./tool/install_macos.sh ./dist/GhostBox-1.1.0-alpha-macOS-arm64.zip
+```
+The script asks for administrator authorization to replace `/Applications/GhostBox.app`.
+
 Add a subscription URL or server, select a profile and press Connect. TUN is enabled by default. If AppImage cannot start because FUSE is unavailable, try `APPIMAGE_EXTRACT_AND_RUN=1 ./GhostBox-1.0.0-alpha-linux-x86_64.AppImage`.
 
 ### TUN without running the VPN as root
@@ -192,6 +205,12 @@ To build packages with GitHub Actions:
 2. On GitHub, open **Actions → Build GhostBox packages → Run workflow**.
 3. Select the `main` branch and click **Run workflow**.
 4. When the workflow finishes, open the run and download the required artifact: `GhostBox-Linux-x86_64-AppImage`, `GhostBox-Linux-ARM64-AppImage`, or `GhostBox-Windows-x64` (ZIP and installer).
+
+Unpack downloaded Actions ZIPs with one command. It puts the builds in `~/GhostBoxBin`, extracts nested ZIPs, and removes each original archive after successful extraction:
+
+```bash
+./tool/import_github_builds.sh ~/Downloads/GhostBox-Windows-x64.zip ~/Downloads/GhostBox-Linux-x86_64-AppImage.zip
+```
 
 Artifacts from a manual run are kept for 14 days. To publish a release, commit your changes on `main` and run the script with a short summary:
 
@@ -230,6 +249,8 @@ Settings and profiles are stored locally. The User-Agent contains only the clien
 
 The current release target is Linux desktop. macOS proxy builds are available for development; iOS is still missing its Network Extension VPN provider. Validate this alpha with your server and network, keep your previous VPN available, and do not run two TUN clients at once. See [RELEASE-ALPHA.md](RELEASE-ALPHA.md) for release notes and installation steps.
 
+On macOS, install a built `.app` bundle or ZIP into `/Applications` with `./tool/install_macos.sh /path/to/GhostBox.zip`. It requests administrator access before replacing the installed app.
+
 ## License
 
-This repository has not declared a project license. Third-party components retain their own licenses: [Xray-core](https://github.com/XTLS/Xray-core) and [sing-box](https://github.com/SagerNet/sing-box).
+GhostBox source is distributed under the custom [GhostBox Community Source License](LICENSE), which permits forks and derivative products under stated attribution, branding, meaningful-contribution, and source-publication conditions. This custom license is source-available and is not an OSI-approved Open Source License. Third-party components retain their own licenses; see their included notices.

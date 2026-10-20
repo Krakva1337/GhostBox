@@ -54,6 +54,9 @@ class CoreSettings {
       proxyDomains;
   final int memoryMb, localPort;
 
+  static int clampMemoryMb(int value) =>
+      Platform.isIOS ? value.clamp(25, 50) : value.clamp(64, 256);
+
   List<String> get effectiveBlockedDomains => switch (dnsBlacklistMode) {
         'ads' => adBlockDomains,
         'custom' => blockedDomains,
@@ -116,7 +119,7 @@ class CoreSettings {
           adBlockDomains: adBlockDomains ?? this.adBlockDomains,
           directDomains: directDomains ?? this.directDomains,
           proxyDomains: proxyDomains ?? this.proxyDomains,
-          memoryMb: memoryMb ?? this.memoryMb,
+          memoryMb: clampMemoryMb(memoryMb ?? this.memoryMb),
           showRamUsage: showRamUsage ?? this.showRamUsage,
           localPort: localPort ?? this.localPort,
           autoLocalPort: autoLocalPort ?? this.autoLocalPort,
@@ -177,7 +180,8 @@ class CoreSettings {
       blockedDomains: domains('blockedDomains'),
       directDomains: routePatterns('directDomains'),
       proxyDomains: routePatterns('proxyDomains'),
-      memoryMb: ((data['memoryMb'] as num?)?.toInt() ?? 128).clamp(64, 256),
+      memoryMb: clampMemoryMb(
+          (data['memoryMb'] as num?)?.toInt() ?? (Platform.isIOS ? 32 : 128)),
       showRamUsage: data['showRamUsage'] == true,
       localPort:
           ((data['localPort'] as num?)?.toInt() ?? 2080).clamp(1024, 65535),

@@ -7,6 +7,7 @@ if [[ $# -ne 1 || ! -f "$1" ]]; then
 fi
 
 SOURCE="$(realpath -- "$1")"
+APP_VERSION="$(basename -- "$SOURCE" | sed -E 's/^GhostBox-(.*)-linux-(x86_64|aarch64)\.AppImage$/\1/')"
 if [[ ! -x "$SOURCE" ]]; then
   echo "Making AppImage executable..."
   chmod u+x "$SOURCE"
@@ -62,7 +63,7 @@ chmod 0755 "$LAUNCHER"
 
 cat > "$DESKTOP_DIR/ghostbox.desktop" <<EOF
 [Desktop Entry]
-Name=GhostBox v1.0-Alpha
+Name=GhostBox v$APP_VERSION
 Comment=Linux VPN client powered by Xray and sing-box
 Exec="$LAUNCHER" %U
 TryExec=$LAUNCHER
@@ -82,7 +83,7 @@ if command -v xdg-mime >/dev/null 2>&1; then
   xdg-mime default ghostbox.desktop x-scheme-handler/ghostbox >/dev/null 2>&1 || true
 fi
 
-echo "Installed GhostBox v1.0-Alpha to $APP_PATH"
+echo "Installed GhostBox v$APP_VERSION to $APP_PATH"
 echo "Rofi application mode: rofi -show drun"
 echo "Rofi command mode: ghostbox"
 echo "Enable TUN once with: sudo setcap cap_net_admin+ep '$VENDOR_DIR/sing-box'"

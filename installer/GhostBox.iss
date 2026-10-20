@@ -35,6 +35,7 @@ Name: "desktopicon"; Description: "Создать ярлык на рабочем
 
 [Files]
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\windows\runner\resources\app_icon.ico"; DestDir: "{localappdata}\GhostBox"; DestName: "ghostbox-current.ico"; Flags: onlyifdoesntexist
 
 [Registry]
 Root: HKCU; Subkey: "Software\Classes\ghostbox"; ValueType: string; ValueName: ""; ValueData: "URL:GhostBox Link"; Flags: uninsdeletekey
@@ -43,9 +44,9 @@ Root: HKCU; Subkey: "Software\Classes\ghostbox\DefaultIcon"; ValueType: string; 
 Root: HKCU; Subkey: "Software\Classes\ghostbox\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\GhostBox.exe"" ""%1"""; Flags: uninsdeletekey
 
 [Icons]
-Name: "{group}\GhostBox"; Filename: "{app}\GhostBox.exe"
+Name: "{group}\GhostBox"; Filename: "{app}\GhostBox.exe"; IconFilename: "{localappdata}\GhostBox\ghostbox-current.ico"
 Name: "{group}\Удалить GhostBox"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\GhostBox"; Filename: "{app}\GhostBox.exe"; Tasks: desktopicon
+Name: "{autodesktop}\GhostBox"; Filename: "{app}\GhostBox.exe"; IconFilename: "{localappdata}\GhostBox\ghostbox-current.ico"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\GhostBox.exe"; Description: "Запустить GhostBox"; Verb: "runas"; Flags: shellexec nowait postinstall skipifsilent

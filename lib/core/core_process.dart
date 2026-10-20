@@ -210,9 +210,13 @@ class CoreProcessBackend implements VpnBackend {
 
   Future<void> _startMacElevated(ServerProfile profile) async {
     final logFile = File('${_runtimeDirectory!.path}/core-elevated.log');
+    // Create the file as the logged-in user before the helper starts as root.
+    // Otherwise the root shell's umask can leave it unreadable to the UI and
+    // hide the sing-box startup errors from the connection log.
+    await logFile.writeAsString('', flush: true);
     _macElevatedLog = logFile;
     _macLogLineCount = 0;
-    final command = 'umask 077; nohup ${_shellQuote(executable)} run -c '
+    final command = 'umask 022; nohup ${_shellQuote(executable)} run -c '
         '${_shellQuote(_runtimeConfig!.path)} > ${_shellQuote(logFile.path)} 2>&1 '
         '< /dev/null & echo ${String.fromCharCode(36)}!';
     final script = 'do shell script ${_appleScriptQuote(command)} '
@@ -330,11 +334,42 @@ class CoreProcessBackend implements VpnBackend {
     }
   }
 
-  String _formatStartError(Object? error) => error is FormatException
-      ? error.message
-      : error is ProcessException
-          ? 'Не удалось запустить ядро $name. Проверьте установленный файл ядра.'
-          : error?.toString() ?? 'Неизвестная ошибка запуска ядра.';
+  String _formatStartError(Object? error) {
+    final detail = error is FormatException
+        ? error.message
+        : error is ProcessException
+            ? [error.message, 'OS error ${error.errorCode}']
+                .whereType<String>()
+                .where((value) => value.trim().isNotEmpty)
+                .join(' ')
+            : error?.toString() ?? '';
+    final lower = detail.toLowerCase();
+    if (Platform.isWindows &&
+        (lower.contains('required privilege is not held') ||
+            lower.contains('operation requires elevation') ||
+            lower.contains('error 740') ||
+            error is ProcessException && error.errorCode == 740)) {
+      return 'Windows не предоставила ядру права администратора для TUN. Закройте GhostBox, запустите его через «Запуск от имени администратора» и подтвердите запрос UAC.';
+    }
+    if (Platform.isWindows &&
+        (lower.contains('wintun') ||
+            lower.contains('specified module could not be found') ||
+            error is ProcessException && error.errorCode == 126)) {
+      return 'Windows не смогла загрузить sing-box или Wintun. Переустановите полный GhostBox Setup/ZIP: рядом с vendor/bin/sing-box.exe должны быть wintun.dll и библиотеки Visual C++.';
+    }
+    if (Platform.isMacOS &&
+        (lower.contains('operation not permitted') ||
+            lower.contains('permission denied') ||
+            lower.contains('not authorized'))) {
+      return 'macOS не разрешила ядру создать TUN. Подтвердите системный запрос администратора и повторите подключение.';
+    }
+    if (error is FormatException) return error.message;
+    if (error is ProcessException) {
+      final suffix = detail.isEmpty ? '' : ' ($detail)';
+      return 'Не удалось запустить ядро $name. Проверьте файлы сборки и права запуска.$suffix';
+    }
+    return detail.isEmpty ? 'Неизвестная ошибка запуска ядра.' : detail;
+  }
 
   void _writeLifecycleLog(String message) {
     _logs.add(message);
@@ -364,25 +399,46 @@ class CoreProcessBackend implements VpnBackend {
     final elevatedPid = _macElevatedPid;
     _macElevatedPid = null;
     if (Platform.isMacOS && elevatedPid != null) {
-      final command = '/bin/kill -TERM $elevatedPid';
-      final script = 'do shell script ${_appleScriptQuote(command)} '
-          'with administrator privileges';
-      try {
-        await Process.run('osascript', ['-e', script])
-            .timeout(const Duration(minutes: 2));
-      } on Object catch (error) {
-        _writeLifecycleLog(
-            'Не удалось завершить ядро TUN с правами администратора: $error');
-      }
-      for (var attempt = 0; attempt < 20; attempt++) {
+      await _stopMacElevated(elevatedPid);
+      for (var attempt = 0; attempt < 10; attempt++) {
         if (!await _macElevatedProcessAlive(elevatedPid)) break;
         await Future<void>.delayed(const Duration(milliseconds: 100));
+      }
+      if (await _macElevatedProcessAlive(elevatedPid)) {
+        _writeLifecycleLog(
+            'macOS не завершила привилегированное ядро TUN после запроса остановки');
       }
     }
     await _cleanupConfig();
     _startedAt = null;
     _state = VpnState.disconnected;
     _recoveryInProgress = false;
+  }
+
+  Future<void> _stopMacElevated(int pid) async {
+    final command = 'if /bin/kill -0 $pid 2>/dev/null; then '
+        '/bin/kill -TERM $pid 2>/dev/null || true; '
+        'i=0; while [ \$i -lt 30 ] && /bin/kill -0 $pid 2>/dev/null; do '
+        '/bin/sleep 0.1; i=\$((i + 1)); done; '
+        'if /bin/kill -0 $pid 2>/dev/null; then '
+        '/bin/kill -KILL $pid 2>/dev/null || true; fi; fi';
+    final script = 'do shell script ${_appleScriptQuote(command)} '
+        'with administrator privileges';
+    try {
+      final result = await Process.run('osascript', ['-e', script])
+          .timeout(const Duration(minutes: 2));
+      if (result.exitCode != 0 && await _macElevatedProcessAlive(pid)) {
+        throw ProcessException(
+          'osascript',
+          ['-e', script],
+          '${result.stderr} ${result.stdout}'.trim(),
+          result.exitCode,
+        );
+      }
+    } on Object catch (error) {
+      _writeLifecycleLog(
+          'Не удалось остановить привилегированное ядро TUN: $error');
+    }
   }
 
   Future<void> _cleanupConfig() async {
@@ -527,7 +583,23 @@ class CoreProcessBackend implements VpnBackend {
             lower.contains('interface') && lower.contains('create'))) {
       return 'sing-box не смог создать Windows TUN-адаптер. Запустите GhostBox с правами администратора, проверьте vendor/bin/wintun.dll и удалите отключённый GhostBox/Wintun адаптер в диспетчере устройств.';
     }
+    if (Platform.isWindows &&
+        tunMode &&
+        (lower.contains('required privilege is not held') ||
+            lower.contains('operation requires elevation') ||
+            lower.contains('error 740') ||
+            lower.contains('access is denied'))) {
+      return 'Windows не предоставила ядру права администратора для TUN. Закройте GhostBox, запустите его через «Запуск от имени администратора» и подтвердите запрос UAC.';
+    }
+    if (Platform.isMacOS &&
+        tunMode &&
+        (lower.contains('operation not permitted') ||
+            lower.contains('permission denied') ||
+            lower.contains('not authorized'))) {
+      return 'macOS не разрешила ядру создать TUN. Подтвердите системный запрос администратора и повторите подключение.';
+    }
     if (tunMode &&
+        Platform.isLinux &&
         (lower.contains('operation not permitted') ||
             lower.contains('permission denied') ||
             lower.contains('/dev/net/tun'))) {
@@ -921,15 +993,16 @@ class CoreProcessBackend implements VpnBackend {
             : <String, dynamic>{};
         final xmux = Map<String, dynamic>.from(
             extra['xmux'] as Map? ?? const <String, dynamic>{});
-        // Low reuse/lifetime limits retire idle XHTTP sessions sooner. The
-        // Xray schema forbids maxConnections alongside maxConcurrency.
+        // Keep the XHTTP session pool small and retire transports quickly on
+        // low-memory devices. The Xray schema forbids maxConnections alongside
+        // maxConcurrency. Negative keepalive disables idle HTTP/2 keepalives.
         xmux
           ..remove('maxConnections')
           ..addAll({
-            'maxConcurrency': '1-4',
-            'cMaxReuseTimes': '8-16',
-            'hMaxRequestTimes': '100-200',
-            'hMaxReusableSecs': '60-120',
+            'maxConcurrency': '1-2',
+            'cMaxReuseTimes': '4-8',
+            'hMaxRequestTimes': '50-100',
+            'hMaxReusableSecs': '30-60',
             'hKeepAlivePeriod': -1,
           });
         extra['xmux'] = xmux;

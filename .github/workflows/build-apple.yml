@@ -27,12 +27,20 @@ jobs:
           app="$(find build/macos/Build/Products/Release -maxdepth 1 -name '*.app' -print -quit)"
           test -n "$app"
           codesign --verify --deep --strict "$app"
+          "$app/Contents/MacOS/vendor/bin/sing-box" version
+          "$app/Contents/MacOS/vendor/bin/xray" version
+          version="$(awk '/^version:/ {split($2, parts, "+"); print parts[1]}' pubspec.yaml)"
           mkdir -p dist
-          ditto -c -k --sequesterRsrc --keepParent "$app" dist/GhostBox-macOS-arm64-dev.zip
+          archive="dist/GhostBox-${version}-macOS-arm64.zip"
+          ditto -c -k --sequesterRsrc --keepParent "$app" "$archive"
+          shasum -a 256 "$archive" > "$archive.sha256"
       - uses: actions/upload-artifact@v4
         with:
-          name: GhostBox-macOS-arm64-dev
-          path: dist/GhostBox-macOS-arm64-dev.zip
+          name: GhostBox-macOS-arm64
+          path: |
+            dist/GhostBox-*-macOS-arm64.zip
+            dist/GhostBox-*-macOS-arm64.zip.sha256
+            tool/install_macos.sh
           if-no-files-found: error
           retention-days: 14
 

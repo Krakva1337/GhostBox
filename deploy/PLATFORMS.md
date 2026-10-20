@@ -78,7 +78,10 @@ budget is OS/device dependent; the commonly cited ~50 MiB figure is not a
 permanent guarantee. Measure the packet tunnel extension on supported devices
 and keep it lean (one core runtime, no Flutter engine or UI assets in the
 extension). sing-box's compile option is a starting point, not a hard memory
-cap.
+cap. GhostBox's iOS memory control is only a 25–50 MiB soft target for the Go
+runtime once the iOS VPN extension is integrated; it does not cap total RSS.
+The current iOS shell still has no Packet Tunnel extension and cannot establish
+a system VPN connection.
 
 ## Runtime status
 
