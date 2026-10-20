@@ -7,7 +7,6 @@ import 'dart:ui' as ui;
 import 'package:flutter/foundation.dart'
     show kProfileMode, kReleaseMode, listEquals;
 import 'package:flutter/material.dart';
-import 'package:flutter/cupertino.dart' show CupertinoSwitch, CupertinoSlider;
 import 'package:flutter/services.dart';
 import 'package:file_selector/file_selector.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -83,6 +82,7 @@ class _HomePageState extends State<HomePage>
   CoreSettings coreSettings = CoreSettings();
   final DnsAdBlocklist dnsAdBlocklist = DnsAdBlocklist();
   bool loadingAdBlocklist = false;
+  List<String> customDnsBlocklistUrls = <String>[];
   final DesktopSystemProxy systemProxy = DesktopSystemProxy();
   bool pendingReconnect = false;
   bool applyingReconnect = false;
@@ -676,12 +676,16 @@ class _HomePageState extends State<HomePage>
     if (!mounted) return;
     final migrateWindowsProxy =
         Platform.isWindows && p.getBool('windowsProxyDefaultMigrated') != true;
+    final migrateAutoLocalPortDefault =
+        p.getBool('autoLocalPortDefaultMigrated') != true;
     setState(() {
       prefs = p;
       logRetainedConnections = p.getInt('logRetainedConnections') ?? 10;
       logMaxSizeMb = p.getInt('logMaxSizeMb') ?? 5;
       logCoreOutput = p.getBool('logCoreOutput') ?? true;
       animatedBackground = p.getBool('animatedBackground') ?? true;
+      customDnsBlocklistUrls =
+          p.getStringList('customDnsBlocklistUrls') ?? <String>[];
       english = p.getBool('appEnglish') ?? false;
       profiles = rows;
       final savedHistory = p.getString('connectionHistory');
@@ -730,6 +734,9 @@ class _HomePageState extends State<HomePage>
       if (migrateWindowsProxy) {
         coreSettings = coreSettings.copyWith(connectionMode: 'system');
       }
+      if (migrateAutoLocalPortDefault) {
+        coreSettings = coreSettings.copyWith(autoLocalPort: true);
+      }
       backend = Platform.isAndroid
           ? AndroidVpnBackend()
           : coreSettings.core == 'xray'
@@ -758,7 +765,8 @@ class _HomePageState extends State<HomePage>
     }
     if (p.getBool('xrayDefaultMigrated') != true ||
         p.getBool('tunDefaultMigrated') != true ||
-        migrateWindowsProxy) {
+        migrateWindowsProxy ||
+        migrateAutoLocalPortDefault) {
       await p.setString('coreSettings', jsonEncode(coreSettings.toJson()));
       await p.setBool('xrayDefaultMigrated', true);
       await p.setBool('tunDefaultMigrated', true);
@@ -768,6 +776,9 @@ class _HomePageState extends State<HomePage>
     }
     if (migrateWindowsProxy) {
       await p.setBool('windowsProxyDefaultMigrated', true);
+    }
+    if (migrateAutoLocalPortDefault) {
+      await p.setBool('autoLocalPortDefaultMigrated', true);
     }
     await GhostBoxLogStore.instance.configure(
       retainedConnections: logRetainedConnections,
@@ -1233,6 +1244,7 @@ class _HomePageState extends State<HomePage>
     await showModalBottomSheet<void>(
         context: context,
         isScrollControlled: true,
+        showDragHandle: true,
         backgroundColor: Colors.transparent,
         builder: (context) =>
             StatefulBuilder(builder: (context, setSheetState) {
@@ -1286,13 +1298,7 @@ class _HomePageState extends State<HomePage>
                               color: Colors.white.withValues(alpha: .12))),
                       padding: const EdgeInsets.fromLTRB(18, 12, 18, 16),
                       child: Column(children: [
-                        Container(
-                            width: 36,
-                            height: 4,
-                            decoration: BoxDecoration(
-                                color: Colors.white.withValues(alpha: .24),
-                                borderRadius: BorderRadius.circular(8))),
-                        const SizedBox(height: 12),
+                        const SizedBox(height: 4),
                         Row(children: [
                           Expanded(
                               child: Text(_localized('Журнал соединения'),
@@ -1438,7 +1444,7 @@ class _HomePageState extends State<HomePage>
     showModalBottomSheet<void>(
         context: context,
         isScrollControlled: true,
-        showDragHandle: false,
+        showDragHandle: true,
         backgroundColor: Colors.transparent,
         builder: (context) => DraggableScrollableSheet(
             initialChildSize:
@@ -1458,13 +1464,7 @@ class _HomePageState extends State<HomePage>
                   padding: EdgeInsets.fromLTRB(
                       18, wide ? 7 : 10, 18, wide ? 10 : 16),
                   child: Column(children: [
-                    Container(
-                        width: 36,
-                        height: 4,
-                        decoration: BoxDecoration(
-                            color: Colors.white.withValues(alpha: .24),
-                            borderRadius: BorderRadius.circular(8))),
-                    const SizedBox(height: 8),
+                    SizedBox(height: wide ? 0 : 2),
                     Row(children: [
                       Expanded(
                           child: Text(_localized('Последние подключения'),
@@ -2183,8 +2183,10 @@ class _HomePageState extends State<HomePage>
       final request = await client.getUrl(uri).timeout(timeout);
       request.headers.set(HttpHeaders.userAgentHeader, 'GhostBox-Alpha-v0.1');
       request.headers.set(HttpHeaders.connectionHeader, 'close');
-      final response = await request.close().timeout(timeout);
-      await response.drain<void>().timeout(timeout);
+      // The ping only needs the status line and headers. Draining the body can
+      // turn a valid 404/204 into a false timeout if a test endpoint streams or
+      // keeps its response open.
+      await request.close().timeout(timeout);
     } on Object catch (error) {
       throw SocketException('HTTP GET ${uri.host} failed: $error');
     } finally {
@@ -2991,86 +2993,87 @@ class _HomePageState extends State<HomePage>
   @override
   Widget build(BuildContext context) => Scaffold(
       backgroundColor: Theme.of(context).scaffoldBackgroundColor,
-      body: Stack(children: [
-        Positioned.fill(
-            child: IgnorePointer(
-                child: AnimatedBuilder(
-                    animation: ambientMotion,
-                    builder: (context, _) => CustomPaint(
-                        painter: _AmbientBackgroundPainter(
-                            progress:
-                                animatedBackground ? ambientMotion.value : .12,
-                            color: _accent,
-                            enabled: animatedBackground))))),
-        Container(
-            decoration: BoxDecoration(
-                gradient: LinearGradient(
-                    begin: Alignment.topCenter,
-                    end: Alignment.bottomCenter,
-                    colors: [
-                  _surface,
-                  Theme.of(context).scaffoldBackgroundColor,
-                  Theme.of(context).scaffoldBackgroundColor
-                ])),
-            child: SafeArea(
-                child: Center(
-                    child: ConstrainedBox(
-                        constraints: BoxConstraints(maxWidth: 1200),
-                        child: Padding(
-                            padding: EdgeInsets.fromLTRB(5, 12, 5, 12),
-                            child: LayoutBuilder(builder: (context, bounds) {
-                              final wideLayout = bounds.maxWidth >= 800;
-                              final page = ClipRRect(
-                                  borderRadius: BorderRadius.circular(24),
-                                  child: AnimatedSwitcher(
-                                      duration:
-                                          const Duration(milliseconds: 190),
-                                      reverseDuration:
-                                          const Duration(milliseconds: 80),
-                                      switchInCurve: Curves.easeOutCubic,
-                                      switchOutCurve: Curves.linear,
-                                      layoutBuilder: (current, previous) =>
-                                          current ?? SizedBox.shrink(),
-                                      transitionBuilder: (child, animation) =>
-                                          FadeTransition(
-                                              opacity: animation,
-                                              child: ScaleTransition(
-                                                  scale: Tween<double>(
-                                                          begin: .985, end: 1)
-                                                      .animate(CurvedAnimation(
-                                                          parent: animation,
-                                                          curve: Curves
-                                                              .easeOutCubic)),
-                                                  child: child)),
-                                      child: KeyedSubtree(
-                                          key: ValueKey(_tabIndex),
-                                          child: settings
-                                              ? _scrollFrame(
-                                                  _settings(), settingsScroll)
-                                              : routingTab
-                                                  ? _scrollFrame(_routingPage(),
-                                                      routingScroll)
-                                                  : _scrollFrame(
-                                                      _home(), homeScroll))));
-                              return Column(children: [
-                                _header(wideLayout: wideLayout),
+      body: Container(
+          decoration: BoxDecoration(
+              gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [
+                _surface,
+                Theme.of(context).scaffoldBackgroundColor,
+                Theme.of(context).scaffoldBackgroundColor
+              ])),
+          child: SafeArea(
+            child: Stack(children: [
+              Positioned.fill(
+                  child: IgnorePointer(
+                      child: AnimatedBuilder(
+                          animation: ambientMotion,
+                          builder: (context, _) => CustomPaint(
+                              painter: _AmbientBackgroundPainter(
+                                  progress: animatedBackground
+                                      ? ambientMotion.value
+                                      : .12,
+                                  color: _accent,
+                                  enabled: animatedBackground))))),
+              Center(
+                  child: ConstrainedBox(
+                      constraints: BoxConstraints(maxWidth: 1200),
+                      child: Padding(
+                          padding: EdgeInsets.fromLTRB(5, 12, 5, 12),
+                          child: LayoutBuilder(builder: (context, bounds) {
+                            final wideLayout = bounds.maxWidth >= 800;
+                            final page = ClipRRect(
+                                borderRadius: BorderRadius.circular(24),
+                                child: AnimatedSwitcher(
+                                    duration: const Duration(milliseconds: 190),
+                                    reverseDuration:
+                                        const Duration(milliseconds: 80),
+                                    switchInCurve: Curves.easeOutCubic,
+                                    switchOutCurve: Curves.linear,
+                                    layoutBuilder: (current, previous) =>
+                                        current ?? SizedBox.shrink(),
+                                    transitionBuilder: (child, animation) =>
+                                        FadeTransition(
+                                            opacity: animation,
+                                            child: ScaleTransition(
+                                                scale: Tween<double>(
+                                                        begin: .985, end: 1)
+                                                    .animate(CurvedAnimation(
+                                                        parent: animation,
+                                                        curve: Curves
+                                                            .easeOutCubic)),
+                                                child: child)),
+                                    child: KeyedSubtree(
+                                        key: ValueKey(_tabIndex),
+                                        child: settings
+                                            ? _scrollFrame(
+                                                _settings(), settingsScroll)
+                                            : routingTab
+                                                ? _scrollFrame(_routingPage(),
+                                                    routingScroll)
+                                                : _scrollFrame(
+                                                    _home(), homeScroll))));
+                            return Column(children: [
+                              _header(wideLayout: wideLayout),
+                              const SizedBox(height: 8),
+                              Expanded(
+                                  child: wideLayout
+                                      ? Row(children: [
+                                          SizedBox(
+                                              width: 120, child: _sideNav()),
+                                          const SizedBox(width: 10),
+                                          Expanded(child: page),
+                                        ])
+                                      : page),
+                              if (!wideLayout) ...[
                                 const SizedBox(height: 8),
-                                Expanded(
-                                    child: wideLayout
-                                        ? Row(children: [
-                                            SizedBox(
-                                                width: 120, child: _sideNav()),
-                                            const SizedBox(width: 10),
-                                            Expanded(child: page),
-                                          ])
-                                        : page),
-                                if (!wideLayout) ...[
-                                  const SizedBox(height: 8),
-                                  _nav(),
-                                ],
-                              ]);
-                            })))))),
-      ]));
+                                _nav(),
+                              ],
+                            ]);
+                          }))))
+            ]),
+          )));
 
   Widget _scrollFrame(
           Widget child, ScrollController controller) =>
@@ -3412,8 +3415,9 @@ class _HomePageState extends State<HomePage>
               child: Text(_localized(
                   hideProfiles ? 'Показать серверы' : 'Скрыть серверы')))
         ]),
-        if (pendingReconnect)
-          Padding(
+        _animatedReconnectBanner(
+          visible: pendingReconnect,
+          child: Padding(
               padding: EdgeInsets.only(bottom: 14),
               child: Container(
                   padding: EdgeInsets.symmetric(horizontal: 14, vertical: 9),
@@ -3432,6 +3436,7 @@ class _HomePageState extends State<HomePage>
                         onPressed: _applyPendingReconnect,
                         child: Text(_localized('Применить'))),
                   ]))),
+        ),
         AnimatedSize(
             duration: Duration(milliseconds: 420),
             curve: Curves.easeOutCubic,
@@ -3519,10 +3524,11 @@ class _HomePageState extends State<HomePage>
                       style:
                           TextStyle(color: _muted, fontSize: 11, height: 1.4))),
             ],
-            if (pendingReconnect) ...[
-              const SizedBox(height: 14),
-              _reconnectNotice(),
-            ],
+            _animatedReconnectBanner(
+                visible: pendingReconnect,
+                child: Padding(
+                    padding: const EdgeInsets.only(top: 14),
+                    child: _reconnectNotice())),
           ],
         );
 
@@ -3747,6 +3753,34 @@ class _HomePageState extends State<HomePage>
             onPressed: _applyPendingReconnect,
             child: Text(_localized('Применить'))),
       ]));
+
+  Widget _animatedReconnectBanner(
+          {required bool visible, required Widget child}) =>
+      AnimatedSize(
+        duration: const Duration(milliseconds: 260),
+        curve: Curves.easeOutCubic,
+        alignment: Alignment.topCenter,
+        child: AnimatedSwitcher(
+          duration: const Duration(milliseconds: 220),
+          reverseDuration: const Duration(milliseconds: 180),
+          switchInCurve: Curves.easeOutCubic,
+          switchOutCurve: Curves.easeInCubic,
+          transitionBuilder: (child, animation) => FadeTransition(
+            opacity: animation,
+            child: SlideTransition(
+              position:
+                  Tween<Offset>(begin: const Offset(0, -.08), end: Offset.zero)
+                      .animate(animation),
+              child: child,
+            ),
+          ),
+          child: visible
+              ? KeyedSubtree(
+                  key: const ValueKey('reconnect-visible'), child: child)
+              : const SizedBox(
+                  key: ValueKey('reconnect-hidden'), width: 0, height: 0),
+        ),
+      );
 
   Widget _power() => Column(children: [
         GestureDetector(
@@ -5181,7 +5215,7 @@ class _HomePageState extends State<HomePage>
                 autofocus: true,
                 keyboardType: TextInputType.url,
                 decoration: const InputDecoration(
-                  hintText: 'https://httpbin.org/status/404',
+                  hintText: 'https://example.com/ghostbox-probe-404',
                   helperText:
                       'Любой HTTP-ответ считается успехом. По умолчанию сервер отвечает 404.',
                 ),
@@ -5235,7 +5269,10 @@ class _HomePageState extends State<HomePage>
     try {
       var domains = await dnsAdBlocklist.readCache();
       final fromCache = domains.isNotEmpty;
-      if (!fromCache) domains = await dnsAdBlocklist.update();
+      if (!fromCache) {
+        domains = await dnsAdBlocklist.update(
+            additionalSources: customDnsBlocklistUrls);
+      }
       if (domains.isEmpty) {
         throw const FormatException('DNS-список не содержит доменов');
       }
@@ -5265,7 +5302,8 @@ class _HomePageState extends State<HomePage>
     if (loadingAdBlocklist) return;
     if (mounted) setState(() => loadingAdBlocklist = true);
     try {
-      final domains = await dnsAdBlocklist.update();
+      final domains = await dnsAdBlocklist.update(
+          additionalSources: customDnsBlocklistUrls);
       if (!mounted || coreSettings.dnsBlacklistMode != 'ads') return;
       final changed = !listEquals(coreSettings.adBlockDomains, domains);
       if (changed) {
@@ -5282,6 +5320,70 @@ class _HomePageState extends State<HomePage>
       }
     } finally {
       if (mounted) setState(() => loadingAdBlocklist = false);
+    }
+  }
+
+  Future<void> _editDnsBlocklistSources() async {
+    final controller =
+        TextEditingController(text: customDnsBlocklistUrls.join('\n'));
+    final value = await showDialog<String>(
+        context: context,
+        builder: (context) => AlertDialog(
+              title: Text(_text('Ссылки DNS-листов', 'DNS list URLs')),
+              content: SizedBox(
+                width: 520,
+                child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  Text(_text(
+                      'Добавь по одной HTTPS-ссылке на raw .txt файл. Списки объединяются с базовым списком рекламы.',
+                      'Add one HTTPS URL per raw .txt file. These lists are combined with the built-in ad list.')),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: controller,
+                    minLines: 3,
+                    maxLines: 8,
+                    keyboardType: TextInputType.multiline,
+                    decoration: InputDecoration(
+                      hintText:
+                          'https://raw.githubusercontent.com/user/repo/main/list.txt',
+                      border: const OutlineInputBorder(),
+                    ),
+                  ),
+                ]),
+              ),
+              actions: [
+                TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: Text(_localized('Отмена'))),
+                FilledButton(
+                    onPressed: () => Navigator.pop(context, controller.text),
+                    child: Text(_localized('Сохранить'))),
+              ],
+            ));
+    controller.dispose();
+    if (value == null || !mounted) return;
+
+    final urls = value
+        .split(RegExp(r'[\r\n]+'))
+        .map((url) => url.trim())
+        .where((url) => url.isNotEmpty)
+        .toSet()
+        .toList();
+    final invalid = urls.firstWhere(
+        (url) => !DnsAdBlocklist.isValidSourceUrl(url),
+        orElse: () => '');
+    if (invalid.isNotEmpty) {
+      _message(_text('Нужна HTTPS-ссылка на файл .txt: $invalid',
+          'Expected an HTTPS URL to a .txt file: $invalid'));
+      return;
+    }
+
+    setState(() => customDnsBlocklistUrls = urls);
+    final storage = prefs ??= await SharedPreferences.getInstance();
+    await storage.setStringList('customDnsBlocklistUrls', urls);
+    if (coreSettings.dnsBlacklistMode == 'ads') {
+      await _refreshAdBlocklist();
+    } else {
+      _message(_text('Ссылки DNS-листов сохранены', 'DNS list URLs saved'));
     }
   }
 
@@ -5356,33 +5458,58 @@ class _HomePageState extends State<HomePage>
                   _segment(_localized('Для профи'), advanced,
                       () => setState(() => advanced = true)),
                 ])),
-            if (pendingReconnect) ...[
-              SizedBox(height: 16),
-              Container(
-                  padding: EdgeInsets.all(14),
-                  decoration: BoxDecoration(
-                      color: _accent.withOpacity(.13),
-                      borderRadius: BorderRadius.circular(17),
-                      border: Border.all(color: _accent.withOpacity(.35))),
-                  child: Row(children: [
-                    Icon(Icons.info_outline_rounded, color: _accent, size: 19),
-                    SizedBox(width: 10),
-                    Expanded(
-                        child: Text(
-                            'Изменения вступят в силу после переподключения',
-                            style: TextStyle(fontSize: 12))),
-                    TextButton(
-                        onPressed: _applyPendingReconnect,
-                        child: Text(_localized('Применить'))),
-                  ])),
-            ],
+            _animatedReconnectBanner(
+                visible: pendingReconnect,
+                child: Padding(
+                    padding: const EdgeInsets.only(top: 16),
+                    child: Container(
+                        padding: EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                            color: _accent.withOpacity(.13),
+                            borderRadius: BorderRadius.circular(17),
+                            border:
+                                Border.all(color: _accent.withOpacity(.35))),
+                        child: Row(children: [
+                          Icon(Icons.info_outline_rounded,
+                              color: _accent, size: 19),
+                          SizedBox(width: 10),
+                          Expanded(
+                              child: Text(
+                                  'Изменения вступят в силу после переподключения',
+                                  style: TextStyle(fontSize: 12))),
+                          TextButton(
+                              onPressed: _applyPendingReconnect,
+                              child: Text(_localized('Применить'))),
+                        ])))),
             SizedBox(height: 22),
-            AnimatedSwitcher(
-                duration: Duration(milliseconds: 280),
-                transitionBuilder: (child, animation) => FadeTransition(
-                    opacity: animation,
-                    child: SizeTransition(sizeFactor: animation, child: child)),
-                child: advanced ? _advancedSettings() : _basicSettings()),
+            AnimatedSize(
+                duration: const Duration(milliseconds: 250),
+                curve: Curves.easeOutCubic,
+                alignment: Alignment.topCenter,
+                child: AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 290),
+                    reverseDuration: const Duration(milliseconds: 230),
+                    switchInCurve: Curves.easeOutCubic,
+                    switchOutCurve: Curves.easeInCubic,
+                    transitionBuilder: (child, animation) {
+                      final isAdvanced = (child.key as ValueKey<bool>).value;
+                      final slide = Tween<Offset>(
+                        begin: Offset(isAdvanced ? .035 : -.035, 0),
+                        end: Offset.zero,
+                      ).animate(CurvedAnimation(
+                          parent: animation, curve: Curves.easeOutCubic));
+                      return ClipRect(
+                        child: FadeTransition(
+                          opacity: animation,
+                          child: SlideTransition(position: slide, child: child),
+                        ),
+                      );
+                    },
+                    child: KeyedSubtree(
+                        key: ValueKey(advanced),
+                        child: advanced
+                            ? _advancedSettings()
+                            : _basicSettings()))),
             SizedBox(height: 18),
             _section('ЖУРНАЛ'),
             _row(
@@ -5998,6 +6125,7 @@ class _HomePageState extends State<HomePage>
                               height: 18,
                               child: CircularProgressIndicator(strokeWidth: 2))
                           : const Icon(Icons.refresh_rounded))),
+            _dnsBlocklistSourcesRow(),
             SizedBox(height: 14),
             _section('ПРИЛОЖЕНИЕ'),
             _row(
@@ -6335,6 +6463,7 @@ class _HomePageState extends State<HomePage>
                               height: 18,
                               child: CircularProgressIndicator(strokeWidth: 2))
                           : const Icon(Icons.refresh_rounded))),
+            _dnsBlocklistSourcesRow(),
             SizedBox(height: 15),
             _section('ПРОВЕРКА ЗАДЕРЖКИ'),
             _row(
@@ -6683,6 +6812,16 @@ class _HomePageState extends State<HomePage>
             'All traffic except listed domains uses VPN'),
         _ => _text('Весь трафик через VPN', 'All traffic through VPN'),
       };
+  Widget _dnsBlocklistSourcesRow() => _row(
+      Icons.playlist_add_check_rounded,
+      _text('Ссылки DNS-листов', 'DNS list URLs'),
+      _text('${customDnsBlocklistUrls.length} пользовательских .txt списков',
+          '${customDnsBlocklistUrls.length} custom .txt lists'),
+      IconButton(
+          tooltip: _text('Добавить или изменить ссылки', 'Edit list URLs'),
+          onPressed: _editDnsBlocklistSources,
+          icon: const Icon(Icons.edit_outlined)));
+
   String _dnsLabel() => switch (coreSettings.dns) {
         'cloudflare' => 'Cloudflare · DoH',
         'google' => 'Google · DoH',
@@ -6843,24 +6982,77 @@ class _HomePageState extends State<HomePage>
           ]));
 
   Widget _compactSwitch(
-          {required bool value, required ValueChanged<bool>? onChanged}) =>
-      Transform.scale(
-          scale: .9,
-          alignment: Alignment.centerRight,
-          child: CupertinoSwitch(
-            value: value,
-            onChanged: onChanged,
-            applyTheme: false,
-            activeTrackColor: _accent,
-            inactiveTrackColor:
-                Color.alphaBlend(Colors.white.withValues(alpha: .13), _surface),
-            thumbColor: Colors.white,
-            trackOutlineColor: WidgetStateProperty.resolveWith((states) =>
-                states.contains(WidgetState.selected)
-                    ? _accent.withValues(alpha: .72)
-                    : Colors.white.withValues(alpha: .16)),
-            trackOutlineWidth: const WidgetStatePropertyAll<double?>(1),
-          ));
+      {required bool value, required ValueChanged<bool>? onChanged}) {
+    final enabled = onChanged != null;
+    final track = value
+        ? _accent
+        : Color.alphaBlend(Colors.white.withValues(alpha: .13), _surface);
+    void toggle() {
+      if (enabled) onChanged(!value);
+    }
+
+    return Semantics(
+      button: true,
+      toggled: value,
+      enabled: enabled,
+      onTap: enabled ? toggle : null,
+      child: ExcludeSemantics(
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: enabled ? toggle : null,
+          onHorizontalDragEnd: enabled
+              ? (details) {
+                  final velocity = details.primaryVelocity ?? 0;
+                  if (velocity.abs() > 80) onChanged(velocity > 0);
+                }
+              : null,
+          child: SizedBox(
+            width: 52,
+            height: 40,
+            child: Align(
+              alignment: Alignment.centerRight,
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 190),
+                curve: Curves.easeOutCubic,
+                width: 46,
+                height: 27,
+                padding: const EdgeInsets.all(4),
+                decoration: BoxDecoration(
+                  color: enabled ? track : track.withValues(alpha: .6),
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(
+                      color: value
+                          ? _accent.withValues(alpha: .8)
+                          : Colors.white.withValues(alpha: .17),
+                      width: 1),
+                ),
+                child: AnimatedAlign(
+                  duration: const Duration(milliseconds: 190),
+                  curve: Curves.easeOutCubic,
+                  alignment:
+                      value ? Alignment.centerRight : Alignment.centerLeft,
+                  child: Container(
+                    width: 17,
+                    height: 17,
+                    decoration: BoxDecoration(
+                      color: enabled ? Colors.white : Colors.white70,
+                      shape: BoxShape.circle,
+                      boxShadow: const [
+                        BoxShadow(
+                            color: Color(0x33000000),
+                            blurRadius: 3,
+                            offset: Offset(0, 1)),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 
   Widget _compactSlider({
     required double value,
@@ -6869,20 +7061,28 @@ class _HomePageState extends State<HomePage>
     required int divisions,
     required ValueChanged<double>? onChanged,
   }) =>
-      TweenAnimationBuilder<double>(
-          tween: Tween<double>(begin: value, end: value),
-          duration: const Duration(milliseconds: 90),
-          curve: Curves.easeOutCubic,
-          builder: (context, animatedValue, _) => Transform.scale(
-              scaleY: .78,
-              child: CupertinoSlider(
-                  value: animatedValue.clamp(min, max).toDouble(),
-                  min: min,
-                  max: max,
-                  divisions: divisions,
-                  activeColor: _accent,
-                  thumbColor: Colors.white,
-                  onChanged: onChanged)));
+      Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
+        child: SliderTheme(
+          data: SliderTheme.of(context).copyWith(
+            trackHeight: 3,
+            activeTrackColor: _accent,
+            inactiveTrackColor: Colors.white.withValues(alpha: .16),
+            thumbColor: Colors.white,
+            overlayColor: _accent.withValues(alpha: .14),
+            thumbShape: _OutlinedSliderThumbShape(outlineColor: _accent),
+            overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
+            trackShape: const RoundedRectSliderTrackShape(),
+          ),
+          child: Slider(
+            value: value.clamp(min, max).toDouble(),
+            min: min,
+            max: max,
+            divisions: divisions,
+            onChanged: onChanged,
+          ),
+        ),
+      );
 
   Widget _draggableTabIndicator({
     required bool vertical,
@@ -6930,115 +7130,144 @@ class _HomePageState extends State<HomePage>
     if (target != _tabIndex) _openTab(target);
   }
 
-  Widget _nav() => Container(
-      key: _bottomNavKey,
-      height: 84,
-      padding: const EdgeInsets.all(6),
-      decoration: BoxDecoration(
-          color: _surface,
-          borderRadius: BorderRadius.circular(27),
-          border: Border.all(color: Colors.white.withOpacity(.15)),
-          boxShadow: [
-            BoxShadow(
-                color: Colors.black.withOpacity(.2),
-                blurRadius: 28,
-                offset: const Offset(0, 12))
-          ]),
-      child: LayoutBuilder(builder: (context, bounds) {
-        final itemWidth = bounds.maxWidth / 3;
-        return Stack(children: [
-          AnimatedPositioned(
-              duration: const Duration(milliseconds: 280),
-              curve: Curves.easeOutCubic,
-              left: itemWidth * _tabIndex,
-              top: 0,
-              bottom: 0,
-              width: itemWidth,
-              child: _draggableTabIndicator(
-                  vertical: false,
-                  decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                          colors: [_accent.withValues(alpha: .20), _surface]),
-                      borderRadius: BorderRadius.circular(21),
-                      border: Border.all(color: _accent.withOpacity(.4)),
-                      boxShadow: [
-                        BoxShadow(
-                            color: _accent.withOpacity(.14), blurRadius: 18)
-                      ]))),
-          Row(children: [
-            _navItem(Icons.shield_outlined, _text('Подключение', 'Connect'), 0),
-            _navItem(Icons.alt_route_rounded, _text('Маршрут', 'Routing'), 1),
-            _navItem(Icons.tune_rounded, _text('Настройки', 'Settings'), 2),
-          ]),
-        ]);
-      }));
-  Widget _sideNav() => Container(
-      key: _sideNavKey,
-      padding: const EdgeInsets.all(6),
-      decoration: BoxDecoration(
-          color: _surface,
-          borderRadius: BorderRadius.circular(25),
-          border: Border.all(color: Colors.white.withOpacity(.15)),
-          boxShadow: [
-            BoxShadow(
-                color: Colors.black.withOpacity(.18),
-                blurRadius: 24,
-                offset: const Offset(0, 8))
-          ]),
-      child: LayoutBuilder(builder: (context, _) {
-        const itemHeight = 80.0;
-        const itemGap = 8.0;
-        const selectedHeight = 72.0;
-        return Stack(children: [
-          AnimatedPositioned(
-              duration: const Duration(milliseconds: 280),
-              curve: Curves.easeOutCubic,
-              top: (itemHeight + itemGap) * _tabIndex +
-                  (itemHeight - selectedHeight) / 2,
-              left: 0,
-              right: 0,
-              height: selectedHeight,
-              child: _draggableTabIndicator(
-                  vertical: true,
-                  decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                          colors: [_accent.withValues(alpha: .20), _surface],
-                          begin: Alignment.centerLeft,
-                          end: Alignment.centerRight),
-                      borderRadius: BorderRadius.circular(19),
-                      border: Border.all(color: _accent.withOpacity(.38))))),
-          Column(children: [
-            SizedBox(
-                height: itemHeight,
-                child: _sideNavItem(
-                    Icons.shield_outlined, _text('Подключение', 'Connect'), 0)),
-            const SizedBox(height: itemGap),
-            SizedBox(
-                height: itemHeight,
-                child: _sideNavItem(
-                    Icons.alt_route_rounded, _text('Маршрут', 'Routing'), 1)),
-            const SizedBox(height: itemGap),
-            SizedBox(
-                height: itemHeight,
-                child: _sideNavItem(
-                    Icons.tune_rounded, _text('Настройки', 'Settings'), 2)),
-            const Spacer(),
-            Divider(
-                height: 16,
-                thickness: 1,
-                indent: 10,
-                endIndent: 10,
-                color: Colors.white.withValues(alpha: .10)),
-            _sideActionItem(Icons.speed_rounded, _text('Пинг все', 'Ping all'),
-                () => _checkAllProfiles(List.of(profiles))),
-            _sideActionItem(
-                Icons.article_outlined, _text('Логи', 'Logs'), _showLogs),
-            _sideActionItem(Icons.history_rounded, _text('История', 'History'),
-                _showConnectionHistory),
-            const SizedBox(height: 4),
-          ]),
-        ]);
-      }));
+  Widget _draggableTabSurface(
+          {required bool vertical, required Widget child}) =>
+      GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onPanStart: (details) {
+          setState(() => _draggingTabIndicator = true);
+          _dragTabIndicator(details.globalPosition, vertical: vertical);
+        },
+        onPanUpdate: (details) =>
+            _dragTabIndicator(details.globalPosition, vertical: vertical),
+        onPanEnd: (_) => setState(() => _draggingTabIndicator = false),
+        onPanCancel: () => setState(() => _draggingTabIndicator = false),
+        child: child,
+      );
+
+  Widget _nav() => _draggableTabSurface(
+      vertical: false,
+      child: Container(
+          key: _bottomNavKey,
+          height: 84,
+          padding: const EdgeInsets.all(6),
+          decoration: BoxDecoration(
+              color: _surface,
+              borderRadius: BorderRadius.circular(27),
+              border: Border.all(color: Colors.white.withOpacity(.15)),
+              boxShadow: [
+                BoxShadow(
+                    color: Colors.black.withOpacity(.2),
+                    blurRadius: 28,
+                    offset: const Offset(0, 12))
+              ]),
+          child: LayoutBuilder(builder: (context, bounds) {
+            final itemWidth = bounds.maxWidth / 3;
+            return Stack(children: [
+              AnimatedPositioned(
+                  duration: const Duration(milliseconds: 280),
+                  curve: Curves.easeOutCubic,
+                  left: itemWidth * _tabIndex,
+                  top: 0,
+                  bottom: 0,
+                  width: itemWidth,
+                  child: _draggableTabIndicator(
+                      vertical: false,
+                      decoration: BoxDecoration(
+                          gradient: LinearGradient(colors: [
+                            _accent.withValues(alpha: .20),
+                            _surface
+                          ]),
+                          borderRadius: BorderRadius.circular(21),
+                          border: Border.all(color: _accent.withOpacity(.4)),
+                          boxShadow: [
+                            BoxShadow(
+                                color: _accent.withOpacity(.14), blurRadius: 18)
+                          ]))),
+              Row(children: [
+                _navItem(
+                    Icons.shield_outlined, _text('Подключение', 'Connect'), 0),
+                _navItem(
+                    Icons.alt_route_rounded, _text('Маршрут', 'Routing'), 1),
+                _navItem(Icons.tune_rounded, _text('Настройки', 'Settings'), 2),
+              ]),
+            ]);
+          })));
+  Widget _sideNav() => _draggableTabSurface(
+      vertical: true,
+      child: Container(
+          key: _sideNavKey,
+          padding: const EdgeInsets.all(6),
+          decoration: BoxDecoration(
+              color: _surface,
+              borderRadius: BorderRadius.circular(25),
+              border: Border.all(color: Colors.white.withOpacity(.15)),
+              boxShadow: [
+                BoxShadow(
+                    color: Colors.black.withOpacity(.18),
+                    blurRadius: 24,
+                    offset: const Offset(0, 8))
+              ]),
+          child: LayoutBuilder(builder: (context, _) {
+            const itemHeight = 80.0;
+            const itemGap = 8.0;
+            const selectedHeight = 72.0;
+            return Stack(children: [
+              AnimatedPositioned(
+                  duration: const Duration(milliseconds: 280),
+                  curve: Curves.easeOutCubic,
+                  top: (itemHeight + itemGap) * _tabIndex +
+                      (itemHeight - selectedHeight) / 2,
+                  left: 0,
+                  right: 0,
+                  height: selectedHeight,
+                  child: _draggableTabIndicator(
+                      vertical: true,
+                      decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                              colors: [
+                                _accent.withValues(alpha: .20),
+                                _surface
+                              ],
+                              begin: Alignment.centerLeft,
+                              end: Alignment.centerRight),
+                          borderRadius: BorderRadius.circular(19),
+                          border:
+                              Border.all(color: _accent.withOpacity(.38))))),
+              Column(children: [
+                SizedBox(
+                    height: itemHeight,
+                    child: _sideNavItem(Icons.shield_outlined,
+                        _text('Подключение', 'Connect'), 0)),
+                const SizedBox(height: itemGap),
+                SizedBox(
+                    height: itemHeight,
+                    child: _sideNavItem(Icons.alt_route_rounded,
+                        _text('Маршрут', 'Routing'), 1)),
+                const SizedBox(height: itemGap),
+                SizedBox(
+                    height: itemHeight,
+                    child: _sideNavItem(
+                        Icons.tune_rounded, _text('Настройки', 'Settings'), 2)),
+                const Spacer(),
+                Divider(
+                    height: 16,
+                    thickness: 1,
+                    indent: 10,
+                    endIndent: 10,
+                    color: Colors.white.withValues(alpha: .10)),
+                _sideActionItem(
+                    Icons.speed_rounded,
+                    _text('Пинг все', 'Ping all'),
+                    () => _checkAllProfiles(List.of(profiles))),
+                _sideActionItem(
+                    Icons.article_outlined, _text('Логи', 'Logs'), _showLogs),
+                _sideActionItem(Icons.history_rounded,
+                    _text('История', 'History'), _showConnectionHistory),
+                const SizedBox(height: 4),
+              ]),
+            ]);
+          })));
 
   Widget _sideActionItem(IconData icon, String label, VoidCallback onTap) =>
       SizedBox(
@@ -7154,11 +7383,11 @@ class _AmbientBackgroundPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final phase = progress * math.pi * 2;
-    final opacity = enabled ? .10 : .045;
-    final upperCenter = Offset(size.width * (.18 + math.sin(phase) * .12),
-        size.height * (.10 + math.cos(phase) * .08));
-    final lowerCenter = Offset(size.width * (.88 + math.cos(phase * .7) * .07),
-        size.height * (.74 + math.sin(phase * .7) * .08));
+    final opacity = enabled ? .20 : .065;
+    final upperCenter = Offset(size.width * (.18 + math.sin(phase) * .16),
+        size.height * (.10 + math.cos(phase) * .12));
+    final lowerCenter = Offset(size.width * (.88 + math.cos(phase * .7) * .10),
+        size.height * (.74 + math.sin(phase * .7) * .11));
     for (final blob in [
       (upperCenter, size.width * .75, color),
       (lowerCenter, size.width * .58, Color.lerp(color, Colors.indigo, .45)!),
@@ -7211,4 +7440,55 @@ class _OrbRings extends CustomPainter {
       old.color != color ||
       old.active != active ||
       old.connecting != connecting;
+}
+
+class _OutlinedSliderThumbShape extends SliderComponentShape {
+  const _OutlinedSliderThumbShape({required this.outlineColor});
+
+  final Color outlineColor;
+
+  @override
+  Size getPreferredSize(bool isEnabled, bool isDiscrete) =>
+      const Size.square(21);
+
+  @override
+  void paint(
+    PaintingContext context,
+    Offset center, {
+    required Animation<double> activationAnimation,
+    required Animation<double> enableAnimation,
+    required bool isDiscrete,
+    required TextPainter labelPainter,
+    required RenderBox parentBox,
+    required SliderThemeData sliderTheme,
+    required TextDirection textDirection,
+    required double value,
+    required double textScaleFactor,
+    required Size sizeWithOverflow,
+  }) {
+    final canvas = context.canvas;
+    final radius = 9.5 + activationAnimation.value * .5;
+    canvas.drawCircle(
+      center,
+      radius,
+      Paint()
+        ..color = Colors.black.withValues(alpha: .18)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2),
+    );
+    canvas.drawCircle(
+      center,
+      radius,
+      Paint()
+        ..color = sliderTheme.thumbColor ?? Colors.white
+        ..style = PaintingStyle.fill,
+    );
+    canvas.drawCircle(
+      center,
+      radius - .5,
+      Paint()
+        ..color = outlineColor.withValues(alpha: .72)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1,
+    );
+  }
 }

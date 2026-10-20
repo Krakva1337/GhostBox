@@ -20,12 +20,17 @@ class DnsAdBlocklist {
     }
   }
 
-  Future<List<String>> update() async {
+  Future<List<String>> update(
+      {List<String> additionalSources = const []}) async {
     final client = HttpClient()
       ..connectionTimeout = const Duration(seconds: 15)
       ..idleTimeout = const Duration(seconds: 30);
     try {
-      final lists = await Future.wait(sources.map((url) async {
+      final allSources = [...sources, ...additionalSources];
+      final lists = await Future.wait(allSources.map((url) async {
+        if (!isValidSourceUrl(url)) {
+          throw FormatException('Некорректная ссылка DNS-листа: $url');
+        }
         final request = await client.getUrl(Uri.parse(url));
         request.headers.set(HttpHeaders.userAgentHeader, 'GhostBox/1.0');
         final response =
@@ -51,6 +56,15 @@ class DnsAdBlocklist {
     } finally {
       client.close(force: true);
     }
+  }
+
+  static bool isValidSourceUrl(String value) {
+    final uri = Uri.tryParse(value.trim());
+    return uri != null &&
+        uri.scheme.toLowerCase() == 'https' &&
+        uri.host.isNotEmpty &&
+        uri.userInfo.isEmpty &&
+        uri.path.toLowerCase().endsWith('.txt');
   }
 
   List<String> _domainsFromText(String text) {

@@ -67,19 +67,24 @@ table inet $_table {
   }
 
   static Future<bool> _tableExists() async {
-    final result = await _runPrivileged(
-        ['nft', 'list', 'table', 'inet', _table]);
+    final result =
+        await _runPrivileged(['nft', 'list', 'table', 'inet', _table]);
     if (result.exitCode == 0) return true;
     final error = '${result.stderr} ${result.stdout}';
     if (error.contains('No such file or directory') ||
         error.contains('does not exist')) return false;
+    if (_needsPolkit(error)) {
+      throw ProcessException(
+          'Kill Switch', const [], _polkitHint, result.exitCode);
+    }
     throw ProcessException('privileged nft', ['list', 'table', 'inet', _table],
         '${result.stderr}'.trim(), result.exitCode);
   }
 
   static Future<void> _runPrivilegedNft(String script) async {
     final command = await _privilegeCommand();
-    final process = await Process.start(command.$1, [...command.$2, 'nft', '-f', '-']);
+    final process =
+        await Process.start(command.$1, [...command.$2, 'nft', '-f', '-']);
     process.stdin.write(script);
     await process.stdin.close();
     final stdout =
@@ -88,8 +93,9 @@ table inet $_table {
         await process.stderr.transform(systemEncoding.decoder).join();
     final exitCode = await process.exitCode;
     if (exitCode != 0) {
+      final error = (stderr.isEmpty ? stdout : stderr).trim();
       throw ProcessException('privileged nft', ['-f', '-'],
-          (stderr.isEmpty ? stdout : stderr).trim(), exitCode);
+          _needsPolkit(error) ? _polkitHint : error, exitCode);
     }
   }
 
@@ -102,8 +108,12 @@ table inet $_table {
   /// without polkit, allow a previously authorized non-interactive sudo rule
   /// and otherwise return an actionable message instead of ProcessException.
   static Future<(String, List<String>)> _privilegeCommand() async {
-    if (await _executableExists('pkexec')) return ('pkexec', const []);
-    if (await _executableExists('sudo')) return ('sudo', const ['-n']);
+    if (await _executableExists('pkexec', const ['/usr/bin', '/bin'])) {
+      return ('pkexec', const <String>[]);
+    }
+    if (await _executableExists('sudo', const ['/usr/bin', '/bin'])) {
+      return ('sudo', const ['-n']);
+    }
     throw const ProcessException(
       'pkexec',
       [],
@@ -112,13 +122,32 @@ table inet $_table {
     );
   }
 
-  static Future<bool> _executableExists(String executable) async {
+  static const _polkitHint =
+      'Не найден pkexec или нет выданных прав sudo. Для обычного запроса '
+      'пароля установи polkit и перезапусти GhostBox; иначе настрой sudo '
+      'для nft без пароля.';
+
+  static bool _needsPolkit(String error) {
+    final normalized = error.toLowerCase();
+    return normalized.contains('password is required') ||
+        normalized.contains('a terminal is required') ||
+        normalized.contains('not found') ||
+        normalized.contains('no such file or directory');
+  }
+
+  static Future<bool> _executableExists(
+      String executable, List<String> fallbackDirectories) async {
     final path = Platform.environment['PATH'] ?? '';
-    for (final directory in path.split(Platform.isWindows ? ';' : ':')) {
+    final directories = <String>{
+      ...path.split(Platform.isWindows ? ';' : ':'),
+      ...fallbackDirectories,
+    };
+    for (final directory in directories) {
       if (directory.isEmpty) continue;
       final file = File('$directory/$executable');
       try {
-        if (await file.exists() && (await file.stat()).type == FileSystemEntityType.file) {
+        if (await file.exists() &&
+            (await file.stat()).type == FileSystemEntityType.file) {
           return true;
         }
       } on FileSystemException {

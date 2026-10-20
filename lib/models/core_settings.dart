@@ -17,7 +17,7 @@ class CoreSettings {
     this.memoryMb = 128,
     this.showRamUsage = false,
     this.localPort = 2080,
-    this.autoLocalPort = false,
+    this.autoLocalPort = true,
     this.logLevel = 'warning',
     this.autoConnect = false,
     this.autoPing = false,
@@ -26,7 +26,7 @@ class CoreSettings {
     this.killSwitchProfileId = '',
     this.aggressiveXhttpCleanup = false,
     this.pingMode = 'proxy',
-    this.proxyGetUrl = 'https://httpbin.org/status/404',
+    this.proxyGetUrl = 'https://example.com/ghostbox-probe-404',
     this.pingView = 'full',
     this.pingCount = 3,
     this.pingTimeoutSeconds = 4,
@@ -164,8 +164,10 @@ class CoreSettings {
       killSwitchProfileId: data['killSwitchProfileId'] as String? ?? '',
       aggressiveXhttpCleanup: data['aggressiveXhttpCleanup'] == true,
       pingMode: choice('pingMode', ['proxy', 'tcp', 'icmp'], 'proxy'),
-      proxyGetUrl:
-          data['proxyGetUrl'] as String? ?? 'https://httpbin.org/status/404',
+      proxyGetUrl: data['proxyGetUrl'] == 'https://httpbin.org/status/404'
+          ? 'https://example.com/ghostbox-probe-404'
+          : data['proxyGetUrl'] as String? ??
+              'https://example.com/ghostbox-probe-404',
       pingView: choice('pingView', ['full', 'number', 'quality'], 'full'),
       pingCount:
           [1, 3, 5].contains(data['pingCount']) ? data['pingCount'] as int : 3,
@@ -179,7 +181,7 @@ class CoreSettings {
       showRamUsage: data['showRamUsage'] == true,
       localPort:
           ((data['localPort'] as num?)?.toInt() ?? 2080).clamp(1024, 65535),
-      autoLocalPort: data['autoLocalPort'] == true,
+      autoLocalPort: data['autoLocalPort'] != false,
     );
   }
 
