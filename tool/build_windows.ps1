@@ -161,7 +161,8 @@ try {
 
   $packageDirectory = Join-Path $ProjectRoot 'dist'
   New-Item -ItemType Directory -Force -Path $packageDirectory | Out-Null
-  $archive = Join-Path $packageDirectory 'GhostBox-Windows-x64.zip'
+  $archiveName = "GhostBox-$version-Windows-x64.zip"
+  $archive = Join-Path $packageDirectory $archiveName
   Remove-Item -Force $archive -ErrorAction SilentlyContinue
   Compress-Archive -Path (Join-Path $releaseDirectory '*') -DestinationPath $archive
   Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -189,12 +190,13 @@ try {
     if (Test-Path $defaultCompiler) { $compilerPath = $defaultCompiler }
   }
   if ($compilerPath) {
-    $installer = Join-Path $packageDirectory 'GhostBox-Setup-x64.exe'
+    $installerName = "GhostBox-$version-Windows-x64-Setup.exe"
+    $installer = Join-Path $packageDirectory $installerName
     Invoke-Checked $compilerPath @(
       "/DAppVersion=$version",
       "/DSourceDir=$releaseDirectory",
       "/O$packageDirectory",
-      "/FGhostBox-Setup-x64",
+      "/FGhostBox-$version-Windows-x64-Setup",
       (Join-Path $ProjectRoot 'installer/GhostBox.iss')
     )
     Write-Host "Built installer: $installer"

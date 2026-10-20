@@ -91,7 +91,9 @@ jobs:
           }
           & $singBox version
           if ($LASTEXITCODE -ne 0) { throw "sing-box smoke check failed with exit code $LASTEXITCODE" }
-          $zip = 'dist/GhostBox-Windows-x64.zip'
+          $zip = Get-ChildItem 'dist/GhostBox-*-Windows-x64.zip' | Select-Object -First 1
+          if (-not $zip) { throw 'Missing versioned Windows portable package.' }
+          $zip = $zip.FullName
           if (-not (Test-Path $zip)) { throw "Missing Windows portable package: $zip" }
           Add-Type -AssemblyName System.IO.Compression.FileSystem
           $archive = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path $zip))
@@ -113,16 +115,18 @@ jobs:
       - name: Create Windows installer checksum
         shell: pwsh
         run: |
-          $installer = 'dist/GhostBox-Setup-x64.exe'
+          $installer = Get-ChildItem 'dist/GhostBox-*-Windows-x64-Setup.exe' | Select-Object -First 1
+          if (-not $installer) { throw 'Missing versioned Windows installer.' }
+          $installer = $installer.FullName
           $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $installer).Hash.ToLowerInvariant()
-          "$hash *GhostBox-Setup-x64.exe" | Set-Content -NoNewline -Encoding ascii "$installer.sha256"
+          "$hash *$([System.IO.Path]::GetFileName($installer))" | Set-Content -NoNewline -Encoding ascii "$installer.sha256"
       - uses: actions/upload-artifact@v4
         with:
           name: GhostBox-Windows-x64
           path: |
-            dist/GhostBox-Setup-x64.exe
-            dist/GhostBox-Setup-x64.exe.sha256
-            dist/GhostBox-Windows-x64.zip
+            dist/GhostBox-*-Windows-x64-Setup.exe
+            dist/GhostBox-*-Windows-x64-Setup.exe.sha256
+            dist/GhostBox-*-Windows-x64.zip
           if-no-files-found: error
           retention-days: 14
 
@@ -133,6 +137,9 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/download-artifact@v4
         with:
           name: GhostBox-Linux-x86_64-AppImage
@@ -145,11 +152,42 @@ jobs:
         with:
           name: GhostBox-Windows-x64
           path: dist/windows-x64
+      - name: Prepare release notes
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          tag_commit="$(git rev-parse "${RELEASE_TAG}^{commit}")"
+          summary="$(git for-each-ref --format='%(contents)' "refs/tags/$RELEASE_TAG")"
+          previous_tag="$(git describe --tags --abbrev=0 "$tag_commit^" 2>/dev/null || true)"
+          if [[ -n "$previous_tag" ]]; then
+            changes="$(git log --no-merges --pretty=format:'- %s' "$previous_tag..$tag_commit")"
+          else
+            changes="$(git log -n 20 --no-merges --pretty=format:'- %s' "$tag_commit")"
+          fi
+          {
+            echo '## Update summary'
+            echo
+            printf '%s\n' "${summary:-Versioned GhostBox build.}"
+            echo
+            echo '## Changes'
+            echo
+            printf '%s\n' "${changes:-See the source commit for details.}"
+            echo
+            echo '## Built packages'
+            echo
+            echo '- Linux x86_64 AppImage'
+            echo '- Linux ARM64 AppImage'
+            echo '- Windows x64 installer (.exe) and portable ZIP'
+            echo
+            echo '## Release files'
+            echo
+            find dist -maxdepth 1 -type f -printf '%f\n' | sort | sed 's/^/- /'
+          } > release-notes.md
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          args=(--title "GhostBox ${GITHUB_REF_NAME}" --generate-notes)
+          args=(--title "GhostBox ${GITHUB_REF_NAME}" --notes-file release-notes.md)
           if [[ "$GITHUB_REF_NAME" == *alpha* ]]; then args+=(--prerelease); fi
           gh release create "$GITHUB_REF_NAME" "${args[@]}" \
             dist/linux-x86_64/* dist/linux-ARM64/* dist/windows-x64/*

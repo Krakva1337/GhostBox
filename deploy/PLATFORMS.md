@@ -144,8 +144,8 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 Install Flutter stable, Go 1.27+, and Visual Studio 2022 with the Desktop
 development with C++ workload first. The script builds the pinned core binaries,
-the Flutter release app and `dist/GhostBox-Windows-x64.zip`. When Inno Setup is
-installed, it also writes `dist/GhostBox-Setup-x64.exe`. The GitHub Actions
+the Flutter release app and `dist/GhostBox-<version>-Windows-x64.zip`. When Inno Setup is
+installed, it also writes `dist/GhostBox-<version>-Windows-x64-Setup.exe`. The GitHub Actions
 workflow installs Inno Setup and publishes both files.
 
 ## References

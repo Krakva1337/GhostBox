@@ -191,7 +191,9 @@ class GitHubUpdater {
   }
 
   Future<String?> platformAssetName(GhostBoxRelease release) async {
-    if (Platform.isWindows) return 'GhostBox-Setup-x64.exe';
+    if (Platform.isWindows) {
+      return 'GhostBox-${release.version}-Windows-x64-Setup.exe';
+    }
     if (Platform.isLinux) {
       final result = await Process.run('uname', ['-m']);
       final arch = '${result.stdout}'.trim().toLowerCase();

@@ -80,14 +80,13 @@ Kill Switch пока работает в Linux с установленными `
 3. Выбери ветку `main` и нажми **Run workflow**.
 4. Дождись завершения workflow, открой его запуск и скачай нужные артефакты: `GhostBox-Linux-x86_64-AppImage`, `GhostBox-Linux-ARM64-AppImage` или `GhostBox-Windows-x64` (ZIP и установщик).
 
-Артефакты ручного запуска хранятся 14 дней. Чтобы создать GitHub Release, сначала отправь коммит в `main`, затем создай и отправь версионный тег. Например:
+Артефакты ручного запуска хранятся 14 дней. Чтобы выпустить релиз, сначала закоммить изменения в `main`, затем запусти скрипт с коротким описанием обновления:
 
 ```bash
-git tag v1.0-alpha
-git push origin v1.0-alpha
+./tool/publish_release.sh "Исправлен split tunneling и ускорен запуск"
 ```
 
-Тег запускает те же сборки и автоматически прикрепляет пакеты к prerelease. Workflow **Build GhostBox for Android** запускается отдельно и выдаёт `GhostBox-Android-universal.apk`. Android-сборка требует Android 7.0 (API 24) или новее и включает sing-box XHTTP. Без ключа из секретов APK подписывается временным тестовым ключом и подходит для разовой установки вручную. При подключении Android запросит разрешение на VPN и, если доступно, уведомления.
+Скрипт отправит `main`, создаст версионный тег из `pubspec.yaml` и запустит GitHub Actions. Actions соберёт Linux AppImage для x86_64 и ARM64, Windows installer `.exe` и ZIP, затем создаст prerelease с версией в заголовке, описанием обновления, коммитами и перечнем файлов. Нужны чистое рабочее дерево, ветка `main` и настроенная Git-аутентификация. Workflow **Build GhostBox for Android** запускается отдельно и выдаёт `GhostBox-Android-universal.apk`. Android-сборка требует Android 7.0 (API 24) или новее и включает sing-box XHTTP. Без ключа из секретов APK подписывается временным тестовым ключом и подходит для разовой установки вручную. При подключении Android запросит разрешение на VPN и, если доступно, уведомления.
 
 Для Android-релизов настрой постоянную подпись. Создай приватный keystore:
 
@@ -194,14 +193,13 @@ To build packages with GitHub Actions:
 3. Select the `main` branch and click **Run workflow**.
 4. When the workflow finishes, open the run and download the required artifact: `GhostBox-Linux-x86_64-AppImage`, `GhostBox-Linux-ARM64-AppImage`, or `GhostBox-Windows-x64` (ZIP and installer).
 
-Artifacts from a manual run are kept for 14 days. To create a GitHub Release, push the commit to `main`, then create and push a version tag. For example:
+Artifacts from a manual run are kept for 14 days. To publish a release, commit your changes on `main` and run the script with a short summary:
 
 ```bash
-git tag v1.0-alpha
-git push origin v1.0-alpha
+./tool/publish_release.sh "Fixed split tunneling and improved startup"
 ```
 
-The tag runs the same builds and attaches the packages to a prerelease automatically. Run **Build GhostBox for Android** separately to get `GhostBox-Android-universal.apk`. The Android build requires Android 7.0 (API 24) or later and includes sing-box XHTTP. Without a private signing key in repository secrets, the APK uses a temporary test key for one-off sideloading. On connect, Android requests VPN consent and, when available, notification permission.
+The script pushes `main`, creates a version tag from `pubspec.yaml` and starts GitHub Actions. Actions builds Linux x86_64/ARM64 AppImages, a Windows installer `.exe` and ZIP, then publishes a prerelease with the version in its title, your summary, commit subjects and the built file list. It requires a clean worktree, the `main` branch and configured Git authentication. Run **Build GhostBox for Android** separately to get `GhostBox-Android-universal.apk`. The Android build requires Android 7.0 (API 24) or later and includes sing-box XHTTP. Without a private signing key in repository secrets, the APK uses a temporary test key for one-off sideloading. On connect, Android requests VPN consent and, when available, notification permission.
 
 For Android releases, configure a persistent signing key. Create a private keystore:
 
