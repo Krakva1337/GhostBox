@@ -7,6 +7,119 @@
 
 #include "flutter/generated_plugin_registrant.h"
 
+static FlMethodChannel* app_icon_channel = nullptr;
+
+static void update_desktop_icon(const gchar* icon_name) {
+  gchar* desktop_file = g_build_filename(g_get_user_data_dir(), "applications",
+                                         "ghostbox.desktop", nullptr);
+  gchar* contents = nullptr;
+  gsize length = 0;
+  if (g_file_get_contents(desktop_file, &contents, &length, nullptr)) {
+    gchar** lines = g_strsplit(contents, "\n", -1);
+    for (guint i = 0; lines[i] != nullptr; i++) {
+      if (g_str_has_prefix(lines[i], "Icon=")) {
+        g_free(lines[i]);
+        lines[i] = g_strdup_printf("Icon=%s", icon_name);
+        break;
+      }
+    }
+    gchar* updated = g_strjoinv("\n", lines);
+    g_file_set_contents(desktop_file, updated, -1, nullptr);
+    g_free(updated);
+    g_strfreev(lines);
+    g_free(contents);
+  }
+  g_free(desktop_file);
+}
+
+static void set_app_icon(FlMethodChannel* channel, FlMethodCall* call,
+                         gpointer user_data) {
+  (void)channel;
+  gboolean changed = FALSE;
+  const gchar* method = fl_method_call_get_name(call);
+  FlValue* args = fl_method_call_get_args(call);
+  FlValue* variant_value = fl_value_lookup_string(args, "variant");
+  const gchar* variant = variant_value != nullptr &&
+                                 fl_value_get_type(variant_value) == FL_VALUE_TYPE_STRING
+                             ? fl_value_get_string(variant_value)
+                             : nullptr;
+  if (g_strcmp0(method, "setAppIcon") == 0 &&
+      g_strcmp0(variant, "custom") == 0) {
+    FlValue* png_value = fl_value_lookup_string(args, "customPng");
+    if (png_value != nullptr &&
+        fl_value_get_type(png_value) == FL_VALUE_TYPE_UINT8_LIST) {
+      const guint8* png = fl_value_get_uint8_list(png_value);
+      const gsize length = fl_value_get_length(png_value);
+      GdkPixbufLoader* loader = gdk_pixbuf_loader_new();
+      g_autoptr(GError) decode_error = nullptr;
+      const gboolean wrote = gdk_pixbuf_loader_write(loader, png, length,
+                                                     &decode_error);
+      const gboolean closed = wrote &&
+          gdk_pixbuf_loader_close(loader, &decode_error);
+      GdkPixbuf* pixbuf = gdk_pixbuf_loader_get_pixbuf(loader);
+      if (closed && pixbuf != nullptr) {
+        gtk_window_set_icon(GTK_WINDOW(user_data), pixbuf);
+        changed = TRUE;
+        gchar* icon_dir = g_build_filename(g_get_user_data_dir(), "icons",
+                                           "hicolor", "512x512", "apps",
+                                           nullptr);
+        g_mkdir_with_parents(icon_dir, 0755);
+        gchar* icon_path = g_build_filename(icon_dir, "ghostbox-custom.png", nullptr);
+        const gboolean stored = g_file_set_contents(
+            icon_path, reinterpret_cast<const gchar*>(png), length, nullptr);
+        if (stored) update_desktop_icon(icon_path);
+        g_free(icon_path);
+        g_free(icon_dir);
+      }
+      g_object_unref(loader);
+    }
+  } else if (g_strcmp0(method, "setAppIcon") == 0 && variant != nullptr) {
+    gboolean safe_variant = *variant != '\0';
+    for (const gchar* cursor = variant; *cursor != '\0'; cursor++) {
+      safe_variant = safe_variant && g_ascii_islower(*cursor);
+    }
+    if (!safe_variant) {
+      g_autoptr(FlValue) result = fl_value_new_bool(FALSE);
+      fl_method_call_respond_success(call, result, nullptr);
+      return;
+    }
+    gchar* executable = g_file_read_link("/proc/self/exe", nullptr);
+    if (executable != nullptr) {
+      gchar* directory = g_path_get_dirname(executable);
+      gchar* filename = g_strdup_printf("%s.png", variant);
+      gchar* icon_path = g_build_filename(directory, "data", "flutter_assets",
+                                          "assets", "icons", filename, nullptr);
+      g_autoptr(GError) icon_error = nullptr;
+      changed = gtk_window_set_icon_from_file(GTK_WINDOW(user_data), icon_path,
+                                               &icon_error);
+      gchar* svg_name = g_strdup_printf("%s.svg", variant);
+      gchar* svg_path = g_build_filename(directory, "data", "flutter_assets",
+                                         "assets", "icons", svg_name, nullptr);
+      gchar* svg_contents = nullptr;
+      gsize svg_length = 0;
+      if (g_file_get_contents(svg_path, &svg_contents, &svg_length, nullptr)) {
+        gchar* installed_icon = g_build_filename(g_get_user_data_dir(), "icons",
+            "hicolor", "scalable", "apps", "ghostbox.svg", nullptr);
+        gchar* installed_dir = g_path_get_dirname(installed_icon);
+        g_mkdir_with_parents(installed_dir, 0755);
+        if (g_file_set_contents(installed_icon, svg_contents, svg_length, nullptr))
+          update_desktop_icon(installed_icon);
+        g_free(installed_icon);
+        g_free(installed_dir);
+        g_free(svg_contents);
+      }
+      g_free(svg_path);
+      g_free(svg_name);
+      g_free(icon_path);
+      g_free(filename);
+      g_free(directory);
+      g_free(executable);
+    }
+  }
+  g_autoptr(FlValue) result = fl_value_new_bool(changed);
+  fl_method_call_respond_success(call, result, nullptr);
+}
+
 struct _MyApplication {
   GtkApplication parent_instance;
   char** dart_entrypoint_arguments;
@@ -69,6 +182,14 @@ static void my_application_activate(GApplication* application) {
       project, self->dart_entrypoint_arguments);
 
   FlView* view = fl_view_new(project);
+  g_autoptr(FlStandardMethodCodec) icon_codec = fl_standard_method_codec_new();
+  g_set_object(&app_icon_channel,
+               fl_method_channel_new(
+                   fl_engine_get_binary_messenger(fl_view_get_engine(view)),
+                   "app.ghostbox.ghostbox/app_icon",
+                   FL_METHOD_CODEC(icon_codec)));
+  fl_method_channel_set_method_call_handler(
+      app_icon_channel, set_app_icon, g_object_ref(window), g_object_unref);
   GdkRGBA background_color;
   // Background defaults to black, override it here if necessary, e.g. #00000000
   // for transparent.
@@ -106,7 +227,10 @@ static gboolean my_application_local_command_line(GApplication* application,
   g_application_activate(application);
   *exit_status = 0;
 
-  return TRUE;
+  // Let GApplication forward the original URI arguments to an already
+  // running instance. The app_links GTK plugin handles the command-line/open
+  // signals in Dart.
+  return FALSE;
 }
 
 // Implements GApplication::startup.
@@ -154,5 +278,8 @@ MyApplication* my_application_new() {
 
   return MY_APPLICATION(g_object_new(my_application_get_type(),
                                      "application-id", APPLICATION_ID, "flags",
-                                     G_APPLICATION_NON_UNIQUE, nullptr));
+                                     static_cast<GApplicationFlags>(
+                                         G_APPLICATION_HANDLES_COMMAND_LINE |
+                                         G_APPLICATION_HANDLES_OPEN),
+                                     nullptr));
 }

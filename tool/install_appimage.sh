@@ -70,12 +70,16 @@ Icon=ghostbox
 Terminal=false
 Type=Application
 Categories=Network;Security;
+MimeType=x-scheme-handler/ghostbox;
 StartupWMClass=ghostbox
 EOF
 chmod 0644 "$DESKTOP_DIR/ghostbox.desktop"
 
 if command -v update-desktop-database >/dev/null 2>&1; then
   update-desktop-database "$DESKTOP_DIR" >/dev/null 2>&1 || true
+fi
+if command -v xdg-mime >/dev/null 2>&1; then
+  xdg-mime default ghostbox.desktop x-scheme-handler/ghostbox >/dev/null 2>&1 || true
 fi
 
 echo "Installed GhostBox v0.1-Alpha to $APP_PATH"

@@ -11,6 +11,7 @@ dependencies:
   cupertino_icons: ^1.0.6
   file_selector: ^1.0.3
   shared_preferences: ^2.5.3
+  app_links: ^7.2.2
 dev_dependencies:
   flutter_test:
     sdk: flutter
@@ -20,5 +21,6 @@ flutter:
   assets:
     - assets/ghostbox_logo.svg
     - assets/ghostbox_logo.png
+    - assets/icons/
     - assets/flags/
 

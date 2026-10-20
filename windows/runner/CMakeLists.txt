@@ -33,7 +33,11 @@ target_compile_definitions(${BINARY_NAME} PRIVATE "NOMINMAX")
 # Add dependency libraries and include directories. Add any application-specific
 # dependencies here.
 target_link_libraries(${BINARY_NAME} PRIVATE flutter flutter_wrapper_app)
-target_link_libraries(${BINARY_NAME} PRIVATE "dwmapi.lib" "shell32.lib")
+target_link_libraries(${BINARY_NAME} PRIVATE "dwmapi.lib" "shell32.lib" "gdiplus.lib" "ole32.lib")
+# runner.exe.manifest already declares requireAdministrator. Prevent MSVC from
+# adding its default asInvoker UAC fragment, which makes mt.exe reject the
+# merged manifest with LNK1327.
+target_link_options(${BINARY_NAME} PRIVATE "/MANIFESTUAC:NO")
 target_include_directories(${BINARY_NAME} PRIVATE "${CMAKE_SOURCE_DIR}")
 
 # Run the Flutter tool portions of the build. This must not be removed.

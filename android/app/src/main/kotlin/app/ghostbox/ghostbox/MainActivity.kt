@@ -12,6 +12,7 @@ import io.flutter.plugin.common.MethodChannel
 class MainActivity : FlutterActivity() {
     companion object {
         private const val CHANNEL = "app.ghostbox.ghostbox/vpn"
+        private const val ICON_CHANNEL = "app.ghostbox.ghostbox/app_icon"
         private const val VPN_PERMISSION_REQUEST = 4137
         private const val NOTIFICATION_PERMISSION_REQUEST = 4138
     }
@@ -66,6 +67,61 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, ICON_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                if (call.method != "setAppIcon") {
+                    result.notImplemented()
+                    return@setMethodCallHandler
+                }
+                val variant = call.argument<String>("variant")
+                val component = iconAlias(variant)
+                if (component == null) {
+                    result.success(false)
+                    return@setMethodCallHandler
+                }
+                try {
+                    val aliases = listOf(
+                        "IconClassic", "IconMidnight", "IconGraphite", "IconOcean",
+                        "IconEmerald", "IconAmethyst", "IconSapphire", "IconRuby",
+                        "IconLavender", "IconForest", "IconSand", "IconDaylight",
+                        "IconPaper", "IconMist", "IconAurora", "IconObsidian",
+                        "IconSunset", "IconArctic",
+                    )
+                    aliases.forEach { alias ->
+                        packageManager.setComponentEnabledSetting(
+                            android.content.ComponentName(this, "$packageName.$alias"),
+                            if (alias == component) PackageManager.COMPONENT_ENABLED_STATE_ENABLED
+                            else PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+                            PackageManager.DONT_KILL_APP,
+                        )
+                    }
+                    result.success(true)
+                } catch (error: Exception) {
+                    result.error("icon_change_failed", error.message, null)
+                }
+            }
+    }
+
+    private fun iconAlias(variant: String?): String? = when (variant) {
+        "classic" -> "IconClassic"
+        "midnight" -> "IconMidnight"
+        "graphite" -> "IconGraphite"
+        "ocean" -> "IconOcean"
+        "emerald" -> "IconEmerald"
+        "amethyst" -> "IconAmethyst"
+        "sapphire" -> "IconSapphire"
+        "ruby" -> "IconRuby"
+        "lavender" -> "IconLavender"
+        "forest" -> "IconForest"
+        "sand" -> "IconSand"
+        "daylight" -> "IconDaylight"
+        "paper" -> "IconPaper"
+        "mist" -> "IconMist"
+        "aurora" -> "IconAurora"
+        "obsidian" -> "IconObsidian"
+        "sunset" -> "IconSunset"
+        "arctic" -> "IconArctic"
+        else -> null
     }
 
     @Deprecated("FlutterActivity permission result bridge")

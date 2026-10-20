@@ -85,26 +85,33 @@ build_linux() {
       --output "$appimagetool"
     chmod 0755 "$appimagetool"
   fi
-  if [[ ! -s "$runtime" ]]; then
-    local runtime_sha256 runtime_url
-    case "$appimage_arch" in
-      x86_64)
-        runtime_sha256=156f4bdbde9c52d01814600013e0a273f0118dc2de98975f3c8c63427ec79074
-        ;;
-      aarch64)
-        runtime_sha256=b4ff0030242d0c3bb12ce40541828303cf167493f4793456f0436edd6255c39d
-        ;;
-    esac
-    runtime_url="https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-$appimage_arch"
+  local runtime_sha256 runtime_url runtime_version runtime_actual_sha256
+  # Pin the runtime to an immutable release. The upstream `continuous` URL
+  # is replaced in place, which invalidates previously pinned hashes.
+  runtime_version=20251108
+  case "$appimage_arch" in
+    x86_64)
+      runtime_sha256=2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d
+      ;;
+    aarch64)
+      runtime_sha256=00cbdfcf917cc6c0ff6d3347d59e0ca1f7f45a6df1a428a0d6d8a78664d87444
+      ;;
+  esac
+  runtime_url="https://github.com/AppImage/type2-runtime/releases/download/$runtime_version/runtime-$appimage_arch"
+  runtime_actual_sha256=''
+  if [[ -s "$runtime" ]]; then
+    runtime_actual_sha256="$(sha256sum "$runtime" | cut -d ' ' -f1)"
+  fi
+  if [[ "$runtime_actual_sha256" != "$runtime_sha256" ]]; then
     echo 'Downloading AppImage runtime…'
     curl --fail --location --retry 3 "$runtime_url" --output "$runtime"
-    printf '%s  %s\n' "$runtime_sha256" "$runtime" | sha256sum --check --status || {
-      rm -f "$runtime"
-      echo 'Downloaded AppImage runtime failed SHA-256 verification.' >&2
-      exit 1
-    }
-    chmod 0755 "$runtime"
   fi
+  printf '%s  %s\n' "$runtime_sha256" "$runtime" | sha256sum --check --status || {
+    rm -f "$runtime"
+    echo 'Downloaded AppImage runtime failed SHA-256 verification.' >&2
+    exit 1
+  }
+  chmod 0755 "$runtime"
   echo 'Packaging AppImage…'
   ARCH="$appimage_arch" APPIMAGE_EXTRACT_AND_RUN=1 \
     "$appimagetool" --runtime-file "$runtime" "$appdir" "$output"

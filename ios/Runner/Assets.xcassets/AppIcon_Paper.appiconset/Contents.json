@@ -1,0 +1,122 @@
+{
+  "images": [
+    {
+      "size": "20x20",
+      "idiom": "iphone",
+      "filename": "AppIcon_Paper-40.png",
+      "scale": "2x"
+    },
+    {
+      "size": "20x20",
+      "idiom": "iphone",
+      "filename": "AppIcon_Paper-60.png",
+      "scale": "3x"
+    },
+    {
+      "size": "29x29",
+      "idiom": "iphone",
+      "filename": "AppIcon_Paper-29.png",
+      "scale": "1x"
+    },
+    {
+      "size": "29x29",
+      "idiom": "iphone",
+      "filename": "AppIcon_Paper-58.png",
+      "scale": "2x"
+    },
+    {
+      "size": "29x29",
+      "idiom": "iphone",
+      "filename": "AppIcon_Paper-87.png",
+      "scale": "3x"
+    },
+    {
+      "size": "40x40",
+      "idiom": "iphone",
+      "filename": "AppIcon_Paper-80.png",
+      "scale": "2x"
+    },
+    {
+      "size": "40x40",
+      "idiom": "iphone",
+      "filename": "AppIcon_Paper-120.png",
+      "scale": "3x"
+    },
+    {
+      "size": "60x60",
+      "idiom": "iphone",
+      "filename": "AppIcon_Paper-120.png",
+      "scale": "2x"
+    },
+    {
+      "size": "60x60",
+      "idiom": "iphone",
+      "filename": "AppIcon_Paper-180.png",
+      "scale": "3x"
+    },
+    {
+      "size": "20x20",
+      "idiom": "ipad",
+      "filename": "AppIcon_Paper-20.png",
+      "scale": "1x"
+    },
+    {
+      "size": "20x20",
+      "idiom": "ipad",
+      "filename": "AppIcon_Paper-40.png",
+      "scale": "2x"
+    },
+    {
+      "size": "29x29",
+      "idiom": "ipad",
+      "filename": "AppIcon_Paper-29.png",
+      "scale": "1x"
+    },
+    {
+      "size": "29x29",
+      "idiom": "ipad",
+      "filename": "AppIcon_Paper-58.png",
+      "scale": "2x"
+    },
+    {
+      "size": "40x40",
+      "idiom": "ipad",
+      "filename": "AppIcon_Paper-40.png",
+      "scale": "1x"
+    },
+    {
+      "size": "40x40",
+      "idiom": "ipad",
+      "filename": "AppIcon_Paper-80.png",
+      "scale": "2x"
+    },
+    {
+      "size": "76x76",
+      "idiom": "ipad",
+      "filename": "AppIcon_Paper-76.png",
+      "scale": "1x"
+    },
+    {
+      "size": "76x76",
+      "idiom": "ipad",
+      "filename": "AppIcon_Paper-152.png",
+      "scale": "2x"
+    },
+    {
+      "size": "83.5x83.5",
+      "idiom": "ipad",
+      "filename": "AppIcon_Paper-167.png",
+      "scale": "2x"
+    },
+    {
+      "size": "1024x1024",
+      "idiom": "ios-marketing",
+      "filename": "AppIcon_Paper-1024.png",
+      "scale": "1x"
+    }
+  ],
+  "info": {
+    "version": 1,
+    "author": "xcode"
+  }
+}

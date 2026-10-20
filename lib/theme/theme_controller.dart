@@ -1,6 +1,8 @@
 import 'package:flutter/cupertino.dart' show CupertinoPageTransitionsBuilder;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'brand_icon.dart';
 
 enum ThemePreset {
   midnight,
@@ -26,9 +28,13 @@ enum ThemePreset {
 class ThemeController extends ChangeNotifier {
   ThemeController._();
   static final instance = ThemeController._();
+  static const _iconChannel = MethodChannel('app.ghostbox.ghostbox/app_icon');
   ThemePreset _preset = ThemePreset.midnight;
   Color _customAccent = const Color(0xFF8BB9F4);
   Color _customBackground = const Color(0xFF080D16);
+  String _iconVariant = 'classic';
+  Color _iconForeground = const Color(0xFF8BB9F4);
+  Color _iconBackground = const Color(0xFF080D16);
   bool _loaded = false;
   ThemePreset get preset => _preset;
   Color get accent => switch (_preset) {
@@ -92,6 +98,9 @@ class ThemeController extends ChangeNotifier {
       : const Color(0xFF596477);
   Color get customAccent => _customAccent;
   Color get customBackground => _customBackground;
+  String get iconVariant => _iconVariant;
+  Color get iconForeground => _iconForeground;
+  Color get iconBackground => _iconBackground;
 
   Future<void> load() async {
     if (_loaded) return;
@@ -104,7 +113,53 @@ class ThemeController extends ChangeNotifier {
         Color(prefs.getInt('appearance.accent') ?? _customAccent.toARGB32());
     _customBackground = Color(
         prefs.getInt('appearance.background') ?? _customBackground.toARGB32());
+    _iconVariant = prefs.getString('appearance.iconVariant') ?? 'classic';
+    _iconForeground = Color(prefs.getInt('appearance.iconForeground') ??
+        _iconForeground.toARGB32());
+    _iconBackground = Color(prefs.getInt('appearance.iconBackground') ??
+        _iconBackground.toARGB32());
     notifyListeners();
+    await _applyPlatformIcon();
+  }
+
+  Future<void> setIconVariant(String value) async {
+    _iconVariant = value;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('appearance.iconVariant', value);
+    await _applyPlatformIcon();
+  }
+
+  Future<void> setCustomIconColors(
+      {Color? foreground, Color? background}) async {
+    if (foreground != null) _iconForeground = foreground;
+    if (background != null) _iconBackground = background;
+    _iconVariant = 'custom';
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('appearance.iconVariant', _iconVariant);
+    await prefs.setInt('appearance.iconForeground', _iconForeground.toARGB32());
+    await prefs.setInt('appearance.iconBackground', _iconBackground.toARGB32());
+    await _applyPlatformIcon();
+  }
+
+  Future<bool> _applyPlatformIcon() async {
+    try {
+      final customPng = _iconVariant == 'custom'
+          ? await renderCustomGhostIcon(_iconForeground, _iconBackground)
+          : null;
+      return await _iconChannel.invokeMethod<bool>('setAppIcon', {
+            'variant': _iconVariant,
+            'foreground': _iconForeground.toARGB32(),
+            'background': _iconBackground.toARGB32(),
+            if (customPng != null) 'customPng': customPng,
+          }) ??
+          false;
+    } on MissingPluginException {
+      return false;
+    } on PlatformException {
+      return false;
+    }
   }
 
   Future<void> select(ThemePreset value) async {

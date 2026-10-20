@@ -1,5 +1,6 @@
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'brand_icon.dart';
 import 'theme_controller.dart';
 
 class ThemeSettingsPanel extends StatefulWidget {
@@ -39,6 +40,7 @@ class _ThemeSettingsPanelState extends State<ThemeSettingsPanel> {
         'Обсидиан' => _s('Обсидиан', 'Obsidian'),
         'Закат' => _s('Закат', 'Sunset'),
         'Арктика' => _s('Арктика', 'Arctic'),
+        'Классика' => _s('Классика', 'Classic'),
         'Своя' => _s('Своя', 'Custom'),
         _ => value,
       };
@@ -244,6 +246,63 @@ class _ThemeSettingsPanelState extends State<ThemeSettingsPanel> {
               onPressed: () => controller.select(ThemePreset.custom),
               icon: const Icon(Icons.palette_outlined, size: 18),
               label: Text(_s('Настроить свою тему', 'Customize theme')))),
+      const SizedBox(height: 20),
+      Text(_s('Значок приложения', 'App icon'),
+          style: theme.textTheme.titleMedium),
+      const SizedBox(height: 5),
+      Text(
+          _s('Независима от темы. Готовые значки меняют иконку приложения; своя палитра применяется в интерфейсе и на десктопе.',
+              'Independent from the app theme. Presets change the app icon; custom colors apply in the UI and on desktop.'),
+          style: theme.textTheme.bodySmall),
+      const SizedBox(height: 12),
+      Wrap(spacing: 9, runSpacing: 9, children: [
+        for (final icon in _iconOptions)
+          _iconOption(context, controller, icon.$1, _presetName(icon.$2),
+              icon.$3, icon.$4),
+        _iconOption(context, controller, 'custom', _s('Своя', 'Custom'),
+            controller.iconForeground, controller.iconBackground),
+      ]),
+      AnimatedSize(
+        duration: const Duration(milliseconds: 260),
+        curve: Curves.easeInOutCubic,
+        child: controller.iconVariant != 'custom'
+            ? const SizedBox(width: double.infinity)
+            : Padding(
+                padding: const EdgeInsets.only(top: 18),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(_s('Цвет призрака', 'Ghost color'),
+                        style: theme.textTheme.bodySmall),
+                    const SizedBox(height: 9),
+                    Wrap(spacing: 9, runSpacing: 9, children: [
+                      for (final color in _iconColors)
+                        _swatch(
+                            context,
+                            color,
+                            controller.iconForeground,
+                            () => controller.setCustomIconColors(
+                                foreground: color)),
+                      _customIconColor(context, controller, foreground: true),
+                    ]),
+                    const SizedBox(height: 16),
+                    Text(_s('Фон значка', 'Icon background'),
+                        style: theme.textTheme.bodySmall),
+                    const SizedBox(height: 9),
+                    Wrap(spacing: 9, runSpacing: 9, children: [
+                      for (final color in _iconBackgrounds)
+                        _swatch(
+                            context,
+                            color,
+                            controller.iconBackground,
+                            () => controller.setCustomIconColors(
+                                background: color)),
+                      _customIconColor(context, controller, foreground: false),
+                    ]),
+                  ],
+                ),
+              ),
+      ),
       AnimatedSize(
           duration: const Duration(milliseconds: 320),
           curve: Curves.easeInOutCubic,
@@ -329,6 +388,128 @@ class _ThemeSettingsPanelState extends State<ThemeSettingsPanel> {
                       ]),
                 )),
     ]);
+  }
+
+  static const _iconOptions = <(String, String, Color, Color)>[
+    ('classic', 'Классика', Color(0xFFD9D9D9), Color(0xFF10101B)),
+    ('midnight', 'Полночь', Color(0xFF8BB9F4), Color(0xFF070612)),
+    ('graphite', 'Графит', Color(0xFFB6BDC9), Color(0xFF0D0F13)),
+    ('ocean', 'Океан', Color(0xFF4DC9E8), Color(0xFF061522)),
+    ('emerald', 'Изумруд', Color(0xFF7CDDB6), Color(0xFF091812)),
+    ('amethyst', 'Аметист', Color(0xFFB9A0FF), Color(0xFF120D20)),
+    ('sapphire', 'Сапфир', Color(0xFF78A9FF), Color(0xFF091426)),
+    ('ruby', 'Рубин', Color(0xFFFF8295), Color(0xFF1A1018)),
+    ('lavender', 'Лаванда', Color(0xFFC7B5FF), Color(0xFF171326)),
+    ('forest', 'Лес', Color(0xFF8BCF9B), Color(0xFF0D1B15)),
+    ('sand', 'Песок', Color(0xFFE5BF8C), Color(0xFF201A12)),
+    ('daylight', 'Светлая', Color(0xFF355FBB), Color(0xFFE8EEF8)),
+    ('paper', 'Бумага', Color(0xFF6857B8), Color(0xFFF0EBE2)),
+    ('mist', 'Туман', Color(0xFF347F8A), Color(0xFFE5EEEE)),
+    ('aurora', 'Аврора', Color(0xFF53D6C2), Color(0xFF071A20)),
+    ('obsidian', 'Обсидиан', Color(0xFF90A4C3), Color(0xFF111722)),
+    ('sunset', 'Закат', Color(0xFFFF9568), Color(0xFF20120F)),
+    ('arctic', 'Арктика', Color(0xFF247D9B), Color(0xFFE2F0F4)),
+  ];
+
+  static const _iconColors = [
+    Color(0xFF8BB9F4),
+    Color(0xFF4DC9E8),
+    Color(0xFF7CDDB6),
+    Color(0xFFB9A0FF),
+    Color(0xFF78A9FF),
+    Color(0xFFFF8295),
+    Color(0xFFFF9568),
+    Color(0xFFE5BF8C),
+    Color(0xFFE8ECF4),
+    Color(0xFF355FBB),
+    Color(0xFF347F8A),
+    Color(0xFF8BCF9B),
+  ];
+
+  static const _iconBackgrounds = [
+    Color(0xFF070612),
+    Color(0xFF0D0F13),
+    Color(0xFF061522),
+    Color(0xFF091812),
+    Color(0xFF120D20),
+    Color(0xFF1A1018),
+    Color(0xFF201A12),
+    Color(0xFF171326),
+    Color(0xFFFFFFFF),
+    Color(0xFFF1F5FC),
+    Color(0xFFF6F2EB),
+    Color(0xFFEAF5FA),
+  ];
+
+  Widget _iconOption(BuildContext context, ThemeController controller,
+      String id, String name, Color foreground, Color background) {
+    final selected = controller.iconVariant == id;
+    return Tooltip(
+      message: name,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(13),
+        onTap: () => controller.setIconVariant(id),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 220),
+          width: 56,
+          height: 62,
+          decoration: BoxDecoration(
+            color: selected ? controller.accent.withValues(alpha: .12) : null,
+            borderRadius: BorderRadius.circular(13),
+            border: Border.all(
+              color: selected
+                  ? controller.accent
+                  : Theme.of(context).colorScheme.outline,
+              width: selected ? 1.5 : 1,
+            ),
+          ),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              GhostBoxBrandIcon(
+                variant: id,
+                size: 34,
+                foreground: foreground,
+                background: background,
+              ),
+              const SizedBox(height: 4),
+              Text(name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                      fontSize: 8.5,
+                      color: Theme.of(context).colorScheme.onSurface)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _customIconColor(BuildContext context, ThemeController controller,
+      {required bool foreground}) {
+    final label = foreground
+        ? _s('Свой цвет призрака', 'Custom ghost color')
+        : _s('Свой цвет фона', 'Custom background color');
+    return IconButton.outlined(
+      tooltip: label,
+      icon: const Icon(Icons.colorize_rounded, size: 18),
+      onPressed: () async {
+        final color = await showDialog<Color>(
+            context: context,
+            builder: (_) => _ColorDialog(
+                initial: foreground
+                    ? controller.iconForeground
+                    : controller.iconBackground,
+                background: !foreground,
+                english: widget.english));
+        if (color != null) {
+          await controller.setCustomIconColors(
+              foreground: foreground ? color : null,
+              background: foreground ? null : color);
+        }
+      },
+    );
   }
 
   Widget _preset(BuildContext context, ThemeController controller,

@@ -9,6 +9,7 @@ import 'package:flutter/foundation.dart'
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:file_selector/file_selector.dart';
+import 'package:app_links/app_links.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../backends/sing_box_backend.dart';
@@ -30,6 +31,7 @@ import '../../services/github_updater.dart';
 import '../../services/log_store.dart';
 import '../../theme/theme_settings_panel.dart';
 import '../../theme/theme_controller.dart';
+import '../../theme/brand_icon.dart';
 import '../../widgets/ghost_notice.dart';
 
 class HomePage extends StatefulWidget {
@@ -49,6 +51,7 @@ class _HomePageState extends State<HomePage>
   final routingScroll = ScrollController();
   final routeListController = TextEditingController();
   bool refreshingSubscriptions = false;
+  int _previousTabIndex = 0;
   Timer? subscriptionRefreshTimer;
   Color get _surface => Theme.of(context).colorScheme.surface;
   Color get _subscriptionInfoSurface =>
@@ -99,6 +102,11 @@ class _HomePageState extends State<HomePage>
   String? subscriptionUrl;
   List<String> subscriptionProfileIds = [];
   List<Map<String, dynamic>> subscriptions = [];
+  final Map<String, int> subscriptionEndpointPings = <String, int>{};
+  final Set<String> checkingSubscriptionPings = <String>{};
+  final List<Uri> _pendingAppLinks = <Uri>[];
+  final Set<String> _handledAppLinks = <String>{};
+  StreamSubscription<Uri>? _appLinkSubscription;
   bool hideProfiles = false;
   final Set<String> collapsedSubscriptions = <String>{};
   final Set<String> collapsedSubscriptionInfo = <String>{};
@@ -651,7 +659,114 @@ class _HomePageState extends State<HomePage>
     ambientMotion =
         AnimationController(vsync: this, duration: const Duration(seconds: 18))
           ..repeat();
+    _appLinkSubscription = AppLinks().uriLinkStream.listen(
+          _receiveAppLink,
+          onError: (Object error) =>
+              _recordAppLog('Ошибка ссылки GhostBox: $error'),
+        );
+    unawaited(AppLinks().getInitialLink().then((link) {
+      if (link != null) _receiveAppLink(link);
+    }).catchError((Object error) {
+      _recordAppLog('Не удалось прочитать ссылку GhostBox: $error');
+    }));
     _load();
+  }
+
+  void _receiveAppLink(Uri link) {
+    final scheme = link.scheme.toLowerCase();
+    if (scheme != 'ghostbox' && scheme != 'http' && scheme != 'https') return;
+    if (_handledAppLinks.contains(link.toString()) ||
+        _pendingAppLinks.any((queued) => queued == link)) return;
+    if (prefs == null) {
+      _pendingAppLinks.add(link);
+      return;
+    }
+    unawaited(_importAppLink(link));
+  }
+
+  Future<void> _drainPendingAppLinks() async {
+    if (prefs == null || _pendingAppLinks.isEmpty) return;
+    final pending = List<Uri>.from(_pendingAppLinks);
+    _pendingAppLinks.clear();
+    for (final link in pending) {
+      await _importAppLink(link);
+    }
+  }
+
+  Future<void> _importAppLink(Uri link) async {
+    final linkKey = link.toString();
+    if (!_handledAppLinks.add(linkKey)) return;
+    String input = linkKey;
+    String? subscriptionSource;
+    if (link.scheme.toLowerCase() == 'ghostbox' &&
+        link.host.toLowerCase() == 'addserver') {
+      final query = link.queryParameters;
+      final candidate = query['url'] ?? query['link'] ?? query['uri'];
+      final decodedQuery = Uri.decodeComponent(link.query);
+      final source = candidate ??
+          (decodedQuery.startsWith('http://') ||
+                  decodedQuery.startsWith('https://')
+              ? decodedQuery
+              : null);
+      if (source != null &&
+          (source.startsWith('http://') || source.startsWith('https://'))) {
+        input = source;
+        subscriptionSource = source;
+      }
+    } else if (link.scheme.toLowerCase() == 'http' ||
+        link.scheme.toLowerCase() == 'https') {
+      subscriptionSource = link.toString();
+    }
+
+    try {
+      final parsed = await ProfileParser().parseSourceDetailed(input);
+      if (parsed.profiles.isEmpty) {
+        throw const FormatException('Ссылка не содержит серверов');
+      }
+      final sourceUrl = subscriptionSource;
+      final old = sourceUrl == null
+          ? null
+          : subscriptions.where((item) => item['url'] == sourceUrl).firstOrNull;
+      final oldIds = (old?['ids'] as List? ?? []).cast<String>().toSet();
+      setState(() {
+        profiles = [
+          ...profiles.where((profile) => !oldIds.contains(profile.id)),
+          ...parsed.profiles,
+        ];
+        selectedId = parsed.profiles.first.id;
+        if (sourceUrl != null) {
+          subscriptions.removeWhere((item) => item['url'] == sourceUrl);
+          subscriptions.add({
+            'url': sourceUrl,
+            'name': parsed.metadata.title ??
+                Uri.tryParse(sourceUrl)?.host ??
+                'Подписка',
+            'metadata': parsed.metadata.toJson(),
+            'updatedAt': DateTime.now().toIso8601String(),
+            'ids': parsed.profiles.map((profile) => profile.id).toList(),
+          });
+        }
+      });
+      await _persist();
+      if (sourceUrl != null) {
+        await _saveSubscriptions();
+        _scheduleSubscriptionRefresh();
+        unawaited(_checkSubscriptionEndpoint(sourceUrl));
+      }
+      if (mounted) {
+        _message(_text(
+          sourceUrl == null
+              ? 'Сервер добавлен из ссылки GhostBox'
+              : 'Подписка добавлена из ссылки GhostBox',
+          sourceUrl == null
+              ? 'Server imported from GhostBox link'
+              : 'Subscription imported from GhostBox link',
+        ));
+      }
+    } catch (error) {
+      _handledAppLinks.remove(linkKey);
+      if (mounted) _message('Не удалось открыть ссылку GhostBox: $error');
+    }
   }
 
   Future<void> _load() async {
@@ -807,6 +922,10 @@ class _HomePageState extends State<HomePage>
       }
     }
     _scheduleSubscriptionRefresh();
+    for (final subscription in subscriptions) {
+      final url = subscription['url'];
+      if (url is String) unawaited(_checkSubscriptionEndpoint(url));
+    }
     if (autoRefreshSubscriptions) {
       unawaited(_refreshDueSubscriptions());
     }
@@ -832,6 +951,7 @@ class _HomePageState extends State<HomePage>
       await _toggle();
     }
     if (mounted) unawaited(_checkAppUpdate(silent: true));
+    await _drainPendingAppLinks();
   }
 
   @override
@@ -892,6 +1012,7 @@ class _HomePageState extends State<HomePage>
     settingsScroll.dispose();
     routingScroll.dispose();
     routeListController.dispose();
+    unawaited(_appLinkSubscription?.cancel());
     subscriptionRefreshTimer?.cancel();
     uptimeTicker?.cancel();
     glow.dispose();
@@ -2652,6 +2773,9 @@ class _HomePageState extends State<HomePage>
     await _persist();
     await _saveSubscriptions();
     _scheduleSubscriptionRefresh();
+    for (final url in sources) {
+      unawaited(_checkSubscriptionEndpoint(url));
+    }
     if (mounted)
       _message(imported > 0
           ? 'Добавлено серверов: $imported'
@@ -3026,24 +3150,54 @@ class _HomePageState extends State<HomePage>
                             final page = ClipRRect(
                                 borderRadius: BorderRadius.circular(24),
                                 child: AnimatedSwitcher(
-                                    duration: const Duration(milliseconds: 190),
+                                    duration: const Duration(milliseconds: 270),
                                     reverseDuration:
-                                        const Duration(milliseconds: 80),
+                                        const Duration(milliseconds: 220),
                                     switchInCurve: Curves.easeOutCubic,
-                                    switchOutCurve: Curves.linear,
-                                    layoutBuilder: (current, previous) =>
-                                        current ?? SizedBox.shrink(),
-                                    transitionBuilder: (child, animation) =>
-                                        FadeTransition(
-                                            opacity: animation,
-                                            child: ScaleTransition(
-                                                scale: Tween<double>(
-                                                        begin: .985, end: 1)
-                                                    .animate(CurvedAnimation(
-                                                        parent: animation,
-                                                        curve: Curves
-                                                            .easeOutCubic)),
-                                                child: child)),
+                                    switchOutCurve: Curves.easeInCubic,
+                                    layoutBuilder: (current, previous) => Stack(
+                                          fit: StackFit.passthrough,
+                                          children: [
+                                            ...previous,
+                                            if (current != null) current,
+                                          ],
+                                        ),
+                                    transitionBuilder: (child, animation) {
+                                      final childTab =
+                                          (child.key as ValueKey<int>).value;
+                                      final entering = childTab == _tabIndex;
+                                      final direction =
+                                          (_tabIndex - _previousTabIndex)
+                                              .sign
+                                              .toDouble();
+                                      final offset = entering
+                                          ? Offset(direction * .025, 0)
+                                          : Offset(-direction * .025, 0);
+                                      final motion = CurvedAnimation(
+                                          parent: animation,
+                                          curve: Curves.easeOutCubic,
+                                          reverseCurve: Curves.easeInCubic);
+                                      return FadeTransition(
+                                        opacity: animation,
+                                        child: SlideTransition(
+                                          position: Tween<Offset>(
+                                                  begin: entering
+                                                      ? offset
+                                                      : Offset.zero,
+                                                  end: entering
+                                                      ? Offset.zero
+                                                      : offset)
+                                              .animate(motion),
+                                          child: ScaleTransition(
+                                            scale: Tween<double>(
+                                                    begin: entering ? .99 : 1,
+                                                    end: entering ? 1 : .99)
+                                                .animate(motion),
+                                            child: child,
+                                          ),
+                                        ),
+                                      );
+                                    },
                                     child: KeyedSubtree(
                                         key: ValueKey(_tabIndex),
                                         child: settings
@@ -3234,67 +3388,111 @@ class _HomePageState extends State<HomePage>
           child: SizedBox(
             width: 44,
             height: 44,
-            child: wideLayout && !routeListOpen && !settings && !routingTab
-                ? Center(
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(9),
-                      child: Image.asset('assets/ghostbox_logo.png',
-                          width: 36, height: 36),
+            child: AnimatedSwitcher(
+              duration: const Duration(milliseconds: 270),
+              reverseDuration: const Duration(milliseconds: 220),
+              switchInCurve: Curves.easeOutCubic,
+              switchOutCurve: Curves.easeInCubic,
+              transitionBuilder: (child, animation) {
+                final motion = CurvedAnimation(
+                    parent: animation, curve: Curves.easeOutBack);
+                return FadeTransition(
+                  opacity: animation,
+                  child: ScaleTransition(
+                    scale: Tween<double>(begin: .78, end: 1).animate(motion),
+                    child: RotationTransition(
+                      turns:
+                          Tween<double>(begin: -.035, end: 0).animate(motion),
+                      child: child,
                     ),
-                  )
-                : _topButton(
-                    routeListOpen || settings || routingTab
-                        ? Icons.arrow_back_ios_new_rounded
-                        : Icons.settings_rounded, () {
-                    if (routeListOpen) {
-                      setState(() => routeListOpen = false);
-                    } else {
-                      _openTab(settings || routingTab ? 0 : 2);
-                    }
-                  }),
+                  ),
+                );
+              },
+              child: wideLayout && !routeListOpen && !settings && !routingTab
+                  ? Center(
+                      key: const ValueKey('header-brand-mark'),
+                      child: _brandMark(36),
+                    )
+                  : _topButton(
+                      routeListOpen || settings || routingTab
+                          ? Icons.arrow_back_ios_new_rounded
+                          : Icons.settings_rounded, () {
+                      if (routeListOpen) {
+                        setState(() => routeListOpen = false);
+                      } else {
+                        _openTab(settings || routingTab ? 0 : 2);
+                      }
+                    },
+                      key: ValueKey(
+                          'header-button-${routeListOpen || settings || routingTab ? 'back' : 'settings'}')),
+            ),
           ),
         ),
         Center(
             child: Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 64),
-                child: routeListOpen || settings || routingTab
-                    ? Text(
-                        routeListOpen
-                            ? _localized('Список доменов')
-                            : settings
-                                ? _localized('Настройки')
-                                : _localized('Маршрут'),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(
-                            fontSize: 17,
-                            fontWeight: FontWeight.w700,
-                            letterSpacing: .2),
-                      )
-                    : FittedBox(
-                        fit: BoxFit.scaleDown,
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            if (!wideLayout) ...[
-                              ClipRRect(
-                                borderRadius: BorderRadius.circular(7),
-                                child: Image.asset('assets/ghostbox_logo.png',
-                                    width: 23, height: 23),
-                              ),
-                              const SizedBox(width: 8),
-                            ],
-                            Text('GhostBox',
-                                style: const TextStyle(
-                                    fontSize: 17,
-                                    fontWeight: FontWeight.w700,
-                                    letterSpacing: .2)),
-                            const SizedBox(width: 7),
-                            _versionMark(),
-                          ],
+                child: AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 270),
+                    reverseDuration: const Duration(milliseconds: 220),
+                    switchInCurve: Curves.easeOutCubic,
+                    switchOutCurve: Curves.easeInCubic,
+                    transitionBuilder: (child, animation) {
+                      final motion = CurvedAnimation(
+                          parent: animation, curve: Curves.easeOutCubic);
+                      return FadeTransition(
+                        opacity: animation,
+                        child: SlideTransition(
+                          position: Tween<Offset>(
+                                  begin: const Offset(0, .10), end: Offset.zero)
+                              .animate(motion),
+                          child: ScaleTransition(
+                            scale: Tween<double>(begin: .985, end: 1)
+                                .animate(motion),
+                            child: child,
+                          ),
                         ),
-                      ))),
+                      );
+                    },
+                    child: routeListOpen || settings || routingTab
+                        ? Text(
+                            key: ValueKey(routeListOpen
+                                ? 'header-domains'
+                                : settings
+                                    ? 'header-settings'
+                                    : 'header-routing'),
+                            routeListOpen
+                                ? _localized('Список доменов')
+                                : settings
+                                    ? _localized('Настройки')
+                                    : _localized('Маршрут'),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(
+                                fontSize: 17,
+                                fontWeight: FontWeight.w700,
+                                letterSpacing: .2),
+                          )
+                        : FittedBox(
+                            key: ValueKey('header-brand-$wideLayout'),
+                            fit: BoxFit.scaleDown,
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                if (!wideLayout) ...[
+                                  _brandMark(23),
+                                  const SizedBox(width: 8),
+                                ],
+                                Text('GhostBox',
+                                    style: const TextStyle(
+                                        fontSize: 17,
+                                        fontWeight: FontWeight.w700,
+                                        letterSpacing: .2)),
+                                const SizedBox(width: 7),
+                                _versionMark(),
+                              ],
+                            ),
+                          )))),
         if (refreshingSubscriptions)
           const Positioned(
               right: 50,
@@ -3318,6 +3516,16 @@ class _HomePageState extends State<HomePage>
                             color: _foreground, size: 25))))),
       ]));
 
+  Widget _brandMark(double size) {
+    final appearance = ThemeScope.of(context);
+    return GhostBoxBrandIcon(
+      variant: appearance.iconVariant,
+      size: size,
+      foreground: appearance.iconForeground,
+      background: appearance.iconBackground,
+    );
+  }
+
   PopupMenuItem<String> _menuItem(String value, IconData icon, String label) =>
       PopupMenuItem<String>(
           value: value,
@@ -3331,14 +3539,30 @@ class _HomePageState extends State<HomePage>
           ]));
 
   void _openTab(int index) => setState(() {
+        _previousTabIndex = _tabIndex;
         routeListOpen = false;
         settings = index == 2;
         routingTab = index == 1;
       });
 
-  Widget _topButton(IconData icon, VoidCallback onTap) => IconButton(
+  Widget _topButton(IconData icon, VoidCallback onTap, {Key? key}) => IconButton(
+      key: key,
       onPressed: onTap,
-      icon: Icon(icon, size: 25, color: _foreground),
+      icon: AnimatedSwitcher(
+          duration: const Duration(milliseconds: 210),
+          transitionBuilder: (child, animation) => FadeTransition(
+              opacity: animation,
+              child: RotationTransition(
+                  turns: Tween<double>(begin: -.08, end: 0).animate(
+                      CurvedAnimation(
+                          parent: animation, curve: Curves.easeOutCubic)),
+                  child: ScaleTransition(
+                      scale: Tween<double>(begin: .76, end: 1).animate(
+                          CurvedAnimation(
+                              parent: animation, curve: Curves.easeOutBack)),
+                      child: child))),
+          child:
+              Icon(icon, key: ValueKey(icon.codePoint), size: 25, color: _foreground)),
       padding: EdgeInsets.zero,
       constraints: const BoxConstraints.tightFor(width: 44, height: 44),
       style: IconButton.styleFrom(shape: const CircleBorder()));
@@ -3898,10 +4122,28 @@ class _HomePageState extends State<HomePage>
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
                             AnimatedSwitcher(
-                              duration: const Duration(milliseconds: 120),
-                              transitionBuilder: (child, animation) =>
-                                  FadeTransition(
-                                      opacity: animation, child: child),
+                              duration: const Duration(milliseconds: 240),
+                              reverseDuration:
+                                  const Duration(milliseconds: 180),
+                              switchInCurve: Curves.easeOutBack,
+                              switchOutCurve: Curves.easeInCubic,
+                              transitionBuilder: (child, animation) {
+                                final curved = CurvedAnimation(
+                                    parent: animation,
+                                    curve: Curves.easeOutCubic);
+                                return FadeTransition(
+                                  opacity: animation,
+                                  child: ScaleTransition(
+                                    scale: Tween<double>(begin: .72, end: 1)
+                                        .animate(curved),
+                                    child: RotationTransition(
+                                      turns: Tween<double>(begin: -.04, end: 0)
+                                          .animate(curved),
+                                      child: child,
+                                    ),
+                                  ),
+                                );
+                              },
                               child: backend.state == VpnState.connecting ||
                                       switchingServer
                                   ? const Icon(Icons.more_horiz_rounded,
@@ -4174,13 +4416,47 @@ class _HomePageState extends State<HomePage>
                           Icon(Icons.layers_rounded, color: _accent, size: 20),
                           SizedBox(width: 8),
                           Expanded(
-                              child: Text(
-                                  '${sub['name'] ?? (host.isEmpty ? 'Подписка' : host)}',
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: TextStyle(
-                                      fontWeight: FontWeight.w600,
-                                      color: _foreground))),
+                              child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                Text(
+                                    '${sub['name'] ?? (host.isEmpty ? 'Подписка' : host)}',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                        fontWeight: FontWeight.w600,
+                                        color: _foreground)),
+                                const SizedBox(height: 3),
+                                Row(children: [
+                                  Flexible(
+                                      child: Text(host,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: TextStyle(
+                                              color: _muted, fontSize: 10))),
+                                  const SizedBox(width: 8),
+                                  if (checkingSubscriptionPings.contains(url))
+                                    SizedBox(
+                                        width: 10,
+                                        height: 10,
+                                        child: CircularProgressIndicator(
+                                            strokeWidth: 1.5, color: _muted))
+                                  else if (subscriptionEndpointPings
+                                      .containsKey(url))
+                                    Text(
+                                        'TCP · ${subscriptionEndpointPings[url]} ${english ? 'ms' : 'мс'}',
+                                        style: TextStyle(
+                                            color: _latencyColor(
+                                                subscriptionEndpointPings[url]),
+                                            fontSize: 10,
+                                            fontWeight: FontWeight.w600))
+                                  else
+                                    Text(_text('TCP · —', 'TCP · —'),
+                                        style: TextStyle(
+                                            color: _muted, fontSize: 10)),
+                                ]),
+                              ])),
                           Text('${entries.length}',
                               style: TextStyle(color: _muted, fontSize: 11)),
                           IconButton(
@@ -4338,6 +4614,35 @@ class _HomePageState extends State<HomePage>
         _message('Не удалось открыть ссылку');
     } catch (_) {
       if (mounted) _message('Не удалось открыть ссылку');
+    }
+  }
+
+  Future<void> _checkSubscriptionEndpoint(String url) async {
+    final uri = Uri.tryParse(url);
+    if (uri == null ||
+        uri.host.isEmpty ||
+        !const {'http', 'https'}.contains(uri.scheme.toLowerCase())) return;
+    if (!checkingSubscriptionPings.add(url)) return;
+    if (mounted) setState(() {});
+    final stopwatch = Stopwatch()..start();
+    Socket? socket;
+    try {
+      socket = await Socket.connect(
+        uri.host,
+        uri.hasPort ? uri.port : (uri.scheme == 'https' ? 443 : 80),
+        timeout: const Duration(seconds: 5),
+      );
+      stopwatch.stop();
+      if (mounted) {
+        setState(() => subscriptionEndpointPings[url] =
+            math.max(1, stopwatch.elapsedMilliseconds));
+      }
+    } on Object {
+      if (mounted) setState(() => subscriptionEndpointPings.remove(url));
+    } finally {
+      socket?.destroy();
+      checkingSubscriptionPings.remove(url);
+      if (mounted) setState(() {});
     }
   }
 
@@ -5447,17 +5752,49 @@ class _HomePageState extends State<HomePage>
                 style: TextStyle(color: _muted, fontSize: 13)),
             SizedBox(height: 24),
             Container(
-                padding: EdgeInsets.all(4),
-                decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(.065),
-                    borderRadius: BorderRadius.circular(17),
-                    border: Border.all(color: Colors.white.withOpacity(.09))),
-                child: Row(children: [
-                  _segment(_localized('Основные'), !advanced,
-                      () => setState(() => advanced = false)),
-                  _segment(_localized('Для профи'), advanced,
-                      () => setState(() => advanced = true)),
-                ])),
+              height: 48,
+              padding: const EdgeInsets.all(4),
+              decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(.065),
+                  borderRadius: BorderRadius.circular(17),
+                  border: Border.all(color: Colors.white.withOpacity(.09))),
+              child: Stack(
+                children: [
+                  AnimatedAlign(
+                    alignment:
+                        advanced ? Alignment.centerRight : Alignment.centerLeft,
+                    duration: const Duration(milliseconds: 300),
+                    curve: Curves.easeOutCubic,
+                    child: FractionallySizedBox(
+                      widthFactor: .5,
+                      heightFactor: 1,
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 240),
+                        curve: Curves.easeOutCubic,
+                        decoration: BoxDecoration(
+                          color: _accent.withOpacity(.19),
+                          borderRadius: BorderRadius.circular(13),
+                          border: Border.all(
+                              color: _accent.withOpacity(.25), width: .8),
+                          boxShadow: [
+                            BoxShadow(
+                                color: _accent.withOpacity(.10),
+                                blurRadius: 12,
+                                offset: const Offset(0, 2)),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                  Row(children: [
+                    _segment(_localized('Основные'), !advanced,
+                        () => setState(() => advanced = false)),
+                    _segment(_localized('Для профи'), advanced,
+                        () => setState(() => advanced = true)),
+                  ]),
+                ],
+              ),
+            ),
             _animatedReconnectBanner(
                 visible: pendingReconnect,
                 child: Padding(
@@ -5483,25 +5820,35 @@ class _HomePageState extends State<HomePage>
                         ])))),
             SizedBox(height: 22),
             AnimatedSize(
-                duration: const Duration(milliseconds: 250),
-                curve: Curves.easeOutCubic,
+                duration: const Duration(milliseconds: 290),
+                curve: Curves.easeInOutCubic,
                 alignment: Alignment.topCenter,
                 child: AnimatedSwitcher(
-                    duration: const Duration(milliseconds: 290),
-                    reverseDuration: const Duration(milliseconds: 230),
+                    duration: const Duration(milliseconds: 320),
+                    reverseDuration: const Duration(milliseconds: 260),
                     switchInCurve: Curves.easeOutCubic,
                     switchOutCurve: Curves.easeInCubic,
                     transitionBuilder: (child, animation) {
                       final isAdvanced = (child.key as ValueKey<bool>).value;
+                      final motion = CurvedAnimation(
+                          parent: animation,
+                          curve: Curves.easeOutCubic,
+                          reverseCurve: Curves.easeInCubic);
                       final slide = Tween<Offset>(
-                        begin: Offset(isAdvanced ? .035 : -.035, 0),
+                        begin: Offset(isAdvanced ? .025 : -.025, 0),
                         end: Offset.zero,
-                      ).animate(CurvedAnimation(
-                          parent: animation, curve: Curves.easeOutCubic));
+                      ).animate(motion);
                       return ClipRect(
                         child: FadeTransition(
                           opacity: animation,
-                          child: SlideTransition(position: slide, child: child),
+                          child: SlideTransition(
+                            position: slide,
+                            child: ScaleTransition(
+                              scale: Tween<double>(begin: .985, end: 1)
+                                  .animate(motion),
+                              child: child,
+                            ),
+                          ),
                         ),
                       );
                     },
@@ -6931,6 +7278,7 @@ class _HomePageState extends State<HomePage>
           'subscriptionProfileIds', subscriptionProfileIds);
       await prefs?.setString('subscriptions', jsonEncode(subscriptions));
       _scheduleSubscriptionRefresh();
+      unawaited(_checkSubscriptionEndpoint(url));
       if (mounted && !silent)
         _message('Подписка обновлена: ${fresh.length} серверов');
       return true;
@@ -7307,25 +7655,30 @@ class _HomePageState extends State<HomePage>
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     AnimatedScale(
-                        scale: _tabIndex == index ? 1.08 : 1,
-                        duration: const Duration(milliseconds: 220),
-                        child: Icon(icon,
-                            size: 23,
-                            color: _tabIndex == index ? _foreground : _muted)),
+                      scale: _tabIndex == index ? 1.08 : 1,
+                      duration: const Duration(milliseconds: 220),
+                      curve: Curves.easeOutBack,
+                      child: Icon(icon,
+                          size: 23,
+                          color: _tabIndex == index ? _foreground : _muted),
+                    ),
                     const SizedBox(height: 6),
                     SizedBox(
                         width: double.infinity,
-                        child: Text(label,
-                            textAlign: TextAlign.center,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                                color:
-                                    _tabIndex == index ? _foreground : _muted,
-                                fontSize: 10.5,
-                                fontWeight: _tabIndex == index
-                                    ? FontWeight.w600
-                                    : FontWeight.w400)))
+                        child: AnimatedDefaultTextStyle(
+                          duration: const Duration(milliseconds: 180),
+                          curve: Curves.easeOutCubic,
+                          style: TextStyle(
+                              color: _tabIndex == index ? _foreground : _muted,
+                              fontSize: 10.5,
+                              fontWeight: _tabIndex == index
+                                  ? FontWeight.w600
+                                  : FontWeight.w400),
+                          child: Text(label,
+                              textAlign: TextAlign.center,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis),
+                        ))
                   ])));
 
   Widget _navItem(IconData icon, String label, int index) => Expanded(
@@ -7342,19 +7695,25 @@ class _HomePageState extends State<HomePage>
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     AnimatedScale(
-                        scale: _tabIndex == index ? 1.08 : 1,
-                        duration: Duration(milliseconds: 250),
-                        child: Icon(icon,
-                            size: 24,
-                            color: _tabIndex == index ? Colors.white : _muted)),
+                      scale: _tabIndex == index ? 1.08 : 1,
+                      duration: const Duration(milliseconds: 250),
+                      curve: Curves.easeOutBack,
+                      child: Icon(icon,
+                          size: 24,
+                          color: _tabIndex == index ? Colors.white : _muted),
+                    ),
                     SizedBox(height: 5),
-                    Text(label,
-                        style: TextStyle(
-                            color: _tabIndex == index ? _foreground : _muted,
-                            fontSize: 11,
-                            fontWeight: _tabIndex == index
-                                ? FontWeight.w600
-                                : FontWeight.w400))
+                    AnimatedDefaultTextStyle(
+                      duration: const Duration(milliseconds: 180),
+                      curve: Curves.easeOutCubic,
+                      style: TextStyle(
+                          color: _tabIndex == index ? _foreground : _muted,
+                          fontSize: 11,
+                          fontWeight: _tabIndex == index
+                              ? FontWeight.w600
+                              : FontWeight.w400),
+                      child: Text(label),
+                    )
                   ]))));
   Widget _segment(String label, bool active, VoidCallback onTap) => Expanded(
       child: GestureDetector(
@@ -7363,14 +7722,16 @@ class _HomePageState extends State<HomePage>
               duration: Duration(milliseconds: 250),
               padding: EdgeInsets.symmetric(vertical: 11),
               decoration: BoxDecoration(
-                  color: active ? _line : Colors.transparent,
+                  color: Colors.transparent,
                   borderRadius: BorderRadius.circular(13)),
               alignment: Alignment.center,
-              child: Text(label,
+              child: AnimatedDefaultTextStyle(
+                  duration: const Duration(milliseconds: 180),
+                  curve: Curves.easeOutCubic,
                   style: TextStyle(
                       color: active ? _foreground : _muted,
-                      fontWeight:
-                          active ? FontWeight.w600 : FontWeight.normal)))));
+                      fontWeight: active ? FontWeight.w600 : FontWeight.normal),
+                  child: Text(label)))));
 }
 
 class _AmbientBackgroundPainter extends CustomPainter {
@@ -7383,14 +7744,14 @@ class _AmbientBackgroundPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final phase = progress * math.pi * 2;
-    final opacity = enabled ? .20 : .065;
+    final opacity = enabled ? .095 : .025;
     final upperCenter = Offset(size.width * (.18 + math.sin(phase) * .16),
         size.height * (.10 + math.cos(phase) * .12));
     final lowerCenter = Offset(size.width * (.88 + math.cos(phase * .7) * .10),
         size.height * (.74 + math.sin(phase * .7) * .11));
     for (final blob in [
-      (upperCenter, size.width * .75, color),
-      (lowerCenter, size.width * .58, Color.lerp(color, Colors.indigo, .45)!),
+      (upperCenter, size.width * .66, color),
+      (lowerCenter, size.width * .52, Color.lerp(color, Colors.indigo, .30)!),
     ]) {
       final paint = Paint()
         ..shader = RadialGradient(colors: [
