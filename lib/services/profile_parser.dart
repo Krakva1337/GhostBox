@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import '../models/server_profile.dart';
 import '../models/subscription_metadata.dart';
@@ -113,6 +114,13 @@ class ProfileParser {
   /// Plain text, JSON and pasted links return empty metadata.
   Future<SubscriptionParseResult> parseSourceDetailed(String source) async {
     var value = source.trim();
+    // Links can be opened by another process directly from Explorer/browser.
+    // Bound input before decoding base64/JSON so a malformed URL cannot make
+    // the desktop app allocate unbounded memory while importing it.
+    if (value.length > 12 * 1024 * 1024) {
+      throw const FormatException(
+          'Ссылка или подписка слишком большая (лимит 12 МБ).');
+    }
     final appLink = Uri.tryParse(value);
     if (appLink != null &&
         appLink.scheme.toLowerCase() == 'ghostbox' &&
@@ -137,9 +145,11 @@ class ProfileParser {
     if (value.startsWith('https://') || value.startsWith('http://')) {
       final uri = Uri.parse(value);
       final client = HttpClient()
-        ..connectionTimeout = const Duration(seconds: 15);
+        ..connectionTimeout = const Duration(seconds: 12)
+        ..idleTimeout = const Duration(seconds: 15);
       try {
-        final request = await client.getUrl(uri);
+        final request =
+            await client.getUrl(uri).timeout(const Duration(seconds: 15));
         request.headers
             .set(HttpHeaders.acceptHeader, 'application/json, text/plain, */*');
         request.headers.set(
@@ -147,7 +157,8 @@ class ProfileParser {
         final deviceHeaders = await DeviceIdentity.transportHeaders;
         deviceHeaders
             .forEach((name, value) => request.headers.set(name, value));
-        final response = await request.close();
+        final response =
+            await request.close().timeout(const Duration(seconds: 20));
         if (response.statusCode < 200 || response.statusCode >= 300)
           throw FormatException(
               'Сервер подписки вернул HTTP ${response.statusCode}');
@@ -162,10 +173,19 @@ class ProfileParser {
               lower == 'proxy-authenticate') return;
           headers[lower] = values.join(', ');
         });
-        final body = await response
-            .transform(utf8.decoder)
-            .join()
-            .timeout(const Duration(seconds: 30));
+        const maxResponseBytes = 12 * 1024 * 1024;
+        final bytes = await response.fold<BytesBuilder>(
+          BytesBuilder(copy: false),
+          (builder, chunk) {
+            if (builder.length + chunk.length > maxResponseBytes) {
+              throw const FormatException(
+                  'Ответ подписки превышает лимит 12 МБ.');
+            }
+            builder.add(chunk);
+            return builder;
+          },
+        ).timeout(const Duration(seconds: 30));
+        final body = utf8.decode(bytes.takeBytes());
         return SubscriptionParseResult(
             parse(body, source: value), _readMetadata(headers));
       } finally {

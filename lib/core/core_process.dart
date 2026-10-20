@@ -98,6 +98,16 @@ class CoreProcessBackend implements VpnBackend {
       throw ProcessException(executable, const [],
           'Core binary not found. Run tool/fetch_cores.sh first.');
     }
+    final tunMode =
+        settings.connectionMode == 'tun' || settings.connectionMode == 'mixed';
+    if (Platform.isWindows && name == 'sing-box' && tunMode) {
+      final wintun = File(
+          '${File(executable).parent.path}${Platform.pathSeparator}wintun.dll');
+      if (!wintun.existsSync()) {
+        throw const FormatException(
+            'Для TUN в Windows рядом с sing-box.exe нужен vendor/bin/wintun.dll. Переустановите GhostBox из полного Windows installer или ZIP.');
+      }
+    }
     final serverProfile = ServerProfile.fromJson(
         Map<String, dynamic>.from(jsonDecode(profile) as Map));
     _validateProfile(serverProfile);
@@ -387,6 +397,14 @@ class CoreProcessBackend implements VpnBackend {
     final lower = output.toLowerCase();
     final tunMode =
         settings.connectionMode == 'tun' || settings.connectionMode == 'mixed';
+    if (Platform.isWindows &&
+        tunMode &&
+        name == 'sing-box' &&
+        (lower.contains('wintun') ||
+            lower.contains('adapter') ||
+            lower.contains('interface') && lower.contains('create'))) {
+      return 'sing-box не смог создать Windows TUN-адаптер. Запустите GhostBox с правами администратора, проверьте vendor/bin/wintun.dll и удалите отключённый GhostBox/Wintun адаптер в диспетчере устройств.';
+    }
     if (tunMode &&
         (lower.contains('operation not permitted') ||
             lower.contains('permission denied') ||

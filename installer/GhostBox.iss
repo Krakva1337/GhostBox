@@ -48,4 +48,4 @@ Name: "{group}\Удалить GhostBox"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\GhostBox"; Filename: "{app}\GhostBox.exe"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\GhostBox.exe"; Description: "Запустить GhostBox"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\GhostBox.exe"; Description: "Запустить GhostBox"; Verb: "runas"; Flags: shellexec nowait postinstall skipifsilent

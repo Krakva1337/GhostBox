@@ -54,6 +54,13 @@ bool FlutterWindow::OnCreate() {
     return false;
   }
 
+  // app_links forwards protocol activations to the existing Flutter window
+  // with WM_COPYDATA. Windows UIPI blocks that message when GhostBox is running
+  // elevated, which otherwise starts a second copy and loses the activation.
+  CHANGEFILTERSTRUCT message_filter = {sizeof(CHANGEFILTERSTRUCT)};
+  ChangeWindowMessageFilterEx(GetHandle(), WM_COPYDATA, MSGFLT_ALLOW,
+                              &message_filter);
+
   RECT frame = GetClientArea();
 
   // The size here must match the window dimensions to avoid unnecessary surface

@@ -946,14 +946,21 @@ class _HomePageState extends State<HomePage>
         _recordAppLog(connectionIssue!);
       }
     }
+    // Import protocol links before a possible update exits/restarts the app,
+    // then let the updater finish before auto-connect brings the VPN up.
+    await _drainPendingAppLinks();
+    if (mounted && autoUpdateApp) {
+      await _checkAppUpdate(silent: true);
+    }
     if (mounted &&
         (coreSettings.autoConnect || resumeAfterElevation) &&
         selected != null &&
         backend.state == VpnState.disconnected) {
       await _toggle();
     }
-    if (mounted) unawaited(_checkAppUpdate(silent: true));
-    await _drainPendingAppLinks();
+    if (mounted && !autoUpdateApp) {
+      unawaited(_checkAppUpdate(silent: true));
+    }
   }
 
   @override
@@ -1091,7 +1098,9 @@ class _HomePageState extends State<HomePage>
             localPort: runtimeLocalPort,
           );
         }
-        final usesXrayTunnelBridge = Platform.isLinux &&
+        // Xray has no native TUN inbound. On Linux and Windows, run Xray as a
+        // loopback SOCKS upstream and let sing-box own the system TUN.
+        final usesXrayTunnelBridge = (Platform.isLinux || Platform.isWindows) &&
             attemptCore == 'xray' &&
             (attemptMode == 'tun' || attemptMode == 'mixed');
         var runtimeProfile = attemptProfile;
@@ -1723,6 +1732,39 @@ class _HomePageState extends State<HomePage>
   }
 
   Future<void> _waitForTunInterface() async {
+    if (Platform.isWindows) {
+      // Wintun adapter creation is asynchronous. Wait for Windows to expose
+      // the adapter before declaring the tunnel ready or probing HTTPS.
+      const script = r'''
+$ErrorActionPreference = 'SilentlyContinue'
+for ($i = 0; $i -lt 80; $i++) {
+  $adapter = Get-NetAdapter -IncludeHidden | Where-Object {
+    $_.Name -eq 'ghostbox0' -or $_.InterfaceDescription -match 'Wintun'
+  } | Select-Object -First 1
+  if ($adapter -and $adapter.Status -eq 'Up') {
+    Write-Output "$($adapter.Name)|$($adapter.InterfaceDescription)"
+    exit 0
+  }
+  Start-Sleep -Milliseconds 250
+}
+exit 1
+''';
+      final result = await Process.run('powershell.exe', [
+        '-NoProfile',
+        '-NonInteractive',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-Command',
+        script,
+      ]).timeout(const Duration(seconds: 24));
+      if (result.exitCode != 0) {
+        throw FormatException(
+          'sing-box не поднял адаптер Wintun ghostbox0. Проверьте права администратора, наличие vendor/bin/wintun.dll и состояние адаптера в Windows. ${result.stderr.toString().trim()}',
+        );
+      }
+      _recordAppLog('Адаптер TUN активен: ${result.stdout.toString().trim()}');
+      return;
+    }
     if (!Platform.isLinux) return;
     final tun = Directory('/sys/class/net/ghostbox0');
     for (var attempt = 0; attempt < 60; attempt++) {
@@ -1918,6 +1960,37 @@ class _HomePageState extends State<HomePage>
   }
 
   Future<void> _verifyTunRoute(String probeIp) async {
+    if (Platform.isWindows) {
+      const script = r'''
+$ErrorActionPreference = 'SilentlyContinue'
+$routes = Get-NetRoute -AddressFamily IPv4 | Where-Object {
+  $_.DestinationPrefix -in @('0.0.0.0/1', '128.0.0.0/1', '0.0.0.0/0')
+}
+foreach ($route in $routes) {
+  $adapter = Get-NetAdapter -InterfaceIndex $route.InterfaceIndex -IncludeHidden
+  if ($adapter -and ($adapter.Name -eq 'ghostbox0' -or $adapter.InterfaceDescription -match 'Wintun')) {
+    Write-Output "$($route.DestinationPrefix)|$($adapter.Name)|$($adapter.Status)"
+  }
+}
+''';
+      final result = await Process.run('powershell.exe', [
+        '-NoProfile',
+        '-NonInteractive',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-Command',
+        script,
+      ]).timeout(const Duration(seconds: 8));
+      final routes = result.stdout.toString().trim();
+      if (result.exitCode != 0 || routes.isEmpty) {
+        throw const FormatException(
+          'Адаптер Wintun поднялся, но системный маршрут через него не установлен. Перезапустите GhostBox с правами администратора и проверьте, что Windows не отключила виртуальный адаптер.',
+        );
+      }
+      _recordAppLog(
+          'Маршрут Windows через TUN: ${routes.replaceAll('\n', ', ')}');
+      return;
+    }
     if (!Platform.isLinux) return;
     final result = await Process.run('ip', ['route', 'get', probeIp])
         .timeout(const Duration(seconds: 4));
@@ -4908,7 +4981,7 @@ class _HomePageState extends State<HomePage>
       ]);
 
   Future<void> _showProfileJson(ServerProfile profile) async {
-    final isXrayTun = Platform.isLinux &&
+    final isXrayTun = (Platform.isLinux || Platform.isWindows) &&
         coreSettings.core == 'xray' &&
         (coreSettings.connectionMode == 'tun' ||
             coreSettings.connectionMode == 'mixed');
@@ -4924,8 +4997,9 @@ class _HomePageState extends State<HomePage>
     runtimeProfile = await _withDeviceMetadata(runtimeProfile);
     final runtimePort = activeLocalPort ?? coreSettings.localPort;
     final xraySettings = coreSettings.copyWith(
-        connectionMode:
-            Platform.isLinux ? 'proxy' : coreSettings.connectionMode,
+        connectionMode: (Platform.isLinux || Platform.isWindows)
+            ? 'proxy'
+            : coreSettings.connectionMode,
         localPort: runtimePort);
     final xrayBackend =
         CoreProcessBackend(name: 'xray', executable: '', configPath: '')
@@ -4960,7 +5034,7 @@ class _HomePageState extends State<HomePage>
           CoreProcessBackend(name: 'sing-box', executable: '', configPath: '')
             ..settings = coreSettings.copyWith(
                 core: 'sing-box', connectionMode: coreSettings.connectionMode);
-      configs['Linux TUN · sing-box'] = bridgeBackend.makeConfig(bridgeProfile);
+      configs['TUN · sing-box'] = bridgeBackend.makeConfig(bridgeProfile);
     }
     var selectedConfig = isXrayTun
         ? 'Xray · полный конфиг'
@@ -5930,8 +6004,8 @@ class _HomePageState extends State<HomePage>
                 _text('Версия приложения', 'App version'),
                 appUpdateStatus ??
                     _text(
-                        'Установлена ${GitHubUpdater.displayVersion(GitHubUpdater.currentVersion)}',
-                        'Installed ${GitHubUpdater.displayVersion(GitHubUpdater.currentVersion)}'),
+                        'Установлена ${GitHubUpdater.displayVersion(GitHubUpdater.currentVersion)} · ветка ${GitHubUpdater.updateBranch}',
+                        'Installed ${GitHubUpdater.displayVersion(GitHubUpdater.currentVersion)} · branch ${GitHubUpdater.updateBranch}'),
                 IconButton(
                     tooltip: _text('Проверить обновления', 'Check for updates'),
                     onPressed: checkingAppUpdate || installingAppUpdate
@@ -6054,11 +6128,11 @@ class _HomePageState extends State<HomePage>
         availableAppRelease = release;
         appUpdateStatus = release == null
             ? _text(
-                'Обновлений нет · ${GitHubUpdater.displayVersion(GitHubUpdater.currentVersion)}',
-                'Up to date · ${GitHubUpdater.displayVersion(GitHubUpdater.currentVersion)}')
+                'Обновлений нет · ${GitHubUpdater.displayVersion(GitHubUpdater.currentVersion)} · ${GitHubUpdater.updateBranch}',
+                'Up to date · ${GitHubUpdater.displayVersion(GitHubUpdater.currentVersion)} · ${GitHubUpdater.updateBranch}')
             : _text(
-                'Доступна версия ${GitHubUpdater.displayVersion(release.version)}',
-                'Version ${GitHubUpdater.displayVersion(release.version)} is available');
+                'Доступна версия ${GitHubUpdater.displayVersion(release.version)} · ${GitHubUpdater.updateBranch}',
+                'Version ${GitHubUpdater.displayVersion(release.version)} is available · ${GitHubUpdater.updateBranch}');
       });
       if (release == null) {
         if (!silent)

@@ -4,12 +4,14 @@ import 'dart:io';
 class GhostBoxRelease {
   const GhostBoxRelease({
     required this.version,
+    required this.tagName,
     required this.pageUrl,
     required this.assets,
     this.notes = '',
   });
 
   final String version;
+  final String tagName;
   final String pageUrl;
   final List<GhostBoxReleaseAsset> assets;
   final String notes;
@@ -34,6 +36,10 @@ class GitHubUpdater {
 
   static const repository = 'Krakva1337/GhostBox';
   static const releasesPage = 'https://github.com/$repository/releases';
+  static const updateBranch = String.fromEnvironment(
+    'GHOSTBOX_UPDATE_BRANCH',
+    defaultValue: 'main',
+  );
   static const currentVersion = String.fromEnvironment(
     'GHOSTBOX_VERSION',
     defaultValue: '1.0.0-alpha',
@@ -56,10 +62,42 @@ class GitHubUpdater {
   final HttpClient _client;
 
   Future<GhostBoxRelease?> check({bool includeCurrent = false}) async {
-    final request = await _client
-        .getUrl(Uri.parse(
-            'https://api.github.com/repos/$repository/releases?per_page=10'))
-        .timeout(const Duration(seconds: 12));
+    final branch = updateBranch.trim();
+    if (branch.isEmpty) {
+      throw const FormatException('Не задана ветка обновлений GitHub.');
+    }
+    final branchData = await _getJson(Uri.https('api.github.com',
+        '/repos/$repository/branches/${Uri.encodeComponent(branch)}'));
+    if (branchData is! Map || branchData['commit'] is! Map) {
+      throw const FormatException(
+          'GitHub вернул некорректную ветку обновлений.');
+    }
+    final branchSha = (branchData['commit'] as Map)['sha'];
+    if (branchSha is! String || branchSha.isEmpty) {
+      throw const FormatException('GitHub не вернул commit ветки обновлений.');
+    }
+
+    final rows = await _getJson(Uri.https(
+        'api.github.com', '/repos/$repository/releases', {'per_page': '30'}));
+    if (rows is! List) throw const FormatException('Некорректный ответ GitHub');
+    final releases = rows
+        .whereType<Map>()
+        .where((row) => row['draft'] != true)
+        .map(_parseRelease)
+        .whereType<GhostBoxRelease>()
+        .toList();
+    releases.sort((a, b) => _compareVersions(b.version, a.version));
+    for (final release in releases) {
+      final versionOrder = _compareVersions(release.version, currentVersion);
+      if (!includeCurrent && versionOrder <= 0) continue;
+      if (await _isCommitOnBranch(release, branchSha)) return release;
+    }
+    return null;
+  }
+
+  Future<dynamic> _getJson(Uri uri) async {
+    final request =
+        await _client.getUrl(uri).timeout(const Duration(seconds: 12));
     request.headers
       ..set(HttpHeaders.acceptHeader, 'application/vnd.github+json')
       ..set(HttpHeaders.userAgentHeader, 'GhostBox/$currentVersion');
@@ -71,26 +109,24 @@ class GitHubUpdater {
     if (response.statusCode != HttpStatus.ok) {
       throw HttpException(
         response.statusCode == HttpStatus.notFound
-            ? 'GitHub Releases недоступны. Если репозиторий приватный, нужен публичный источник обновлений.'
+            ? 'GitHub не нашёл ветку или релизы репозитория $repository.'
             : 'GitHub API вернул HTTP ${response.statusCode}',
       );
     }
-    final rows = jsonDecode(body);
-    if (rows is! List) throw const FormatException('Некорректный ответ GitHub');
-    final releases = rows
-        .whereType<Map>()
-        .where((row) => row['draft'] != true)
-        .map(_parseRelease)
-        .whereType<GhostBoxRelease>()
-        .toList();
-    releases.sort((a, b) => _compareVersions(b.version, a.version));
-    for (final release in releases) {
-      if (includeCurrent ||
-          _compareVersions(release.version, currentVersion) > 0) {
-        return release;
-      }
-    }
-    return null;
+    return jsonDecode(body);
+  }
+
+  Future<bool> _isCommitOnBranch(
+      GhostBoxRelease release, String branchSha) async {
+    final comparison = await _getJson(Uri.https(
+      'api.github.com',
+      '/repos/$repository/compare/${Uri.encodeComponent(release.tagName)}...$branchSha',
+    ));
+    if (comparison is! Map) return false;
+    // The release tag must be an ancestor of the selected update branch. This
+    // keeps a newer release from another branch out of this channel.
+    return comparison['status'] == 'ahead' ||
+        comparison['status'] == 'identical';
   }
 
   Future<File> download(GhostBoxReleaseAsset asset) async {
@@ -123,21 +159,23 @@ class GitHubUpdater {
     final package = await download(asset);
     try {
       final checksumAsset = release.asset('${asset.name}.sha256');
-      if (checksumAsset != null) {
-        final checksumFile = await download(checksumAsset);
-        try {
-          final expected = RegExp(r'\b([0-9a-fA-F]{64})\b')
-              .firstMatch(await checksumFile.readAsString())
-              ?.group(1)
-              ?.toLowerCase();
-          if (expected == null)
-            throw const FormatException('Некорректный SHA-256');
-          final actual = await _sha256(package);
-          if (actual != expected)
-            throw const FormatException('SHA-256 пакета не совпал');
-        } finally {
-          if (checksumFile.existsSync()) await checksumFile.delete();
-        }
+      if (checksumAsset == null) {
+        throw FileSystemException(
+            'В релизе ${release.tagName} нет SHA-256 для ${asset.name}');
+      }
+      final checksumFile = await download(checksumAsset);
+      try {
+        final expected = RegExp(r'\b([0-9a-fA-F]{64})\b')
+            .firstMatch(await checksumFile.readAsString())
+            ?.group(1)
+            ?.toLowerCase();
+        if (expected == null)
+          throw const FormatException('Некорректный SHA-256');
+        final actual = await _sha256(package);
+        if (actual != expected)
+          throw const FormatException('SHA-256 пакета не совпал');
+      } finally {
+        if (checksumFile.existsSync()) await checksumFile.delete();
       }
 
       if (Platform.isLinux) {
@@ -225,6 +263,7 @@ class GitHubUpdater {
         .toList();
     return GhostBoxRelease(
       version: normalizeReleaseTag(tag),
+      tagName: tag,
       pageUrl: page,
       assets: assets,
       notes: row['body'] is String ? row['body'] as String : '',
