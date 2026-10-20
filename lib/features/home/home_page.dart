@@ -4285,6 +4285,7 @@ foreach ($route in $routes) {
               child: Text(_localized(
                   hideProfiles ? 'Показать серверы' : 'Скрыть серверы')))
         ]),
+        const SizedBox(height: 12),
         _animatedReconnectBanner(
           visible: pendingReconnect,
           child: Padding(
