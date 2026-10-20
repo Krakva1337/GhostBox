@@ -71,6 +71,7 @@ android {
 }
 
 dependencies {
+    implementation("androidx.core:core:1.15.0")
     val libbox = file("libs/libbox.aar")
     if (libbox.exists()) {
         implementation(files(libbox))

@@ -51,6 +51,7 @@ class _HomePageState extends State<HomePage>
   final settingsScroll = ScrollController();
   final routingScroll = ScrollController();
   final routeListController = TextEditingController();
+  final routeDomainController = TextEditingController();
   bool refreshingSubscriptions = false;
   Timer? subscriptionRefreshTimer;
   Color get _surface => Theme.of(context).colorScheme.surface;
@@ -1049,6 +1050,7 @@ class _HomePageState extends State<HomePage>
     settingsScroll.dispose();
     routingScroll.dispose();
     routeListController.dispose();
+    routeDomainController.dispose();
     unawaited(_appLinkSubscription?.cancel());
     subscriptionRefreshTimer?.cancel();
     uptimeTicker?.cancel();
@@ -4031,7 +4033,37 @@ foreach ($route in $routes) {
         ? coreSettings.proxyDomains
         : coreSettings.directDomains;
     routeListController.text = values.join('\n');
+    routeDomainController.clear();
     setState(() => routeListOpen = true);
+  }
+
+  void _addRouteDomain() {
+    final value =
+        CoreSettings.normalizeRoutePattern(routeDomainController.text.trim());
+    if (!CoreSettings.isValidRoutePattern(value)) {
+      _message(_text('Укажи домен, *.маску или IP-сеть',
+          'Enter a domain, *.pattern, or IP network'));
+      return;
+    }
+    final parsed = _readRouteDomains(routeListController.text);
+    if (parsed == null) {
+      _message(_text('Исправь JSON-список или удали его перед добавлением',
+          'Fix the JSON list or clear it before adding a rule'));
+      return;
+    }
+    final values = parsed;
+    values.add(value);
+    routeListController.text =
+        values.map(CoreSettings.normalizeRoutePattern).toSet().join('\n');
+    routeDomainController.clear();
+  }
+
+  void _removeRouteDomain(String value) {
+    final values = _readRouteDomains(routeListController.text) ?? <String>[];
+    values.removeWhere((entry) =>
+        CoreSettings.normalizeRoutePattern(entry) ==
+        CoreSettings.normalizeRoutePattern(value));
+    routeListController.text = values.join('\n');
   }
 
   List<String>? _readRouteDomains(String raw) {
@@ -4080,6 +4112,10 @@ foreach ($route in $routes) {
   }
 
   Future<void> _saveRouteList() async {
+    if (backend.state == VpnState.connecting) {
+      _message('Подождите завершения подключения');
+      return;
+    }
     final values = _readRouteDomains(routeListController.text);
     if (values == null) {
       _message('JSON должен содержать домены или IP-сети');
@@ -4120,6 +4156,70 @@ foreach ($route in $routes) {
                   'Домен, маска или IP-сеть на строку. Подойдут *.ru, 10.0.0.0/8 и JSON-списки Amnezia.'),
               style: TextStyle(color: _muted, fontSize: 12)),
           const SizedBox(height: 16),
+          Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Expanded(
+                child: TextField(
+              controller: routeDomainController,
+              autofocus: true,
+              autocorrect: false,
+              textCapitalization: TextCapitalization.none,
+              keyboardType: TextInputType.url,
+              textInputAction: TextInputAction.done,
+              onSubmitted: (_) => _addRouteDomain(),
+              decoration: InputDecoration(
+                labelText:
+                    _text('Добавить сайт или сеть', 'Add site or network'),
+                hintText: 'example.com · *.ru · 203.0.113.0/24',
+                prefixIcon: const Icon(Icons.language_rounded),
+                filled: true,
+                fillColor: _surface,
+                border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(16),
+                    borderSide: BorderSide(color: _line)),
+                enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(16),
+                    borderSide: BorderSide(color: _line)),
+                focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(16),
+                    borderSide: BorderSide(color: _accent, width: 1.4)),
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+              ),
+            )),
+            const SizedBox(width: 8),
+            Padding(
+                padding: const EdgeInsets.only(top: 5),
+                child: IconButton.filledTonal(
+                    tooltip: _text('Добавить правило', 'Add rule'),
+                    onPressed: _addRouteDomain,
+                    icon: const Icon(Icons.add_rounded))),
+          ]),
+          const SizedBox(height: 10),
+          ValueListenableBuilder<TextEditingValue>(
+              valueListenable: routeListController,
+              builder: (context, value, _) {
+                final domains =
+                    _readRouteDomains(value.text) ?? const <String>[];
+                if (domains.isEmpty) return const SizedBox.shrink();
+                return Wrap(
+                    spacing: 7,
+                    runSpacing: 2,
+                    children: domains
+                        .map((domain) => InputChip(
+                              label: Text(domain),
+                              onDeleted: () => _removeRouteDomain(domain),
+                              deleteIcon:
+                                  const Icon(Icons.close_rounded, size: 16),
+                              side: BorderSide(
+                                  color: _accent.withValues(alpha: .35)),
+                              backgroundColor: _accent.withValues(alpha: .08),
+                            ))
+                        .toList());
+              }),
+          const SizedBox(height: 8),
+          Text(_text('Или вставь список целиком', 'Or paste a full list'),
+              style: TextStyle(color: _muted, fontSize: 11)),
+          const SizedBox(height: 7),
           Container(
             decoration: BoxDecoration(
                 color: _surface,
@@ -4128,8 +4228,8 @@ foreach ($route in $routes) {
             padding: const EdgeInsets.all(12),
             child: TextField(
               controller: routeListController,
-              minLines: 12,
-              maxLines: 20,
+              minLines: 6,
+              maxLines: 12,
               autocorrect: false,
               textCapitalization: TextCapitalization.none,
               style: const TextStyle(fontSize: 13, height: 1.5),

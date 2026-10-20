@@ -5,14 +5,19 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.content.Intent
 import android.net.VpnService
+import android.net.Uri
+import android.os.Build
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import androidx.core.content.FileProvider
+import java.io.File
 
 class MainActivity : FlutterActivity() {
     companion object {
         private const val CHANNEL = "app.ghostbox.ghostbox/vpn"
         private const val ICON_CHANNEL = "app.ghostbox.ghostbox/app_icon"
+        private const val UPDATE_CHANNEL = "app.ghostbox.ghostbox/app_update"
         private const val VPN_PERMISSION_REQUEST = 4137
         private const val NOTIFICATION_PERMISSION_REQUEST = 4138
     }
@@ -98,6 +103,53 @@ class MainActivity : FlutterActivity() {
                     result.success(true)
                 } catch (error: Exception) {
                     result.error("icon_change_failed", error.message, null)
+                }
+            }
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, UPDATE_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                if (call.method != "installApk") {
+                    result.notImplemented()
+                    return@setMethodCallHandler
+                }
+                val sourcePath = call.argument<String>("path")
+                if (sourcePath.isNullOrBlank()) {
+                    result.error("missing_apk", "APK path was not provided", null)
+                    return@setMethodCallHandler
+                }
+                try {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+                        !packageManager.canRequestPackageInstalls()
+                    ) {
+                        startActivity(
+                            Intent(
+                                android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                                Uri.parse("package:$packageName"),
+                            ),
+                        )
+                        result.success("permission_required")
+                        return@setMethodCallHandler
+                    }
+                    val source = File(sourcePath)
+                    if (!source.isFile) {
+                        result.error("missing_apk", "Downloaded APK was not found", null)
+                        return@setMethodCallHandler
+                    }
+                    val updateDirectory = File(cacheDir, "updates").apply { mkdirs() }
+                    val apk = File(updateDirectory, "GhostBox-update.apk")
+                    source.copyTo(apk, overwrite = true)
+                    val apkUri = FileProvider.getUriForFile(
+                        this,
+                        "$packageName.fileprovider",
+                        apk,
+                    )
+                    val installIntent = Intent(Intent.ACTION_INSTALL_PACKAGE).apply {
+                        setDataAndType(apkUri, "application/vnd.android.package-archive")
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }
+                    startActivity(installIntent)
+                    result.success("installer_opened")
+                } catch (error: Exception) {
+                    result.error("install_failed", error.message, null)
                 }
             }
     }

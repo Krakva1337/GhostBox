@@ -1,5 +1,5 @@
 #ifndef AppVersion
-  #define AppVersion "1.1.0-alpha"
+  #define AppVersion "1.2.0-alpha"
 #endif
 #ifndef SourceDir
   #define SourceDir "..\build\windows\x64\runner\Release"
@@ -35,7 +35,12 @@ Name: "desktopicon"; Description: "Создать ярлык на рабочем
 
 [Files]
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "..\windows\runner\resources\app_icon.ico"; DestDir: "{localappdata}\GhostBox"; DestName: "ghostbox-current.ico"; Flags: onlyifdoesntexist
+Source: "..\windows\runner\resources\app_icon.ico"; DestDir: "{localappdata}\GhostBox"; DestName: "ghostbox-current.ico"
+
+[InstallDelete]
+; Remove files left behind by older releases before installing the new bundle.
+; User data is stored outside {app} and is preserved.
+Type: filesandordirs; Name: "{app}\*"
 
 [Registry]
 Root: HKCU; Subkey: "Software\Classes\ghostbox"; ValueType: string; ValueName: ""; ValueData: "URL:GhostBox Link"; Flags: uninsdeletekey

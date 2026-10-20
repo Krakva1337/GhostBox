@@ -171,11 +171,17 @@ case "$target" in
     "$project_dir/tool/build_desktop_cores.sh" macos "$arch"
     cd "$project_dir"
     flutter pub get
-    flutter build macos --release
+    ghostbox_version="$(awk '/^version:/ {split($2,v,"+"); print v[1]}' pubspec.yaml)"
+    update_branch="${GHOSTBOX_UPDATE_BRANCH:-main}"
+    flutter build macos --release \
+      --dart-define="GHOSTBOX_VERSION=$ghostbox_version" \
+      --dart-define="GHOSTBOX_UPDATE_BRANCH=$update_branch"
     app_dir="$project_dir/build/macos/Build/Products/Release/GhostBox.app"
     if [[ ! -d "$app_dir" ]]; then
       app_dir="$project_dir/build/macos/Build/Products/Release/Runner.app"
     fi
+    install -m 0755 "$project_dir/tool/ghostbox-update-macos.sh" \
+      "$app_dir/Contents/Resources/ghostbox-update-macos.sh"
     "$project_dir/tool/package_macos_cores.sh" "$app_dir" "$arch"
     ;;
   ios)

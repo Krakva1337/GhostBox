@@ -71,5 +71,12 @@ if [[ -f "$NEW_RELEASE/ghostbox.svg" ]]; then
   install -m 0644 "$NEW_RELEASE/ghostbox.svg" "$ICON_DIR/ghostbox.svg"
 fi
 
+# The old process has exited and AppDir now points at the verified new bundle.
+# Prune previous extracted builds so they do not accumulate across updates.
+for old_release in "$RELEASES_DIR"/*; do
+  [[ -d "$old_release" && "$old_release" != "$NEW_RELEASE" ]] || continue
+  rm -rf -- "$old_release"
+done
+
 rm -f -- "$SOURCE"
-exec "$LAUNCHER"
+exec "$LAUNCHER" --ghostbox-updated

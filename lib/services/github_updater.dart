@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/services.dart';
+
 class GhostBoxRelease {
   const GhostBoxRelease({
     required this.version,
@@ -42,14 +44,16 @@ class GitHubUpdater {
   );
   static const currentVersion = String.fromEnvironment(
     'GHOSTBOX_VERSION',
-    defaultValue: '1.0.0-alpha',
+    defaultValue: '1.2.0-alpha',
   );
+  static const _androidUpdateChannel =
+      MethodChannel('app.ghostbox.ghostbox/app_update');
 
   static String displayVersion(String version) {
     final normalized = version.replaceFirst(RegExp(r'^v'), '');
-    if (RegExp(r'^1\.0(?:\.0)?-alpha$', caseSensitive: false)
+    if (RegExp(r'^1\.2(?:\.0)?-alpha$', caseSensitive: false)
         .hasMatch(normalized)) {
-      return 'v1.0-Alpha';
+      return 'v1.2-Alpha';
     }
     final shortPreAlpha =
         RegExp(r'^(\d+)\.(\d+)\.0(-pre-alpha.*)$').firstMatch(normalized);
@@ -192,16 +196,56 @@ class GitHubUpdater {
         exit(0);
       }
       if (Platform.isWindows) {
+        final helper = File(
+            '${Directory.systemTemp.path}${Platform.pathSeparator}ghostbox-update-${pid}.ps1');
+        await helper.writeAsString(_windowsUpdateScript, flush: true);
         await Process.start(
+          'powershell.exe',
+          [
+            '-NoProfile',
+            '-NonInteractive',
+            '-ExecutionPolicy',
+            'Bypass',
+            '-WindowStyle',
+            'Hidden',
+            '-File',
+            helper.path,
+            '$pid',
             package.path,
+            Platform.resolvedExecutable,
+          ],
+          mode: ProcessStartMode.detached,
+        );
+        exit(0);
+      }
+      if (Platform.isMacOS) {
+        final appBundle = _macOSAppBundlePath();
+        final helper =
+            File('$appBundle/Contents/Resources/ghostbox-update-macos.sh');
+        if (!await helper.exists()) {
+          throw const FileSystemException(
+              'Не найден установщик обновлений. Установите GhostBox заново из macOS ZIP.');
+        }
+        await Process.start(
+            '/bin/bash',
             [
-              '/VERYSILENT',
-              '/SUPPRESSMSGBOXES',
-              '/CLOSEAPPLICATIONS',
-              '/NORESTART',
+              helper.path,
+              package.path,
+              '$pid',
+              appBundle,
             ],
             mode: ProcessStartMode.detached);
         exit(0);
+      }
+      if (Platform.isAndroid) {
+        final result = await _androidUpdateChannel.invokeMethod<String>(
+            'installApk', {'path': package.path});
+        if (result == 'permission_required') {
+          throw const FileSystemException(
+              'Разреши GhostBox устанавливать приложения в системных настройках и нажми «Проверить обновления» ещё раз.');
+        }
+        if (package.existsSync()) await package.delete();
+        return;
       }
       throw UnsupportedError(
           'Автоустановка не поддерживается на этой платформе');
@@ -223,14 +267,16 @@ class GitHubUpdater {
         throw const ProcessException('powershell.exe', []);
       return '${result.stdout}'.trim().toLowerCase();
     }
-    final result = await Process.run('sha256sum', [file.path]);
-    if (result.exitCode != 0) throw const ProcessException('sha256sum', []);
+    final command = Platform.isMacOS ? 'shasum' : 'sha256sum';
+    final arguments = Platform.isMacOS ? ['-a', '256', file.path] : [file.path];
+    final result = await Process.run(command, arguments);
+    if (result.exitCode != 0) throw ProcessException(command, arguments);
     return '${result.stdout}'.trim().split(RegExp(r'\s+')).first.toLowerCase();
   }
 
   Future<String?> platformAssetName(GhostBoxRelease release) async {
     if (Platform.isWindows) {
-      return 'GhostBox-${release.version}-Windows-x64-Setup.exe';
+      return 'GhostBox-${release.version}-Windows-x64.zip';
     }
     if (Platform.isLinux) {
       final result = await Process.run('uname', ['-m']);
@@ -244,8 +290,66 @@ class GitHubUpdater {
           ? null
           : 'GhostBox-${release.version}-linux-$suffix.AppImage';
     }
+    if (Platform.isMacOS) {
+      final result = await Process.run('uname', ['-m']);
+      if ('${result.stdout}'.trim().toLowerCase() == 'arm64') {
+        return 'GhostBox-${release.version}-macOS-arm64.zip';
+      }
+    }
+    if (Platform.isAndroid) return 'GhostBox-Android-universal.apk';
     return null;
   }
+
+  String _macOSAppBundlePath() {
+    var current = File(Platform.resolvedExecutable).parent;
+    while (current.parent.path != current.path) {
+      if (current.path.toLowerCase().endsWith('.app')) return current.path;
+      current = current.parent;
+    }
+    throw const FileSystemException(
+        'Не удалось определить расположение GhostBox.app');
+  }
+
+  static const _windowsUpdateScript = r'''
+$ErrorActionPreference = 'Stop'
+$oldPid = [int]$args[0]
+$archive = $args[1]
+$appExe = $args[2]
+$helper = $PSCommandPath
+$installDir = Split-Path -Parent $appExe
+$parentDir = Split-Path -Parent $installDir
+$stage = Join-Path $parentDir ".ghostbox-update-$oldPid"
+$backup = Join-Path $parentDir ".ghostbox-old-$oldPid"
+try {
+  while (Get-Process -Id $oldPid -ErrorAction SilentlyContinue) {
+    Start-Sleep -Milliseconds 400
+  }
+  New-Item -ItemType Directory -Force -Path $stage | Out-Null
+  Expand-Archive -LiteralPath $archive -DestinationPath $stage -Force
+  $newExe = Join-Path $stage 'GhostBox.exe'
+  if (-not (Test-Path -LiteralPath $newExe)) { throw 'The Windows ZIP does not contain GhostBox.exe at its root.' }
+  Move-Item -LiteralPath $installDir -Destination $backup
+  try {
+    Move-Item -LiteralPath $stage -Destination $installDir
+  } catch {
+    if (Test-Path -LiteralPath $installDir) { Remove-Item -LiteralPath $installDir -Recurse -Force }
+    if (Test-Path -LiteralPath $backup) { Move-Item -LiteralPath $backup -Destination $installDir }
+    throw
+  }
+  Start-Process -FilePath (Join-Path $installDir 'GhostBox.exe') -ArgumentList '--ghostbox-updated'
+  Start-Sleep -Seconds 3
+  Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction SilentlyContinue
+} catch {
+  if (Test-Path -LiteralPath $appExe) {
+    Start-Process -FilePath $appExe -ArgumentList '--ghostbox-updated' -ErrorAction SilentlyContinue
+  }
+  throw
+} finally {
+  Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $helper -Force -ErrorAction SilentlyContinue
+}
+''';
 
   GhostBoxRelease? _parseRelease(Map row) {
     final tag = row['tag_name'];

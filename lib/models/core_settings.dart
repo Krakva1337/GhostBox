@@ -225,8 +225,19 @@ class CoreSettings {
 
   /// Route lists accept DNS suffix patterns such as `*.ru`, IP addresses and
   /// CIDR networks. Core routing engines receive DNS suffixes without `*.`.
-  static String normalizeRoutePattern(String value) =>
-      value.trim().toLowerCase().replaceFirst(RegExp(r'\.$'), '');
+  static String normalizeRoutePattern(String value) {
+    var pattern = value.trim().toLowerCase();
+    if (pattern.startsWith('http://') || pattern.startsWith('https://')) {
+      final uri = Uri.tryParse(pattern);
+      if (uri != null && uri.host.isNotEmpty) pattern = uri.host;
+    }
+    // Domain lists commonly use `.example.org` as shorthand for every
+    // subdomain. Convert that notation to the UI's explicit wildcard format.
+    if (pattern.startsWith('.') && !pattern.startsWith('*.')) {
+      pattern = '*$pattern';
+    }
+    return pattern.replaceFirst(RegExp(r'\.$'), '');
+  }
 
   static bool isValidRoutePattern(String value) {
     final pattern = normalizeRoutePattern(value);
