@@ -677,7 +677,15 @@ class CoreProcessBackend implements VpnBackend {
               'tag': 'local',
               'listen': '127.0.0.1',
               'listen_port': settings.localPort
-            }
+            },
+          if (int.tryParse('${p.raw['_ghostboxHttpProbePort'] ?? ''}')
+              case final port?)
+            {
+              'type': 'http',
+              'tag': 'http-probe',
+              'listen': '127.0.0.1',
+              'listen_port': port,
+            },
         ],
         'outbounds': [
           outbound,
@@ -924,7 +932,16 @@ class CoreProcessBackend implements VpnBackend {
             'destOverride': ['http', 'tls', 'quic'],
             'routeOnly': true,
           }
-        }
+        },
+        if (int.tryParse('${p.raw['_ghostboxHttpProbePort'] ?? ''}')
+            case final port?)
+          {
+            'tag': 'http-probe',
+            'listen': '127.0.0.1',
+            'port': port,
+            'protocol': 'http',
+            'settings': {'allowTransparent': false},
+          },
       ],
       'outbounds': [
         {

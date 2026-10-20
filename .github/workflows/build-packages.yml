@@ -79,8 +79,16 @@ jobs:
           $release = 'build/windows/x64/runner/Release'
           $wintun = Join-Path $release 'vendor/bin/wintun.dll'
           $singBox = Join-Path $release 'vendor/bin/sing-box.exe'
+          $crtDlls = @('vcruntime140.dll', 'vcruntime140_1.dll', 'msvcp140.dll')
           if (-not (Test-Path $wintun)) { throw "Missing bundled TUN runtime: $wintun" }
           if (-not (Test-Path $singBox)) { throw "Missing sing-box core: $singBox" }
+          foreach ($dll in $crtDlls) {
+            $path = Join-Path $release $dll
+            if (-not (Test-Path $path)) { throw "Missing app-local Visual C++ runtime: $path" }
+          }
+          if (-not (Test-Path (Join-Path $release 'flutter_windows.dll'))) {
+            throw 'Missing Flutter Windows runtime DLL.'
+          }
           & $singBox version
           if ($LASTEXITCODE -ne 0) { throw "sing-box smoke check failed with exit code $LASTEXITCODE" }
           $zip = 'dist/GhostBox-Windows-x64.zip'
@@ -90,6 +98,14 @@ jobs:
           try {
             if ($archive.Entries.FullName -notcontains 'vendor/bin/wintun.dll') {
               throw 'Windows ZIP does not contain vendor/bin/wintun.dll'
+            }
+            foreach ($dll in $crtDlls) {
+              if ($archive.Entries.FullName -notcontains $dll) {
+                throw "Windows ZIP does not contain app-local runtime DLL $dll"
+              }
+            }
+            if ($archive.Entries.FullName -notcontains 'flutter_windows.dll') {
+              throw 'Windows ZIP does not contain flutter_windows.dll'
             }
           } finally {
             $archive.Dispose()

@@ -116,25 +116,37 @@ try {
   # Flutter's Windows runner dynamically links the Microsoft VC runtime.
   # Ship the redistributable app-local CRT so a clean Windows machine does not
   # fail at startup with VCRUNTIME140.dll / MSVCP140.dll missing.
-  $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
-  if (Test-Path $vswhere) {
-    $vsPath = (& $vswhere -latest -products '*' -property installationPath | Select-Object -First 1).Trim()
-    $crtRoot = Join-Path $vsPath 'VC/Redist/MSVC'
-    $crt = Get-ChildItem -Path $crtRoot -Directory -ErrorAction SilentlyContinue |
-      Sort-Object Name -Descending |
-      ForEach-Object { Get-ChildItem -Path (Join-Path $_.FullName 'x64/Microsoft.VC143.CRT') -Filter '*.dll' -File -ErrorAction SilentlyContinue } |
-      Select-Object -First 1
-    if ($crt) {
-      $crtDirectory = $crt.Directory.FullName
-      Get-ChildItem -Path $crtDirectory -Filter '*.dll' -File |
-        Copy-Item -Destination $releaseDirectory -Force
-      Write-Host "Bundled app-local Visual C++ runtime from $crtDirectory"
-    } else {
-      throw 'The x64 Visual C++ 14.3 runtime DLLs were not found in the Visual Studio toolchain.'
-    }
-  } else {
-    throw 'Visual Studio vswhere.exe was not found; cannot bundle the Visual C++ runtime.'
+  $vswhereCandidates = @(
+    (Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'),
+    (Join-Path $env:ProgramFiles 'Microsoft Visual Studio/Installer/vswhere.exe')
+  ) | Where-Object { $_ -and (Test-Path $_) }
+  $crtDirectories = @()
+  if ($env:VCToolsRedistDir) {
+    $crtDirectories += Join-Path $env:VCToolsRedistDir 'x64/Microsoft.VC143.CRT'
   }
+  foreach ($vswhere in $vswhereCandidates) {
+    $vsPath = (& $vswhere -latest -products '*' -property installationPath | Select-Object -First 1)
+    if ($vsPath) {
+      $vsPath = $vsPath.Trim()
+      $crtDirectories += Get-ChildItem -Path (Join-Path $vsPath 'VC/Redist/MSVC') -Directory -ErrorAction SilentlyContinue |
+        Sort-Object Name -Descending |
+        ForEach-Object { Join-Path $_.FullName 'x64/Microsoft.VC143.CRT' }
+    }
+  }
+  $crtDirectory = $crtDirectories |
+    Where-Object { Test-Path (Join-Path $_ 'vcruntime140.dll') } |
+    Select-Object -First 1
+  if (-not $crtDirectory) {
+    throw 'The x64 Visual C++ app-local runtime was not found. Install the Visual C++ 14.x x64 Redistributable component in Visual Studio.'
+  }
+  Get-ChildItem -Path $crtDirectory -Filter '*.dll' -File |
+    Copy-Item -Destination $releaseDirectory -Force
+  $requiredRuntimeDlls = @('vcruntime140.dll', 'vcruntime140_1.dll', 'msvcp140.dll')
+  $missingRuntimeDlls = $requiredRuntimeDlls | Where-Object { -not (Test-Path (Join-Path $releaseDirectory $_)) }
+  if ($missingRuntimeDlls) {
+    throw "Visual C++ runtime bundle is incomplete; missing: $($missingRuntimeDlls -join ', ')"
+  }
+  Write-Host "Bundled app-local Visual C++ runtime from $crtDirectory"
 
   $releaseCoreDirectory = Join-Path $releaseDirectory 'vendor/bin'
   New-Item -ItemType Directory -Force -Path $releaseCoreDirectory | Out-Null
@@ -152,6 +164,22 @@ try {
   $archive = Join-Path $packageDirectory 'GhostBox-Windows-x64.zip'
   Remove-Item -Force $archive -ErrorAction SilentlyContinue
   Compress-Archive -Path (Join-Path $releaseDirectory '*') -DestinationPath $archive
+  Add-Type -AssemblyName System.IO.Compression.FileSystem
+  $package = [System.IO.Compression.ZipFile]::OpenRead($archive)
+  try {
+    $entryNames = @($package.Entries | ForEach-Object { $_.FullName })
+    foreach ($dll in $requiredRuntimeDlls) {
+      if ($entryNames -notcontains $dll) { throw "Windows ZIP is missing app-local runtime DLL: $dll" }
+    }
+    foreach ($dll in @('flutter_windows.dll', 'vcruntime140.dll', 'msvcp140.dll')) {
+      if ($entryNames -notcontains $dll) { throw "Windows ZIP is missing required runtime file: $dll" }
+    }
+    foreach ($core in @('vendor/bin/xray.exe', 'vendor/bin/sing-box.exe', 'vendor/bin/wintun.dll')) {
+      if ($entryNames -notcontains $core) { throw "Windows ZIP is missing required core file: $core" }
+    }
+  } finally {
+    $package.Dispose()
+  }
   Write-Host "Built package: $archive"
 
   $compiler = Get-Command 'ISCC.exe' -ErrorAction SilentlyContinue

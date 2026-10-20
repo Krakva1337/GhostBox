@@ -62,7 +62,7 @@ chmod 0755 "$LAUNCHER"
 
 cat > "$DESKTOP_DIR/ghostbox.desktop" <<EOF
 [Desktop Entry]
-Name=GhostBox v1.0-pre-alpha
+Name=GhostBox v0.1-Alpha
 Comment=Linux VPN client powered by Xray and sing-box
 Exec="$LAUNCHER" %U
 TryExec=$LAUNCHER
@@ -78,7 +78,7 @@ if command -v update-desktop-database >/dev/null 2>&1; then
   update-desktop-database "$DESKTOP_DIR" >/dev/null 2>&1 || true
 fi
 
-echo "Installed GhostBox v1.0-pre-alpha to $APP_PATH"
+echo "Installed GhostBox v0.1-Alpha to $APP_PATH"
 echo "Rofi application mode: rofi -show drun"
 echo "Rofi command mode: ghostbox"
 echo "Enable TUN once with: sudo setcap cap_net_admin+ep '$VENDOR_DIR/sing-box'"

@@ -67,18 +67,19 @@ table inet $_table {
   }
 
   static Future<bool> _tableExists() async {
-    final result =
-        await Process.run('pkexec', ['nft', 'list', 'table', 'inet', _table]);
+    final result = await _runPrivileged(
+        ['nft', 'list', 'table', 'inet', _table]);
     if (result.exitCode == 0) return true;
     final error = '${result.stderr} ${result.stdout}';
     if (error.contains('No such file or directory') ||
         error.contains('does not exist')) return false;
-    throw ProcessException('pkexec nft', ['list', 'table', 'inet', _table],
+    throw ProcessException('privileged nft', ['list', 'table', 'inet', _table],
         '${result.stderr}'.trim(), result.exitCode);
   }
 
   static Future<void> _runPrivilegedNft(String script) async {
-    final process = await Process.start('pkexec', ['nft', '-f', '-']);
+    final command = await _privilegeCommand();
+    final process = await Process.start(command.$1, [...command.$2, 'nft', '-f', '-']);
     process.stdin.write(script);
     await process.stdin.close();
     final stdout =
@@ -87,8 +88,43 @@ table inet $_table {
         await process.stderr.transform(systemEncoding.decoder).join();
     final exitCode = await process.exitCode;
     if (exitCode != 0) {
-      throw ProcessException('pkexec nft', ['-f', '-'],
+      throw ProcessException('privileged nft', ['-f', '-'],
           (stderr.isEmpty ? stdout : stderr).trim(), exitCode);
     }
+  }
+
+  static Future<ProcessResult> _runPrivileged(List<String> arguments) async {
+    final command = await _privilegeCommand();
+    return Process.run(command.$1, [...command.$2, ...arguments]);
+  }
+
+  /// Prefer the desktop authorization dialog. On minimal desktop installs
+  /// without polkit, allow a previously authorized non-interactive sudo rule
+  /// and otherwise return an actionable message instead of ProcessException.
+  static Future<(String, List<String>)> _privilegeCommand() async {
+    if (await _executableExists('pkexec')) return ('pkexec', const []);
+    if (await _executableExists('sudo')) return ('sudo', const ['-n']);
+    throw const ProcessException(
+      'pkexec',
+      [],
+      'Для Kill Switch нужны права администратора. Установи polkit (pkexec) '
+          'или настрой sudo без пароля для команды nft.',
+    );
+  }
+
+  static Future<bool> _executableExists(String executable) async {
+    final path = Platform.environment['PATH'] ?? '';
+    for (final directory in path.split(Platform.isWindows ? ';' : ':')) {
+      if (directory.isEmpty) continue;
+      final file = File('$directory/$executable');
+      try {
+        if (await file.exists() && (await file.stat()).type == FileSystemEntityType.file) {
+          return true;
+        }
+      } on FileSystemException {
+        // Keep searching the remaining PATH entries.
+      }
+    }
+    return false;
   }
 }

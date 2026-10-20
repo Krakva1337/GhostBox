@@ -72,6 +72,9 @@ class _HomePageState extends State<HomePage>
   List<ServerProfile> profiles = [];
   String? selectedId;
   bool settings = false, routingTab = false, advanced = false;
+  final GlobalKey _bottomNavKey = GlobalKey();
+  final GlobalKey _sideNavKey = GlobalKey();
+  bool _draggingTabIndicator = false;
   int get _tabIndex => settings
       ? 2
       : routingTab
@@ -116,6 +119,7 @@ class _HomePageState extends State<HomePage>
   List<int> pingSamples = [];
   final Map<String, int> profileLatencies = {};
   final Map<String, String> latencyErrors = {};
+  final Set<String> _checkingProfileIds = <String>{};
   bool checkingPing = false;
   bool checkingAll = false;
   int pingAllDone = 0, pingAllTotal = 0;
@@ -126,8 +130,7 @@ class _HomePageState extends State<HomePage>
   ServerProfile? get selected =>
       profiles.where((p) => p.id == selectedId).firstOrNull;
   String _text(String ru, String en) => english ? en : ru;
-  String _localized(String value) =>
-      english ? (_englishLabels[value] ?? value) : value;
+  String _localized(String value) => _messageText(value);
 
   static const _englishLabels = <String, String>{
     'Подключение': 'Connection',
@@ -335,6 +338,45 @@ class _HomePageState extends State<HomePage>
         'Kill Switch is available on Linux only.',
     'Kill Switch требует режим TUN или Mixed.':
         'Kill Switch requires TUN or Mixed mode.',
+    'Добавить сервер': 'Add server',
+    'Сброс': 'Reset',
+    'IP или URL резолвера': 'Resolver IP or URL',
+    'IP = UDP · также tcp:// и DNS-over-HTTPS':
+        'IP = UDP · tcp:// and DNS-over-HTTPS are also supported',
+    'СБОРКА': 'BUILD',
+    'ЯДРА': 'CORES',
+    'УСТРОЙСТВО': 'DEVICE',
+    'XHTTP · ДЛЯ ПРОФИ': 'XHTTP · ADVANCED',
+    'Время неизвестно': 'Time unknown',
+    'Журнал пока пуст': 'The journal is empty',
+    'Отключено': 'Disconnected',
+    'Подключение установлено': 'Connection established',
+    'HTTP GET через прокси': 'HTTP GET through proxy',
+    'Проверка HTTPS/TLS через прокси прошла': 'HTTPS/TLS proxy check passed',
+    'HTTPS и TLS-проверка системного маршрута TUN прошла':
+        'HTTPS and TLS check through the system TUN route passed',
+    'Процесс ядра запущен; проверяю маршрут и доступность сервера':
+        'Core process started; checking the route and server availability',
+    'Системный TUN-маршрут активен через sing-box':
+        'System TUN route is active through sing-box',
+    'TUN-интерфейс ghostbox0 поднят': 'TUN interface ghostbox0 is up',
+    'Туннельный маршрутизатор sing-box остановился':
+        'sing-box tunnel router stopped',
+    'Не удалось переподключиться': 'Could not reconnect',
+    'Все подписки обновлены': 'All subscriptions updated',
+    'Ошибка обновления подписки. Проверьте подключение и повторите.':
+        'Subscription refresh failed. Check your connection and try again.',
+    'ICMP не ответил. Попробуйте TCP в настройках.':
+        'ICMP did not respond. Try TCP in Settings.',
+    'Сервер не отвечает на выбранном порту.':
+        'The server did not respond on the selected port.',
+    'Автообновление приложения': 'App auto-update',
+    'Отключи VPN, чтобы установить его.': 'Disconnect the VPN to install it.',
+    'Ядро не выбрано': 'Core not selected',
+    'RAM приложения': 'App RAM',
+    'RAM ядра': 'Core RAM',
+    'считаю…': 'measuring…',
+    'Закрыть уведомление': 'Dismiss notification',
     'Для Kill Switch сначала выбери сервер.':
         'Select a server before enabling Kill Switch.',
     'Параметры ядра обновлены из JSON': 'Core settings updated from JSON',
@@ -410,6 +452,194 @@ class _HomePageState extends State<HomePage>
     'нет ответа': 'no response',
     'Запуск ядра не удался': 'Core failed to start',
     'Ядро завершилось с кодом': 'Core exited with code',
+    'Сервер': 'Server',
+    'Проверка через прокси не прошла': 'Proxy check failed',
+    'занят. Смените порт в расширенных настройках.':
+        'is in use. Choose another port in Advanced settings.',
+    'Эта сборка sing-box не приняла XHTTP. Нужна сборка с тегом with_xhttp; штатная сборка GhostBox этот транспорт не содержит. Пока выберите Xray.':
+        'This sing-box build rejected XHTTP. A build with the with_xhttp tag is required. Select Xray for now.',
+    'Это ядро sing-box собрано без uTLS. Для REALITY выберите Xray.':
+        'This sing-box build has no uTLS support. Select Xray for REALITY.',
+    'Эта сборка sing-box не поддерживает uTLS. Отпечаток браузера не применяется; для него выберите Xray.':
+        'This sing-box build does not support uTLS. The browser fingerprint is not applied; select Xray to use it.',
+    'Локальный порт занят. Смените порт в расширенных настройках.':
+        'The local port is in use. Choose another port in Advanced settings.',
+    'Проверьте параметры REALITY в профиле: публичный ключ, SNI и short ID.':
+        'Check the REALITY profile settings: public key, SNI and short ID.',
+    'В профиле неверный UUID. Обновите подписку.':
+        'The profile UUID is invalid. Refresh the subscription.',
+    'TUN-маршрутизатор sing-box остановился': 'sing-box TUN router stopped',
+    'Ядро неожиданно остановилось. Перезапускаю VPN…':
+        'The core stopped unexpectedly. Restarting the VPN…',
+    'Ядро завершилось сразу после запуска. Проверьте журнал и локальный порт.':
+        'The core exited immediately after launch. Check the journal and local port.',
+    'Автоперезапуски ядра исчерпаны': 'Core restart attempts exhausted',
+    'Не удалось поднять ядро после трёх попыток.':
+        'Could not start the core after three attempts.',
+    'Неизвестная ошибка запуска ядра.': 'Unknown core startup error.',
+    'Не удалось запустить ядро': 'Could not start the core',
+    'Проверьте установленный файл ядра.':
+        'Check that the core binary is installed.',
+    'не запустилось; повторная попытка ': 'failed to start; retrying ',
+    'Через ': 'In ',
+    ' сек.': ' sec.',
+    'Повторный запуск ядра ': 'Core restart ',
+    ' не удался: ': ' failed: ',
+    ' завершилось (код ': ' exited (code ',
+    '); пробую поднять снова': '); trying to start it again',
+    'Подключение: ': 'Connecting: ',
+    'Подключено к ': 'Connected to ',
+    'Профиль: ': 'Profile: ',
+    'Диагностика подключения: ': 'Connection diagnostics: ',
+    'Ошибка подключения: ': 'Connection error: ',
+    'Проверяем…': 'Checking…',
+    'Отлично': 'Excellent',
+    'Хорошо': 'Good',
+    'Средне': 'Fair',
+    'Высокая задержка': 'High latency',
+    'Проверка': 'Check',
+    'Номер сборки': 'Build number',
+    'Тип сборки': 'Build type',
+    'Платформа сборки': 'Build platform',
+    'Устройство': 'Device',
+    'Операционная система': 'Operating system',
+    'Версия ОС': 'OS version',
+    'Архитектура': 'Architecture',
+    'ID устройства': 'Device ID',
+    'Неизвестно': 'Unknown',
+    'Не найдено': 'Not found',
+    'Версия недоступна': 'Version unavailable',
+    'Недоступно': 'Unavailable',
+    'недавно': 'recently',
+    'Нет ответа ICMP': 'No ICMP response',
+    'В ответе ping нет задержки': 'The ping response contains no latency',
+    'Некорректная ссылка Proxy GET': 'Invalid Proxy GET URL',
+    'Срок истёк': 'Expired',
+    'На мобильных устройствах VPN-режим использует sing-box':
+        'VPN mode on mobile devices uses sing-box',
+    'Для iOS требуются sing-box, системный VPN (TUN) и TCP-проверка задержки.':
+        'iOS requires sing-box, the system VPN (TUN), and TCP latency checks.',
+    'На macOS доступны локальный прокси и системный прокси':
+        'Local proxy and system proxy modes are available on macOS',
+    'DNS-список не содержит доменов': 'The DNS list contains no domains',
+    'Подписка не содержит профилей': 'The subscription contains no profiles',
+    'Запусти команду в терминале после первого запуска AppImage. Сам VPN будет работать от твоего пользователя, без sudo.':
+        'Run this command in a terminal after launching the AppImage once. The VPN itself will run as your user without sudo.',
+    'Профиль не найден': 'Profile not found',
+    'Пустая ссылка или конфиг': 'The link or config is empty',
+    'Не удалось распознать ссылку, JSON или base64-подписку':
+        'Could not recognize the link, JSON, or Base64 subscription',
+    'JSON не содержит поддерживаемых серверных профилей':
+        'JSON contains no supported server profiles',
+    'JSON не содержит профилей': 'JSON contains no profiles',
+    'В ссылке GhostBox нет URL или JSON сервера.':
+        'The GhostBox link does not contain a server URL or JSON.',
+    'Некорректная ссылка сервера': 'Invalid server link',
+    'Некорректная ссылка Shadowsocks': 'Invalid Shadowsocks link',
+    'Некорректный сервер Shadowsocks': 'Invalid Shadowsocks server',
+    'В JSON-профиле нет address/server и port':
+        'The JSON profile is missing address/server and port',
+    'Некорректный ответ GitHub': 'Invalid response from GitHub',
+    'Некорректный SHA-256': 'Invalid SHA-256 checksum',
+    'SHA-256 пакета не совпал': 'Package SHA-256 checksum does not match',
+    'DNS-листы пустые': 'DNS block lists are empty',
+    'Укажите IP или URL DNS-резолвера.': 'Enter a DNS resolver IP or URL.',
+    'Параметр XHTTP extra должен быть JSON.':
+        'The XHTTP extra parameter must be JSON.',
+    'Не удалось найти IP сервера': 'Could not resolve the server IP',
+    'Ядро завершилось сразу после запуска':
+        'The core exited immediately after launch',
+    'Протокол': 'Protocol',
+    'не поддерживается ядром': 'is not supported by the core',
+    'Выберите совместимое ядро.': 'Choose a compatible core.',
+    'У сервера неверный адрес или порт. Проверьте ссылку подписки.':
+        'The server address or port is invalid. Check the subscription link.',
+    'В профиле отсутствует корректный UUID. Обновите подписку или ссылку.':
+        'The profile has no valid UUID. Refresh the subscription or link.',
+    'XHTTP требует ядро Xray. Переключите ядро на Xray в настройках.':
+        'XHTTP requires the Xray core. Select Xray in Settings.',
+    'Защита': 'Security',
+    'пока не поддерживается.': 'is not supported yet.',
+    'В профиле REALITY нет корректного публичного ключа (pbk). Обновите подписку.':
+        'The profile has no valid REALITY public key (pbk). Refresh the subscription.',
+    'REALITY поддерживается здесь только для VLESS.':
+        'REALITY is supported here only with VLESS.',
+    'В профиле REALITY нет имени сервера (SNI). Обновите подписку.':
+        'The REALITY profile has no server name (SNI). Refresh the subscription.',
+    'В профиле REALITY неверный short ID. Обновите подписку.':
+        'The REALITY short ID is invalid. Refresh the subscription.',
+    'В профиле Trojan отсутствует пароль.':
+        'The Trojan profile has no password.',
+    'Проверьте метод шифрования и пароль Shadowsocks.':
+        'Check the Shadowsocks cipher and password.',
+    'XHTTP + REALITY поддерживается для VLESS.':
+        'XHTTP + REALITY is supported with VLESS.',
+    'Неизвестный режим XHTTP': 'Unknown XHTTP mode',
+    'Не найден /dev/net/tun. Включите TUN в системе и проверьте, что устройство доступно.':
+        'Could not find /dev/net/tun. Enable TUN and check that the device is available.',
+    'не получил доступ к TUN. Проверьте /dev/net/tun и CAP_NET_ADMIN для выбранного ядра.':
+        'could not access TUN. Check /dev/net/tun and CAP_NET_ADMIN for the selected core.',
+    'DNS поддерживает IP, udp://, tcp:// и https://.':
+        'DNS supports IP, udp://, tcp:// and https://.',
+    'В URL GhostBox нет ссылки подписки или JSON-сервера.':
+        'The GhostBox URL has no subscription link or server JSON.',
+    'Сервер подписки вернул HTTP': 'Subscription server returned HTTP',
+    'Ядро ': 'Core ',
+    'завершилось с кодом ': 'exited with code ',
+    'отклонило конфигурацию ': 'rejected the configuration ',
+    'не получил доступ к TUN. ': 'could not access TUN. ',
+    'Протокол ': 'Protocol ',
+    'Транспорт ': 'Transport ',
+    ' не поддерживается ядром ': ' is not supported by core ',
+    'Проверено серверов: ': 'Servers checked: ',
+    'Мягкий бюджет · ': 'Soft budget · ',
+    ' · отключено': ' · off',
+    'Потеряно соединение: ': 'Connection lost: ',
+    'Не удалось включить подключение: ': 'Could not connect: ',
+    'Не удалось применить изменения: ': 'Could not apply changes: ',
+    'Не удалось переключить сервер: ': 'Could not switch server: ',
+    'Не удалось восстановить системный прокси: ':
+        'Could not restore the system proxy: ',
+    'Не удалось восстановить Kill Switch: ': 'Could not restore Kill Switch: ',
+    'Не удалось изменить Kill Switch: ': 'Could not change Kill Switch: ',
+    'Не удалось проверить маршрут TUN: ': 'Could not verify the TUN route: ',
+    'Не удалось подготовить TUN-конфиг: ': 'Could not prepare TUN config: ',
+    'Не удалось загрузить ': 'Could not load ',
+    'Не удалось обновить подписок: ': 'Could not refresh subscriptions: ',
+    'Неверный домен: ': 'Invalid domain: ',
+    'Windows запрос прав администратора отменён: ':
+        'Windows administrator permission request was cancelled: ',
+    'Переключаю сервер на ': 'Switching server to ',
+    'Автоматически выбран локальный порт ':
+        'Automatically selected local port ',
+    'Ядро запущено, но HTTPS-проверка не прошла: ':
+        'Core started, but the HTTPS check failed: ',
+    'Ядро запущено, но сервер не ответил через прокси.':
+        'Core started, but the server did not respond through the proxy.',
+    'Интерфейс TUN запущен, но системный маршрут не ведёт через ghostbox0. Трафик пока не защищён.':
+        'The TUN interface is up, but the system route does not use ghostbox0. Traffic is not protected yet.',
+    'Ядро не подняло TUN-интерфейс. ':
+        'The core did not bring up the TUN interface. ',
+    'В системе не найден /dev/net/tun. Проверьте, что модуль TUN включён и устройство создано. Права на файл ядра это устройство не заменяют.':
+        'Could not find /dev/net/tun. Check that the TUN module is enabled and the device exists. Core file permissions do not grant access to this device.',
+    'Нужны права CAP_NET_ADMIN для ': 'CAP_NET_ADMIN is required for ',
+    'Выдайте CAP_NET_ADMIN файлу ': 'Grant CAP_NET_ADMIN to ',
+    'Не удалось скачать': 'Could not download',
+    'Автоустановка не поддерживается на этой платформе':
+        'Automatic installation is not supported on this platform',
+    'Обновлятор не найден. Переустановите приложение через tool/install_appimage.sh.':
+        'Updater not found. Reinstall the app using tool/install_appimage.sh.',
+    'GitHub Releases недоступны. Если репозиторий приватный, нужен публичный источник обновлений.':
+        'GitHub Releases are unavailable. A public update source is required for private repositories.',
+    'HTTP при загрузке DNS-листа': 'HTTP error while downloading the DNS list',
+    ' при загрузке DNS-листа': ' while downloading the DNS block list',
+    'GitHub API вернул HTTP': 'GitHub API returned HTTP',
+    ' при запуске': ' during startup',
+    'ICMP адреса': 'ICMP host',
+    'TCP порта': 'TCP port',
+    'проб · ': 'probes · ',
+    ' мс · медиана ': ' ms · median ',
+    'отключено': 'off',
   };
 
   @override
@@ -957,111 +1187,222 @@ class _HomePageState extends State<HomePage>
   }
 
   Future<void> _showLogs() async {
-    await _logWriteQueue;
-    final core = process;
-    await core?.flushLogs();
-    await tunnelBridgeBackend?.flushLogs();
     final file = await _resolveLogFile();
-    final fileLines =
-        await file.exists() ? await file.readAsLines() : <String>[];
-    final uniqueLines = <String>[];
-    for (final line in fileLines) {
-      if (uniqueLines.isNotEmpty && _sameLogMessage(uniqueLines.last, line))
-        continue;
-      uniqueLines.add(line);
+    final core = process;
+    Future<List<String>> readRecentEntries() async {
+      await _logWriteQueue;
+      await process?.flushLogs();
+      await tunnelBridgeBackend?.flushLogs();
+      await _collectAndroidCoreLogs();
+      await GhostBoxLogStore.instance.flush();
+      if (!await file.exists()) return <String>[];
+      final handle = await file.open();
+      late final List<String> lines;
+      try {
+        final length = await handle.length();
+        const tailLimit = 1024 * 1024;
+        final offset = math.max(0, length - tailLimit);
+        await handle.setPosition(offset);
+        var tail = utf8.decode(await handle.read(length - offset),
+            allowMalformed: true);
+        if (offset > 0) {
+          final firstLine = tail.indexOf('\n');
+          tail = firstLine < 0 ? '' : tail.substring(firstLine + 1);
+        }
+        lines = tail.split('\n');
+      } finally {
+        await handle.close();
+      }
+      final unique = <String>[];
+      for (final line in lines) {
+        if (unique.isNotEmpty && _sameLogMessage(unique.last, line)) continue;
+        unique.add(line);
+      }
+      return unique
+          .skip(unique.length > 100 ? unique.length - 100 : 0)
+          .toList();
     }
-    var entries = <String>[
-      ...uniqueLines
-          .skip(uniqueLines.length > 100 ? uniqueLines.length - 100 : 0)
-    ];
+
+    var entries = await readRecentEntries();
+    Timer? refreshTimer;
+    var live = true;
+    var refreshRunning = false;
+    StateSetter? updateSheet;
+    ScrollController? logScrollController;
     if (!mounted) return;
-    showModalBottomSheet<void>(
+    await showModalBottomSheet<void>(
         context: context,
         isScrollControlled: true,
         backgroundColor: Colors.transparent,
-        builder: (context) => StatefulBuilder(
-            builder: (context, setSheetState) => DraggableScrollableSheet(
+        builder: (context) =>
+            StatefulBuilder(builder: (context, setSheetState) {
+              updateSheet = setSheetState;
+              if (refreshTimer == null) {
+                refreshTimer =
+                    Timer.periodic(const Duration(seconds: 1), (_) async {
+                  if (!live || refreshRunning || updateSheet == null) return;
+                  refreshRunning = true;
+                  final wasAtBottom = logScrollController?.hasClients == true &&
+                      logScrollController!.position.maxScrollExtent -
+                              logScrollController!.position.pixels <
+                          80;
+                  try {
+                    final refreshed = await readRecentEntries();
+                    if (refreshed.join('\n') != entries.join('\n')) {
+                      updateSheet?.call(() => entries = refreshed);
+                      if (wasAtBottom) {
+                        WidgetsBinding.instance.addPostFrameCallback((_) {
+                          final scroll = logScrollController;
+                          if (scroll?.hasClients == true) {
+                            scroll!.animateTo(
+                              scroll.position.maxScrollExtent,
+                              duration: const Duration(milliseconds: 160),
+                              curve: Curves.easeOut,
+                            );
+                          }
+                        });
+                      }
+                    }
+                  } on Object {
+                    // A transient read error should not close the live journal.
+                  } finally {
+                    refreshRunning = false;
+                  }
+                });
+              }
+              return DraggableScrollableSheet(
                 initialChildSize: .78,
                 minChildSize: .45,
                 maxChildSize: .94,
                 expand: false,
-                builder: (context, scrollController) => Container(
-                    decoration: BoxDecoration(
-                        color: _surface,
-                        borderRadius: const BorderRadius.vertical(
-                            top: Radius.circular(26)),
-                        border: Border.all(
-                            color: Colors.white.withValues(alpha: .12))),
-                    padding: const EdgeInsets.fromLTRB(18, 12, 18, 16),
-                    child: Column(children: [
-                      Container(
-                          width: 36,
-                          height: 4,
-                          decoration: BoxDecoration(
-                              color: Colors.white.withValues(alpha: .24),
-                              borderRadius: BorderRadius.circular(8))),
-                      const SizedBox(height: 12),
-                      Row(children: [
+                builder: (context, scrollController) {
+                  logScrollController = scrollController;
+                  return Container(
+                      decoration: BoxDecoration(
+                          color: _surface,
+                          borderRadius: const BorderRadius.vertical(
+                              top: Radius.circular(26)),
+                          border: Border.all(
+                              color: Colors.white.withValues(alpha: .12))),
+                      padding: const EdgeInsets.fromLTRB(18, 12, 18, 16),
+                      child: Column(children: [
+                        Container(
+                            width: 36,
+                            height: 4,
+                            decoration: BoxDecoration(
+                                color: Colors.white.withValues(alpha: .24),
+                                borderRadius: BorderRadius.circular(8))),
+                        const SizedBox(height: 12),
+                        Row(children: [
+                          Expanded(
+                              child: Text(_localized('Журнал соединения'),
+                                  style: TextStyle(
+                                      fontSize: 17,
+                                      fontWeight: FontWeight.w700))),
+                          IconButton(
+                              tooltip: live
+                                  ? _text('Остановить live-обновление',
+                                      'Pause live updates')
+                                  : _text('Возобновить live-обновление',
+                                      'Resume live updates'),
+                              onPressed: () {
+                                setSheetState(() => live = !live);
+                                if (live) {
+                                  unawaited(() async {
+                                    try {
+                                      final latest = await readRecentEntries();
+                                      updateSheet?.call(() => entries = latest);
+                                    } on Object {
+                                      // Keep live mode active after a read error.
+                                    }
+                                  }());
+                                }
+                              },
+                              icon: Icon(
+                                  live
+                                      ? Icons.sensors_rounded
+                                      : Icons.pause_circle_outline_rounded,
+                                  color: live ? _mint : _muted)),
+                          IconButton(
+                              tooltip: _localized('Скопировать журнал'),
+                              onPressed: () => Clipboard.setData(ClipboardData(
+                                  text: entries
+                                      .map(_localizeJournalLine)
+                                      .join('\n'))),
+                              icon: const Icon(Icons.copy)),
+                          IconButton(
+                              tooltip: _localized('Экспорт полного журнала'),
+                              onPressed: _exportFullLog,
+                              icon: const Icon(Icons.file_download_outlined)),
+                          IconButton(
+                              tooltip: _localized('Очистить журнал'),
+                              onPressed: () async {
+                                await _clearJournal();
+                                setSheetState(() => entries = <String>[]);
+                              },
+                              icon: const Icon(Icons.delete_sweep_outlined)),
+                          IconButton(
+                              tooltip: _localized('Закрыть'),
+                              onPressed: () => Navigator.pop(context),
+                              icon: const Icon(Icons.close)),
+                        ]),
+                        Align(
+                            alignment: Alignment.centerLeft,
+                            child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                      '${logFilePath ?? file.path}\n${core?.name ?? coreSettings.core} · ${backend.state.name} · ${core?.executable ?? _text('ядро не выбрано', 'core not selected')}',
+                                      maxLines: 2,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(
+                                          color: _muted, fontSize: 11)),
+                                  const SizedBox(height: 3),
+                                  Text(
+                                      live
+                                          ? _text(
+                                              'LIVE · обновление раз в секунду',
+                                              'LIVE · refreshes every second')
+                                          : _text('ПАУЗА', 'PAUSED'),
+                                      style: TextStyle(
+                                          color: live ? _mint : _muted,
+                                          fontSize: 10,
+                                          fontWeight: FontWeight.w700)),
+                                ])),
+                        const SizedBox(height: 10),
                         Expanded(
-                            child: Text(_localized('Журнал соединения'),
-                                style: TextStyle(
-                                    fontSize: 17,
-                                    fontWeight: FontWeight.w700))),
-                        IconButton(
-                            tooltip: _localized('Скопировать журнал'),
-                            onPressed: () => Clipboard.setData(
-                                ClipboardData(text: entries.join('\n'))),
-                            icon: const Icon(Icons.copy)),
-                        IconButton(
-                            tooltip: _localized('Экспорт полного журнала'),
-                            onPressed: _exportFullLog,
-                            icon: const Icon(Icons.file_download_outlined)),
-                        IconButton(
-                            tooltip: _localized('Очистить журнал'),
-                            onPressed: () async {
-                              await _clearJournal();
-                              setSheetState(() => entries = <String>[]);
-                            },
-                            icon: const Icon(Icons.delete_sweep_outlined)),
-                        IconButton(
-                            tooltip: _localized('Закрыть'),
-                            onPressed: () => Navigator.pop(context),
-                            icon: const Icon(Icons.close)),
-                      ]),
-                      Align(
-                          alignment: Alignment.centerLeft,
-                          child: Text(
-                              '${logFilePath ?? file.path}\n${core?.name ?? coreSettings.core} · ${backend.state.name} · ${core?.executable ?? 'ядро не выбрано'}',
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(color: _muted, fontSize: 11))),
-                      const SizedBox(height: 10),
-                      Expanded(
-                          child: entries.isEmpty
-                              ? Center(
-                                  child: Text(_localized('Записей пока нет'),
-                                      style: TextStyle(color: _muted)))
-                              : ListView.separated(
-                                  controller: scrollController,
-                                  itemCount: entries.length,
-                                  separatorBuilder: (_, __) => Divider(
-                                      height: 1,
-                                      color:
-                                          Colors.white.withValues(alpha: .07)),
-                                  itemBuilder: (context, index) => Padding(
-                                      padding: const EdgeInsets.symmetric(
-                                          vertical: 8),
-                                      child: SelectableText(entries[index],
-                                          style: TextStyle(
-                                              fontFamily: 'monospace',
-                                              fontSize: 11,
-                                              height: 1.4,
-                                              color: entries[index]
-                                                      .toLowerCase()
-                                                      .contains('ошибка')
-                                                  ? Colors.orangeAccent
-                                                  : _muted))))),
-                    ])))));
+                            child: entries.isEmpty
+                                ? Center(
+                                    child: Text(_localized('Записей пока нет'),
+                                        style: TextStyle(color: _muted)))
+                                : ListView.separated(
+                                    controller: scrollController,
+                                    itemCount: entries.length,
+                                    separatorBuilder: (_, __) => Divider(
+                                        height: 1,
+                                        color: Colors.white
+                                            .withValues(alpha: .07)),
+                                    itemBuilder: (context, index) => Padding(
+                                        padding: const EdgeInsets.symmetric(
+                                            vertical: 8),
+                                        child: SelectableText(_localizeJournalLine(entries[index]),
+                                            style: TextStyle(
+                                                fontFamily: 'monospace',
+                                                fontSize: 11,
+                                                height: 1.4,
+                                                color: entries[index].toLowerCase().contains('ошибка') ||
+                                                        entries[index]
+                                                            .toLowerCase()
+                                                            .contains(
+                                                                'error') ||
+                                                        entries[index].toLowerCase().contains('failed')
+                                                    ? Colors.orangeAccent
+                                                    : _muted))))),
+                      ]));
+                },
+              );
+            }));
+    refreshTimer?.cancel();
   }
 
   Future<void> _exportFullLog() async {
@@ -1097,116 +1438,133 @@ class _HomePageState extends State<HomePage>
     showModalBottomSheet<void>(
         context: context,
         isScrollControlled: true,
+        showDragHandle: false,
         backgroundColor: Colors.transparent,
         builder: (context) => DraggableScrollableSheet(
-            initialChildSize: .68,
-            minChildSize: .4,
-            maxChildSize: .9,
+            initialChildSize:
+                MediaQuery.sizeOf(context).width >= 800 ? .52 : .68,
+            minChildSize: MediaQuery.sizeOf(context).width >= 800 ? .3 : .4,
+            maxChildSize: MediaQuery.sizeOf(context).width >= 800 ? .82 : .9,
             expand: false,
-            builder: (context, scrollController) => Container(
-                decoration: BoxDecoration(
-                    color: _surface,
-                    borderRadius:
-                        const BorderRadius.vertical(top: Radius.circular(26)),
-                    border:
-                        Border.all(color: Colors.white.withValues(alpha: .12))),
-                padding: const EdgeInsets.fromLTRB(18, 12, 18, 16),
-                child: Column(children: [
-                  Container(
-                      width: 36,
-                      height: 4,
-                      decoration: BoxDecoration(
-                          color: Colors.white.withValues(alpha: .24),
-                          borderRadius: BorderRadius.circular(8))),
-                  const SizedBox(height: 12),
-                  Row(children: [
+            builder: (context, scrollController) {
+              final wide = MediaQuery.sizeOf(context).width >= 800;
+              return Container(
+                  decoration: BoxDecoration(
+                      color: _surface,
+                      borderRadius:
+                          const BorderRadius.vertical(top: Radius.circular(26)),
+                      border: Border.all(
+                          color: Colors.white.withValues(alpha: .12))),
+                  padding: EdgeInsets.fromLTRB(
+                      18, wide ? 7 : 10, 18, wide ? 10 : 16),
+                  child: Column(children: [
+                    Container(
+                        width: 36,
+                        height: 4,
+                        decoration: BoxDecoration(
+                            color: Colors.white.withValues(alpha: .24),
+                            borderRadius: BorderRadius.circular(8))),
+                    const SizedBox(height: 8),
+                    Row(children: [
+                      Expanded(
+                          child: Text(_localized('Последние подключения'),
+                              style: TextStyle(
+                                  fontSize: 17, fontWeight: FontWeight.w700))),
+                      Text('${history.length}/$logRetainedConnections',
+                          style: TextStyle(color: _muted, fontSize: 12)),
+                      IconButton(
+                          visualDensity: VisualDensity.compact,
+                          constraints: const BoxConstraints.tightFor(
+                              width: 40, height: 40),
+                          tooltip: _localized('Закрыть'),
+                          onPressed: () => Navigator.pop(context),
+                          icon: const Icon(Icons.close)),
+                    ]),
                     Expanded(
-                        child: Text(_localized('Последние подключения'),
-                            style: TextStyle(
-                                fontSize: 17, fontWeight: FontWeight.w700))),
-                    Text('${history.length}/$logRetainedConnections',
-                        style: TextStyle(color: _muted, fontSize: 12)),
-                    IconButton(
-                        tooltip: _localized('Закрыть'),
-                        onPressed: () => Navigator.pop(context),
-                        icon: const Icon(Icons.close)),
-                  ]),
-                  Expanded(
-                      child: history.isEmpty
-                          ? Center(
-                              child: Text(
-                                  _localized('Попыток подключения пока нет'),
-                                  style: TextStyle(color: _muted)))
-                          : ListView.separated(
-                              controller: scrollController,
-                              itemCount: history.length,
-                              separatorBuilder: (_, __) =>
-                                  const SizedBox(height: 8),
-                              itemBuilder: (context, index) {
-                                final item = history[index];
-                                final success = item['success'] == true;
-                                final date =
-                                    DateTime.tryParse('${item['at'] ?? ''}')
-                                        ?.toLocal();
-                                final dateText = date == null
-                                    ? 'Время неизвестно'
-                                    : '${date.day.toString().padLeft(2, '0')}.${date.month.toString().padLeft(2, '0')}.${date.year} · ${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}';
-                                return Container(
-                                    padding: const EdgeInsets.all(13),
-                                    decoration: BoxDecoration(
-                                        color: Colors.white
-                                            .withValues(alpha: .045),
-                                        borderRadius: BorderRadius.circular(16),
-                                        border: Border.all(
-                                            color: Colors.white
-                                                .withValues(alpha: .08))),
-                                    child: Row(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          Icon(
-                                              success
-                                                  ? Icons.check_circle_rounded
-                                                  : Icons.error_outline_rounded,
-                                              color: success
-                                                  ? _mint
-                                                  : Colors.orangeAccent,
-                                              size: 19),
-                                          const SizedBox(width: 10),
-                                          Expanded(
-                                              child: Column(
-                                                  crossAxisAlignment:
-                                                      CrossAxisAlignment.start,
-                                                  children: [
-                                                Text(
-                                                    '${item['profile'] ?? 'Сервер'}',
-                                                    maxLines: 1,
-                                                    overflow:
-                                                        TextOverflow.ellipsis,
-                                                    style: const TextStyle(
-                                                        fontSize: 12,
-                                                        fontWeight:
-                                                            FontWeight.w600)),
-                                                const SizedBox(height: 3),
-                                                Text(
-                                                    '$dateText · ${item['core'] ?? ''} · ${item['mode'] ?? ''} · ${item['durationMs'] ?? 0} мс',
-                                                    style: TextStyle(
-                                                        color: _muted,
-                                                        fontSize: 10)),
-                                                const SizedBox(height: 4),
-                                                Text('${item['message'] ?? ''}',
-                                                    maxLines: 3,
-                                                    overflow:
-                                                        TextOverflow.ellipsis,
-                                                    style: TextStyle(
-                                                        color: success
-                                                            ? _mint
-                                                            : _muted,
-                                                        fontSize: 11)),
-                                              ]))
-                                        ]));
-                              })),
-                ]))));
+                        child: history.isEmpty
+                            ? Center(
+                                child: Text(
+                                    _localized('Попыток подключения пока нет'),
+                                    style: TextStyle(color: _muted)))
+                            : ListView.separated(
+                                controller: scrollController,
+                                itemCount: history.length,
+                                separatorBuilder: (_, __) =>
+                                    SizedBox(height: wide ? 5 : 8),
+                                itemBuilder: (context, index) {
+                                  final item = history[index];
+                                  final success = item['success'] == true;
+                                  final date =
+                                      DateTime.tryParse('${item['at'] ?? ''}')
+                                          ?.toLocal();
+                                  final dateText = date == null
+                                      ? _text(
+                                          'Время неизвестно', 'Time unknown')
+                                      : '${date.day.toString().padLeft(2, '0')}.${date.month.toString().padLeft(2, '0')}.${date.year} · ${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}';
+                                  return Container(
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 13, vertical: 9),
+                                      decoration: BoxDecoration(
+                                          color: Colors.white
+                                              .withValues(alpha: .055),
+                                          borderRadius:
+                                              BorderRadius.circular(16),
+                                          border: Border.all(
+                                              color: Colors.white
+                                                  .withValues(alpha: .08))),
+                                      child: Row(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            Icon(
+                                                success
+                                                    ? Icons.check_circle_rounded
+                                                    : Icons
+                                                        .error_outline_rounded,
+                                                color: success
+                                                    ? _mint
+                                                    : Colors.orangeAccent,
+                                                size: 19),
+                                            const SizedBox(width: 10),
+                                            Expanded(
+                                                child: Column(
+                                                    crossAxisAlignment:
+                                                        CrossAxisAlignment
+                                                            .start,
+                                                    children: [
+                                                  Text(
+                                                      '${item['profile'] ?? _text('Сервер', 'Server')}',
+                                                      maxLines: 1,
+                                                      overflow:
+                                                          TextOverflow.ellipsis,
+                                                      style: const TextStyle(
+                                                          fontSize: 12,
+                                                          fontWeight:
+                                                              FontWeight.w600)),
+                                                  const SizedBox(height: 3),
+                                                  Text(
+                                                      '$dateText · ${item['core'] ?? ''} · ${item['mode'] ?? ''} · ${item['durationMs'] ?? 0} ${english ? 'ms' : 'мс'}',
+                                                      style: TextStyle(
+                                                          color: _muted,
+                                                          fontSize: 10)),
+                                                  SizedBox(
+                                                      height: wide ? 2 : 4),
+                                                  Text(
+                                                      _messageText(
+                                                          '${item['message'] ?? ''}'),
+                                                      maxLines: wide ? 2 : 3,
+                                                      overflow:
+                                                          TextOverflow.ellipsis,
+                                                      style: TextStyle(
+                                                          color: success
+                                                              ? _mint
+                                                              : _muted,
+                                                          fontSize: 11)),
+                                                ]))
+                                          ]));
+                                })),
+                  ]));
+            }));
   }
 
   bool _isDuplicateConnectionRecord(
@@ -1646,6 +2004,7 @@ class _HomePageState extends State<HomePage>
     final samples = <int>[];
     CoreProcessBackend? probeBackend;
     var proxyPort = activeLocalPort ?? coreSettings.localPort;
+    var httpProxyPort = 0;
     try {
       if (mode == 'proxy') {
         // Probe through an isolated local proxy configured to send every request
@@ -1654,6 +2013,10 @@ class _HomePageState extends State<HomePage>
         final reservation =
             await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
         proxyPort = reservation.port;
+        final httpProxyReservation =
+            await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+        httpProxyPort = httpProxyReservation.port;
+        await httpProxyReservation.close();
         await reservation.close();
         final coreName = coreSettings.core == 'xray' ? 'xray' : 'sing-box';
         probeBackend = CoreProcessBackend(
@@ -1665,15 +2028,30 @@ class _HomePageState extends State<HomePage>
             routing: 'proxy',
             connectionMode: 'proxy',
             dnsThroughProxy: true);
-        await probeBackend.connect(jsonEncode(profile.toJson()));
+        final probeProfile = ServerProfile(
+          id: profile.id,
+          name: profile.name,
+          protocol: profile.protocol,
+          address: profile.address,
+          port: profile.port,
+          uuid: profile.uuid,
+          network: profile.network,
+          security: profile.security,
+          raw: {
+            ...profile.raw,
+            '_ghostboxHttpProbePort': httpProxyPort,
+          },
+        );
+        await probeBackend.connect(jsonEncode(probeProfile.toJson()));
         await _waitForProxyListener(proxyPort, timeout);
+        await _waitForProxyListener(httpProxyPort, timeout);
       }
       for (var i = 0; i < count; i++) {
         if (mode == 'proxy') {
           final watch = Stopwatch()..start();
-          await _proxyHttpGet(proxyPort, timeout);
+          await _proxyHttpGet(httpProxyPort, timeout);
           watch.stop();
-          samples.add(watch.elapsedMilliseconds);
+          samples.add(_elapsedMilliseconds(watch));
         } else if (mode == 'icmp') {
           final result = await Process.run('ping', [
             '-n',
@@ -1688,15 +2066,25 @@ class _HomePageState extends State<HomePage>
               .firstMatch('${result.stdout}');
           if (match == null)
             throw FormatException('В ответе ping нет задержки');
-          samples
-              .add(double.parse(match.group(1)!.replaceAll(',', '.')).round());
+          final latency =
+              double.parse(match.group(1)!.replaceAll(',', '.')).ceil();
+          samples.add(math.max(1, latency));
         } else {
+          if (backend.state == VpnState.connected &&
+              (coreSettings.connectionMode == 'tun' ||
+                  coreSettings.connectionMode == 'mixed')) {
+            final interface = await _routeInterface(profile.address);
+            if (interface != null && _isTunnelInterface(interface)) {
+              throw SocketException(
+                  'TCP-пинг пошёл через активный VPN-интерфейс $interface и показывает задержку от VPN-сервера. Отключите VPN для прямой проверки или выберите Proxy GET.');
+            }
+          }
           final watch = Stopwatch()..start();
           final socket = await Socket.connect(profile.address, profile.port,
               timeout: timeout);
           socket.destroy();
           watch.stop();
-          samples.add(watch.elapsedMilliseconds);
+          samples.add(_elapsedMilliseconds(watch));
         }
       }
       samples.sort();
@@ -1705,6 +2093,51 @@ class _HomePageState extends State<HomePage>
       await probeBackend?.disconnect();
     }
   }
+
+  int _elapsedMilliseconds(Stopwatch watch) =>
+      math.max(1, (watch.elapsedMicroseconds + 999) ~/ 1000).toInt();
+
+  Future<String?> _routeInterface(String host) async {
+    try {
+      final literal = InternetAddress.tryParse(host);
+      final address = literal?.address ??
+          (await InternetAddress.lookup(host)).firstOrNull?.address;
+      if (address == null) return null;
+      if (Platform.isLinux) {
+        final result = await Process.run('ip',
+            ['-${address.contains(':') ? '6' : '4'}', 'route', 'get', address]);
+        if (result.exitCode != 0) return null;
+        return RegExp(r'\bdev\s+(\S+)')
+            .firstMatch('${result.stdout}')
+            ?.group(1);
+      }
+      if (Platform.isMacOS) {
+        final result = await Process.run('route', ['-n', 'get', address]);
+        if (result.exitCode != 0) return null;
+        return RegExp(r'^\s*interface:\s*(\S+)', multiLine: true)
+            .firstMatch('${result.stdout}')
+            ?.group(1);
+      }
+      if (Platform.isWindows) {
+        final result = await Process.run('powershell.exe', [
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+          "(Find-NetRoute -RemoteIPAddress '$address' | Select-Object -First 1 -ExpandProperty InterfaceAlias)",
+        ]).timeout(const Duration(seconds: 3));
+        if (result.exitCode != 0) return null;
+        return '${result.stdout}'.trim().split(RegExp(r'\s+')).firstOrNull;
+      }
+    } on Object {
+      // If route inspection is unavailable, keep the TCP probe usable.
+    }
+    return null;
+  }
+
+  bool _isTunnelInterface(String name) => RegExp(
+        r'^(tun|tap|wg|utun|ghostbox|tailscale|zt|vpn|wintun|ppp)',
+        caseSensitive: false,
+      ).hasMatch(name);
 
   Future<void> _waitForProxyListener(int port, Duration timeout) async {
     final deadline = DateTime.now().add(timeout);
@@ -1743,63 +2176,19 @@ class _HomePageState extends State<HomePage>
 
   Future<void> _proxyHttpGetFrom(
       int localPort, Duration timeout, Uri uri) async {
-    Socket? socket;
-    SecureSocket? tlsSocket;
-    _SocketByteReader? reader;
+    final client = HttpClient()
+      ..connectionTimeout = timeout
+      ..findProxy = (_) => 'PROXY 127.0.0.1:$localPort';
     try {
-      final host = uri.host;
-      final secure = uri.scheme.toLowerCase() == 'https';
-      final port = uri.hasPort ? uri.port : (secure ? 443 : 80);
-      socket = await Socket.connect(InternetAddress.loopbackIPv4, localPort,
-          timeout: timeout);
-      reader = _SocketByteReader(socket);
-      socket.add(const [5, 1, 0]);
-      await socket.flush();
-      final greeting = await reader.read(2).timeout(timeout);
-      if (greeting[0] != 5 || greeting[1] != 0) {
-        throw const SocketException('SOCKS5 proxy is not ready');
-      }
-
-      final domain = utf8.encode(host);
-      socket
-          .add([5, 1, 0, 3, domain.length, ...domain, port >> 8, port & 0xff]);
-      await socket.flush();
-      final response = await reader.read(4).timeout(timeout);
-      if (response[0] != 5 || response[1] != 0) {
-        throw const SocketException('SOCKS5 server rejected the route');
-      }
-      final addressLength = switch (response[3]) {
-        1 => 4,
-        4 => 16,
-        3 => (await reader.read(1).timeout(timeout))[0],
-        _ => throw const SocketException('Invalid SOCKS5 response'),
-      };
-      await reader.read(addressLength + 2).timeout(timeout);
-
-      await reader.close();
-      reader = null;
-      Socket requestSocket = socket;
-      if (secure) {
-        tlsSocket =
-            await SecureSocket.secure(socket, host: host).timeout(timeout);
-        requestSocket = tlsSocket;
-      }
-      reader = _SocketByteReader(requestSocket);
-      final path = uri.hasQuery ? '${uri.path}?${uri.query}' : uri.path;
-      final hostHeader = port == (secure ? 443 : 80) ? host : '$host:$port';
-      requestSocket.add(utf8.encode(
-          'GET ${path.isEmpty ? '/' : path} HTTP/1.1\r\nHost: $hostHeader\r\nUser-Agent: GhostBox-Alpha-v0.1\r\nConnection: close\r\n\r\n'));
-      await requestSocket.flush();
-      final statusLine = await reader.readLine(256).timeout(timeout);
-      if (!RegExp(r'^HTTP/1\.[01] [1-5]\d\d(?: |$)').hasMatch(statusLine)) {
-        throw SocketException('$host replied: $statusLine');
-      }
+      final request = await client.getUrl(uri).timeout(timeout);
+      request.headers.set(HttpHeaders.userAgentHeader, 'GhostBox-Alpha-v0.1');
+      request.headers.set(HttpHeaders.connectionHeader, 'close');
+      final response = await request.close().timeout(timeout);
+      await response.drain<void>().timeout(timeout);
     } on Object catch (error) {
       throw SocketException('HTTP GET ${uri.host} failed: $error');
     } finally {
-      await reader?.close();
-      tlsSocket?.destroy();
-      socket?.destroy();
+      client.close(force: true);
     }
   }
 
@@ -1837,7 +2226,7 @@ class _HomePageState extends State<HomePage>
             ? 'ICMP не ответил. Попробуйте TCP в настройках.'
             : coreSettings.pingMode == 'proxy'
                 ? 'Proxy GET: ${_compactError('$error')}'
-                : 'Сервер не отвечает на выбранном порту.');
+                : _compactError('$error'));
       }
     } finally {
       if (mounted && generation == _probeGeneration)
@@ -1846,6 +2235,8 @@ class _HomePageState extends State<HomePage>
   }
 
   Future<void> _checkOneProfile(ServerProfile profile) async {
+    if (_checkingProfileIds.contains(profile.id)) return;
+    setState(() => _checkingProfileIds.add(profile.id));
     try {
       final samples = await _probeProfile(profile);
       if (!mounted) return;
@@ -1868,6 +2259,10 @@ class _HomePageState extends State<HomePage>
         latencyErrors[profile.id] = '$error';
       });
       _message('${profile.name}: ${_compactError('$error')}');
+    } finally {
+      if (mounted) {
+        setState(() => _checkingProfileIds.remove(profile.id));
+      }
     }
   }
 
@@ -1880,6 +2275,7 @@ class _HomePageState extends State<HomePage>
       checkingAll = true;
       pingAllDone = 0;
       pingAllTotal = targets.length;
+      _checkingProfileIds.addAll(targets.map((profile) => profile.id));
     });
     var cursor = 0;
     Future<void> worker() async {
@@ -1894,6 +2290,7 @@ class _HomePageState extends State<HomePage>
         }
         if (!mounted) return;
         setState(() {
+          _checkingProfileIds.remove(profile.id);
           if (latency == null) {
             failedLatencies.add(profile.id);
             profileLatencies.remove(profile.id);
@@ -1922,24 +2319,36 @@ class _HomePageState extends State<HomePage>
   }
 
   String _pingQuality(int value) {
-    if (value < 90) return 'Отлично';
-    if (value < 180) return 'Хорошо';
-    if (value < 300) return 'Средне';
-    return 'Высокая задержка';
+    if (value < 90) return _text('Отлично', 'Excellent');
+    if (value < 180) return _text('Хорошо', 'Good');
+    if (value < 300) return _text('Средне', 'Fair');
+    return _text('Высокая задержка', 'High latency');
+  }
+
+  Color _latencyColor(int? value) {
+    if (value == null) return _muted;
+    if (value < 90) return _mint;
+    if (value < 180) return const Color(0xFF71C8FF);
+    if (value < 300) return const Color(0xFFFFC857);
+    return const Color(0xFFFF7777);
   }
 
   String _pingLabel() {
-    if (checkingPing) return 'Проверяем…';
-    if (pingMs == null) return 'Проверить задержку';
+    if (checkingPing ||
+        (selectedId != null && _checkingProfileIds.contains(selectedId))) {
+      return _text('Проверяем…', 'Checking…');
+    }
+    if (pingMs == null) return _text('Проверить задержку', 'Check latency');
     final type = switch (coreSettings.pingMode) {
       'icmp' => 'ICMP',
       'tcp' => 'TCP',
       _ => 'Proxy GET',
     };
     return switch (coreSettings.pingView) {
-      'number' => '$type · $pingMs мс',
+      'number' => '$type · $pingMs ${english ? 'ms' : 'мс'}',
       'quality' => _pingQuality(pingMs!),
-      _ => '$type · $pingMs мс · ${_pingQuality(pingMs!)}',
+      _ =>
+        '$type · $pingMs ${english ? 'ms' : 'мс'} · ${_pingQuality(pingMs!)}',
     };
   }
 
@@ -2298,8 +2707,9 @@ class _HomePageState extends State<HomePage>
                         controller: controller,
                         autofocus: true,
                         keyboardType: TextInputType.url,
-                        decoration: const InputDecoration(
-                            labelText: 'URL подписки', hintText: 'https://…')),
+                        decoration: InputDecoration(
+                            labelText: _localized('URL подписки'),
+                            hintText: 'https://…')),
                     actions: [
                       TextButton(
                           onPressed: () => Navigator.pop(context),
@@ -2366,9 +2776,10 @@ class _HomePageState extends State<HomePage>
       if (!mounted) return;
       GhostNotice.show(
         context,
-        message,
+        _messageText(message),
         error: error,
         icon: error ? Icons.warning_amber_rounded : Icons.restart_alt_rounded,
+        dismissTooltip: _localized('Закрыть уведомление'),
       );
     };
   }
@@ -2377,6 +2788,7 @@ class _HomePageState extends State<HomePage>
     if (!english) return text;
     final exact = _englishLabels[text];
     if (exact != null) return exact;
+    var translated = text;
     for (final entry in const <(String, String)>[
       (
         'Не удалось загрузить список рекламы: ',
@@ -2389,16 +2801,101 @@ class _HomePageState extends State<HomePage>
       ('Не удалось подготовить TUN-конфиг: ', 'Could not prepare TUN config: '),
       ('Не удалось применить изменения: ', 'Could not apply changes: '),
       ('Не удалось переключить сервер: ', 'Could not switch server: '),
-      ('Не удалось загрузить ', 'Could not load '),
+      ('Не удалось включить подключение: ', 'Could not connect: '),
+      (
+        'Не удалось восстановить Kill Switch: ',
+        'Could not restore Kill Switch: '
+      ),
+      (
+        'Не удалось восстановить системный прокси: ',
+        'Could not restore the system proxy: '
+      ),
+      ('Не удалось изменить Kill Switch: ', 'Could not change Kill Switch: '),
+      (
+        'Не удалось проверить маршрут TUN: ',
+        'Could not verify the TUN route: '
+      ),
+      (
+        'Не удалось разрешить адрес сервера ',
+        'Could not resolve the server address '
+      ),
+      ('Не удалось переключить сервер: ', 'Could not switch server: '),
+      (
+        'Windows запрос прав администратора отменён: ',
+        'Windows administrator permission request was cancelled: '
+      ),
+      ('Диагностика подключения: ', 'Connection diagnostics: '),
+      ('Ошибка подключения: ', 'Connection error: '),
       ('Проверено серверов: ', 'Servers checked: '),
+      ('Переключаю сервер на ', 'Switching server to '),
+      ('Подключение: ', 'Connecting: '),
+      ('Подключено к ', 'Connected to '),
+      ('Потеряно соединение: ', 'Connection lost: '),
+      ('Не удалось обновить подписок: ', 'Could not refresh subscriptions: '),
       ('Подписка обновлена: ', 'Subscription updated: '),
+      ('Не удалось загрузить ', 'Could not load '),
       ('Неверный домен: ', 'Invalid domain: '),
+      ('Не удалось экспортировать журнал: ', 'Could not export the journal: '),
+      ('Не удалось проверить обновления: ', 'Could not check for updates: '),
+      ('Не удалось установить обновление: ', 'Could not install the update: '),
+      (
+        'Не удалось открыть страницу релизов: ',
+        'Could not open the releases page: '
+      ),
     ]) {
-      if (text.startsWith(entry.$1)) {
-        return '${entry.$2}${text.substring(entry.$1.length)}';
+      if (translated.startsWith(entry.$1)) {
+        translated = '${entry.$2}${translated.substring(entry.$1.length)}';
+        break;
       }
     }
-    return text;
+    final labels = _englishLabels.entries.toList()
+      ..sort((a, b) => b.key.length.compareTo(a.key.length));
+    for (final entry in labels) {
+      if (entry.key.isNotEmpty) {
+        translated = translated.replaceAll(entry.key, entry.value);
+      }
+    }
+    return translated
+        .replaceAll(' мс', ' ms')
+        .replaceAll(' МБ', ' MB')
+        .replaceAll(' ГБ', ' GB');
+  }
+
+  String _localizeJournalLine(String line) {
+    if (!english) return line;
+    var result = line;
+    final labels = _englishLabels.entries.toList()
+      ..sort((a, b) => b.key.length.compareTo(a.key.length));
+    for (final entry in labels) {
+      if (entry.key.isNotEmpty)
+        result = result.replaceAll(entry.key, entry.value);
+    }
+    for (final entry in const <(String, String)>[
+      ('Подключение: ', 'Connecting: '),
+      ('Подключено к ', 'Connected to '),
+      ('Потеряно соединение: ', 'Connection lost: '),
+      ('Ошибка подключения: ', 'Connection error: '),
+      ('Не удалось включить подключение: ', 'Could not connect: '),
+      ('Не удалось переключить сервер: ', 'Could not switch server: '),
+      ('Не удалось обновить подписок: ', 'Could not refresh subscriptions: '),
+      (
+        'Не удалось восстановить системный прокси: ',
+        'Could not restore the system proxy: '
+      ),
+      (
+        'Не удалось проверить маршрут TUN: ',
+        'Could not verify the TUN route: '
+      ),
+      ('Диагностика подключения: ', 'Connection diagnostics: '),
+      ('Проверено серверов: ', 'Servers checked: '),
+      (
+        'Системный TUN-маршрут активен через ',
+        'System TUN route is active through '
+      ),
+    ]) {
+      result = result.replaceAll(entry.$1, entry.$2);
+    }
+    return _messageText(result);
   }
 
   void _message(String text) {
@@ -2406,6 +2903,7 @@ class _HomePageState extends State<HomePage>
     GhostNotice.show(
       context,
       displayText,
+      dismissTooltip: _localized('Закрыть уведомление'),
       error: RegExp(
         'ошиб|не удалось|неверн|нет ответа|не отвечает|не поддерж|error|failed|invalid|no response|could not',
         caseSensitive: false,
@@ -2555,7 +3053,7 @@ class _HomePageState extends State<HomePage>
                                                   : _scrollFrame(
                                                       _home(), homeScroll))));
                               return Column(children: [
-                                _header(),
+                                _header(wideLayout: wideLayout),
                                 const SizedBox(height: 8),
                                 Expanded(
                                     child: wideLayout
@@ -2676,47 +3174,124 @@ class _HomePageState extends State<HomePage>
                   fontSize: 10, fontFamily: 'monospace', height: 1.45)),
           const SizedBox(height: 5),
           Text(
-              'Запусти команду в терминале после первого запуска AppImage. Сам VPN будет работать от твоего пользователя, без sudo.',
+              _text(
+                  'Запусти команду в терминале после первого запуска AppImage. Сам VPN будет работать от твоего пользователя, без sudo.',
+                  'Run this command in a terminal after launching the AppImage once. The VPN itself will run as your user without sudo.'),
               style: TextStyle(fontSize: 10, color: _muted, height: 1.4)),
         ]),
       );
 
-  Widget _header() => SizedBox(
+  Widget _versionMark() {
+    final version = GitHubUpdater.displayVersion(GitHubUpdater.currentVersion);
+    final separator = version.indexOf('-');
+    if (separator < 0) {
+      return Text(version,
+          style: TextStyle(
+              fontSize: 10, fontWeight: FontWeight.w500, color: _muted));
+    }
+    final versionNumber = version.substring(0, separator);
+    final stage = version.substring(separator + 1);
+    final glyph = switch (stage.toLowerCase()) {
+      'alpha' => 'α',
+      'beta' => 'β',
+      _ => stage.toUpperCase(),
+    };
+    return Row(mainAxisSize: MainAxisSize.min, children: [
+      Text(versionNumber,
+          style: TextStyle(
+              fontSize: 10, fontWeight: FontWeight.w500, color: _muted)),
+      const SizedBox(width: 4),
+      Tooltip(
+        message: stage,
+        child: Container(
+          constraints: const BoxConstraints(minWidth: 18, minHeight: 18),
+          padding: const EdgeInsets.symmetric(horizontal: 4),
+          decoration: BoxDecoration(
+            color: _accent.withValues(alpha: .16),
+            borderRadius: BorderRadius.circular(7),
+            border: Border.all(color: _accent.withValues(alpha: .35)),
+          ),
+          alignment: Alignment.center,
+          child: Text(glyph,
+              style: TextStyle(
+                  fontSize: glyph.length == 1 ? 11 : 8,
+                  height: 1,
+                  fontWeight: FontWeight.w800,
+                  color: _accent)),
+        ),
+      ),
+    ]);
+  }
+
+  Widget _header({required bool wideLayout}) => SizedBox(
       height: 48,
       child: Stack(alignment: Alignment.center, children: [
         Positioned(
-            left: 0,
-            child: SizedBox(
-                width: 44,
-                height: 44,
-                child: _topButton(
+          left: 0,
+          child: SizedBox(
+            width: 44,
+            height: 44,
+            child: wideLayout && !routeListOpen && !settings && !routingTab
+                ? Center(
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(9),
+                      child: Image.asset('assets/ghostbox_logo.png',
+                          width: 36, height: 36),
+                    ),
+                  )
+                : _topButton(
                     routeListOpen || settings || routingTab
                         ? Icons.arrow_back_ios_new_rounded
                         : Icons.settings_rounded, () {
-                  if (routeListOpen) {
-                    setState(() => routeListOpen = false);
-                  } else {
-                    _openTab(settings || routingTab ? 0 : 2);
-                  }
-                }))),
+                    if (routeListOpen) {
+                      setState(() => routeListOpen = false);
+                    } else {
+                      _openTab(settings || routingTab ? 0 : 2);
+                    }
+                  }),
+          ),
+        ),
         Center(
             child: Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 64),
-                child: Text(
-                    routeListOpen
-                        ? _localized('Список доменов')
-                        : settings
-                            ? _localized('Настройки')
-                            : routingTab
-                                ? _localized('Маршрут')
-                                : 'GhostBox',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(
-                        fontSize: 17,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: .2)))),
+                child: routeListOpen || settings || routingTab
+                    ? Text(
+                        routeListOpen
+                            ? _localized('Список доменов')
+                            : settings
+                                ? _localized('Настройки')
+                                : _localized('Маршрут'),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                            fontSize: 17,
+                            fontWeight: FontWeight.w700,
+                            letterSpacing: .2),
+                      )
+                    : FittedBox(
+                        fit: BoxFit.scaleDown,
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (!wideLayout) ...[
+                              ClipRRect(
+                                borderRadius: BorderRadius.circular(7),
+                                child: Image.asset('assets/ghostbox_logo.png',
+                                    width: 23, height: 23),
+                              ),
+                              const SizedBox(width: 8),
+                            ],
+                            Text('GhostBox',
+                                style: const TextStyle(
+                                    fontSize: 17,
+                                    fontWeight: FontWeight.w700,
+                                    letterSpacing: .2)),
+                            const SizedBox(width: 7),
+                            _versionMark(),
+                          ],
+                        ),
+                      ))),
         if (refreshingSubscriptions)
           const Positioned(
               right: 50,
@@ -2801,12 +3376,14 @@ class _HomePageState extends State<HomePage>
         SizedBox(height: 8),
         Row(children: [
           Tooltip(
-              message: pingSamples.isEmpty
+              message: _messageText(pingSamples.isEmpty
                   ? 'Проверка ${coreSettings.pingMode == 'icmp' ? 'ICMP адреса' : coreSettings.pingMode == 'tcp' ? 'TCP порта' : 'HTTP GET через прокси'} выбранного сервера'
-                  : '${coreSettings.pingCount} проб · ${pingSamples.first}–${pingSamples.last} мс · медиана $pingMs мс',
+                  : '${coreSettings.pingCount} проб · ${pingSamples.first}–${pingSamples.last} мс · медиана $pingMs мс'),
               child: TextButton.icon(
                   onPressed: _checkConnection,
-                  icon: checkingPing
+                  icon: checkingPing ||
+                          (selectedId != null &&
+                              _checkingProfileIds.contains(selectedId))
                       ? SizedBox(
                           width: 15,
                           height: 15,
@@ -2822,13 +3399,7 @@ class _HomePageState extends State<HomePage>
                       child: Text(_localized(_pingLabel()),
                           key: ValueKey(_pingLabel()))),
                   style: TextButton.styleFrom(
-                      foregroundColor: pingMs == null
-                          ? _muted
-                          : pingMs! < 180
-                              ? _mint
-                              : pingMs! < 300
-                                  ? Color(0xFFFFDA8B)
-                                  : Color(0xFFFFA3A3),
+                      foregroundColor: _latencyColor(pingMs),
                       textStyle: TextStyle(fontSize: 12)))),
           Spacer(),
           if (checkingAll)
@@ -3261,11 +3832,33 @@ class _HomePageState extends State<HomePage>
                                 : backend.state == VpnState.connected ||
                                         switchingServer
                                     ? [
-                                        Color.lerp(_accent, Colors.white, .22)!,
-                                        _accent
+                                        Color.lerp(_accent, Colors.white, .28)!,
+                                        _accent,
+                                        Color.lerp(_accent, Colors.black, .18)!,
                                       ]
-                                    : [_accent, _accent.withValues(alpha: .55)],
+                                    : [
+                                        Color.lerp(_accent, Colors.white, .22)!,
+                                        _accent,
+                                        Color.lerp(_accent, Colors.black, .22)!,
+                                      ],
                           ),
+                          border: Border.all(
+                              color: Colors.white.withValues(alpha: .34),
+                              width: 1.2),
+                          boxShadow: [
+                            BoxShadow(
+                              color: _accent.withValues(
+                                  alpha: powerHovered ? .48 : .34),
+                              blurRadius: powerHovered ? 34 : 25,
+                              spreadRadius: powerHovered ? 1 : 0,
+                              offset: const Offset(0, 5),
+                            ),
+                            BoxShadow(
+                              color: Colors.black.withValues(alpha: .38),
+                              blurRadius: 14,
+                              offset: const Offset(0, 8),
+                            ),
+                          ],
                         ),
                         child: Column(
                           mainAxisAlignment: MainAxisAlignment.center,
@@ -3401,9 +3994,9 @@ class _HomePageState extends State<HomePage>
             duration: const Duration(milliseconds: 180),
             child: Text(
               key: ValueKey('$coreMemoryMb:${backend.state}'),
-              backend.state == VpnState.connected
+              _messageText(backend.state == VpnState.connected
                   ? '${Platform.isAndroid ? 'RAM приложения' : 'RAM ядра'} · ${coreMemoryMb == null ? 'считаю…' : '${coreMemoryMb!} МБ'}'
-                  : '${Platform.isAndroid ? 'RAM приложения' : 'RAM ядра'} · отключено',
+                  : '${Platform.isAndroid ? 'RAM приложения' : 'RAM ядра'} · отключено'),
               style: TextStyle(
                   fontSize: 10, color: _muted, fontWeight: FontWeight.w500),
             ),
@@ -3940,8 +4533,8 @@ class _HomePageState extends State<HomePage>
 
   String _updatedLabel(String value) {
     final date = DateTime.tryParse(value)?.toLocal();
-    if (date == null) return 'недавно';
-    return '${date.day.toString().padLeft(2, '0')}.${date.month.toString().padLeft(2, '0')} в ${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}';
+    if (date == null) return _text('недавно', 'recently');
+    return '${date.day.toString().padLeft(2, '0')}.${date.month.toString().padLeft(2, '0')} ${_text('в', 'at')} ${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}';
   }
 
   Widget _metadataBadge(IconData icon, String text, Color color) =>
@@ -4187,33 +4780,40 @@ class _HomePageState extends State<HomePage>
                             fontFeatures: const [
                               ui.FontFeature.tabularFigures()
                             ]))),
-                IconButton(
-                    tooltip: _localized('Скопировать порт'),
-                    visualDensity: VisualDensity.compact,
-                    padding: EdgeInsets.zero,
-                    constraints:
-                        const BoxConstraints.tightFor(width: 28, height: 28),
-                    onPressed: () async {
-                      await Clipboard.setData(
-                          ClipboardData(text: '${profile.port}'));
-                      _message(_text('Порт скопирован', 'Port copied'));
-                    },
-                    icon: Icon(Icons.content_copy_rounded,
-                        size: 14, color: _muted)),
-                const SizedBox(width: 6),
-                if (failedLatencies.contains(profile.id))
+                const SizedBox(width: 8),
+                if (_checkingProfileIds.contains(profile.id))
+                  SizedBox(
+                      width: 14,
+                      height: 14,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 1.8, color: _accent))
+                else if (failedLatencies.contains(profile.id))
                   Tooltip(
                       message: latencyErrors[profile.id] ??
                           _localized('Проверка не прошла'),
                       child: Text('—',
                           style: TextStyle(color: _muted, fontSize: 12))),
-                if (profileLatencies[profile.id] != null)
-                  Text('${profileLatencies[profile.id]} мс',
-                      style: TextStyle(
-                          color: profileLatencies[profile.id]! < 180
-                              ? _mint
-                              : _muted,
-                          fontSize: 11)),
+                if (!_checkingProfileIds.contains(profile.id) &&
+                    profileLatencies[profile.id] != null)
+                  Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 7, vertical: 4),
+                      decoration: BoxDecoration(
+                          color: _latencyColor(profileLatencies[profile.id])
+                              .withValues(alpha: .13),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(
+                              color: _latencyColor(profileLatencies[profile.id])
+                                  .withValues(alpha: .25))),
+                      child: Text(
+                          '${profileLatencies[profile.id]} ${english ? 'ms' : 'мс'}',
+                          style: TextStyle(
+                              color: _latencyColor(profileLatencies[profile.id]),
+                              fontSize: 10,
+                              fontWeight: FontWeight.w700,
+                              fontFeatures: const [
+                                ui.FontFeature.tabularFigures()
+                              ]))),
                 PopupMenuButton<String>(
                     tooltip: _localized('Действия с сервером'),
                     icon: Icon(Icons.more_horiz_rounded, color: _muted),
@@ -4230,9 +4830,7 @@ class _HomePageState extends State<HomePage>
                         await _copyProfileLink(profile);
                         return;
                       }
-                      if (value == 'copy_host' ||
-                          value == 'copy_port' ||
-                          value == 'copy_endpoint') {
+                      if (value == 'copy_host' || value == 'copy_endpoint') {
                         final host = profile.address.startsWith('[') &&
                                 profile.address.endsWith(']')
                             ? profile.address
@@ -4241,11 +4839,8 @@ class _HomePageState extends State<HomePage>
                         final endpoint = host.contains(':')
                             ? '[$host]:${profile.port}'
                             : '$host:${profile.port}';
-                        final text = switch (value) {
-                          'copy_host' => profile.address,
-                          'copy_port' => '${profile.port}',
-                          _ => endpoint,
-                        };
+                        final text =
+                            value == 'copy_host' ? profile.address : endpoint;
                         await Clipboard.setData(ClipboardData(text: text));
                         _message(_text('Скопировано в буфер обмена',
                             'Copied to clipboard'));
@@ -4295,14 +4890,6 @@ class _HomePageState extends State<HomePage>
                                     size: 18, color: _accent),
                                 const SizedBox(width: 12),
                                 Text(_localized('Скопировать IP/домен'))
-                              ])),
-                          PopupMenuItem(
-                              value: 'copy_port',
-                              child: Row(children: [
-                                Icon(Icons.content_copy_rounded,
-                                    size: 18, color: _accent),
-                                const SizedBox(width: 12),
-                                Text(_localized('Скопировать порт'))
                               ])),
                           PopupMenuItem(
                               value: 'copy_endpoint',
@@ -4457,20 +5044,19 @@ class _HomePageState extends State<HomePage>
         height: 30,
         decoration: BoxDecoration(
             color: hasFlagAsset
-                ? Colors.white.withValues(alpha: .035)
+                ? Colors.transparent
                 : Color.alphaBlend(tint.withValues(alpha: .15), _surface),
             borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: tint.withOpacity(.5))),
+            border:
+                hasFlagAsset ? null : Border.all(color: tint.withOpacity(.5))),
         child: hasFlagAsset
-            ? Padding(
-                padding: const EdgeInsets.all(1),
-                child: ClipRRect(
-                    borderRadius: BorderRadius.circular(6),
-                    child: Image.asset('assets/flags/$code.png',
-                        width: 34,
-                        height: 28,
-                        fit: BoxFit.cover,
-                        filterQuality: FilterQuality.medium)))
+            ? ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: Image.asset('assets/flags/$code.png',
+                    width: 36,
+                    height: 30,
+                    fit: BoxFit.cover,
+                    filterQuality: FilterQuality.medium))
             : Icon(_serverIcon(profile.protocol),
                 color: Colors.white, size: 15));
   }
@@ -4556,10 +5142,11 @@ class _HomePageState extends State<HomePage>
                 controller: controller,
                 autofocus: true,
                 keyboardType: TextInputType.url,
-                decoration: const InputDecoration(
-                  labelText: 'IP или URL резолвера',
+                decoration: InputDecoration(
+                  labelText: _localized('IP или URL резолвера'),
                   hintText: '1.1.1.1 · https://dns.example/dns-query',
-                  helperText: 'IP = UDP · также tcp:// и DNS-over-HTTPS',
+                  helperText:
+                      _localized('IP = UDP · также tcp:// и DNS-over-HTTPS'),
                 ),
               ),
               actions: [
@@ -5127,7 +5714,7 @@ class _HomePageState extends State<HomePage>
             : 'Debug';
     final dartVersion =
         RegExp(r'^\d+\.\d+\.\d+').firstMatch(Platform.version)?.group(0) ??
-            'Неизвестно';
+            _text('Неизвестно', 'Unknown');
     final details = <(String, String)>[
       ('GhostBox', appVersion),
       ('Номер сборки', buildNumber),
@@ -5145,7 +5732,9 @@ class _HomePageState extends State<HomePage>
       ('Архитектура', DeviceIdentity.architecture),
       ('ID устройства', installId),
     ];
-    final report = details.map((item) => '${item.$1}: ${item.$2}').join('\n');
+    final report = details
+        .map((item) => '${_localized(item.$1)}: ${_messageText(item.$2)}')
+        .join('\n');
 
     await showDialog<void>(
       context: context,
@@ -5265,13 +5854,13 @@ class _HomePageState extends State<HomePage>
             children: [
               Expanded(
                 flex: 4,
-                child:
-                    Text(label, style: TextStyle(color: _muted, fontSize: 11)),
+                child: Text(_localized(label),
+                    style: TextStyle(color: _muted, fontSize: 11)),
               ),
               const SizedBox(width: 10),
               Expanded(
                 flex: 6,
-                child: SelectableText(value,
+                child: SelectableText(_messageText(value),
                     textAlign: TextAlign.right,
                     style: const TextStyle(
                         fontSize: 11, fontWeight: FontWeight.w600)),
@@ -5898,7 +6487,9 @@ class _HomePageState extends State<HomePage>
                         style: const TextStyle(
                             fontFamily: 'monospace', fontSize: 11, height: 1.4),
                         decoration: InputDecoration(
-                            hintText: '{ ... }', errorText: error),
+                            hintText: '{ ... }',
+                            errorText:
+                                error == null ? null : _messageText(error!)),
                       ),
                       const SizedBox(height: 8),
                       Text(
@@ -6254,9 +6845,22 @@ class _HomePageState extends State<HomePage>
   Widget _compactSwitch(
           {required bool value, required ValueChanged<bool>? onChanged}) =>
       Transform.scale(
-          scale: .86,
+          scale: .9,
           alignment: Alignment.centerRight,
-          child: CupertinoSwitch(value: value, onChanged: onChanged));
+          child: CupertinoSwitch(
+            value: value,
+            onChanged: onChanged,
+            applyTheme: false,
+            activeTrackColor: _accent,
+            inactiveTrackColor:
+                Color.alphaBlend(Colors.white.withValues(alpha: .13), _surface),
+            thumbColor: Colors.white,
+            trackOutlineColor: WidgetStateProperty.resolveWith((states) =>
+                states.contains(WidgetState.selected)
+                    ? _accent.withValues(alpha: .72)
+                    : Colors.white.withValues(alpha: .16)),
+            trackOutlineWidth: const WidgetStatePropertyAll<double?>(1),
+          ));
 
   Widget _compactSlider({
     required double value,
@@ -6276,8 +6880,58 @@ class _HomePageState extends State<HomePage>
                   min: min,
                   max: max,
                   divisions: divisions,
+                  activeColor: _accent,
+                  thumbColor: Colors.white,
                   onChanged: onChanged)));
+
+  Widget _draggableTabIndicator({
+    required bool vertical,
+    required BoxDecoration decoration,
+  }) =>
+      GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onPanStart: (_) => setState(() => _draggingTabIndicator = true),
+        onPanUpdate: (details) =>
+            _dragTabIndicator(details.globalPosition, vertical: vertical),
+        onPanEnd: (_) => setState(() => _draggingTabIndicator = false),
+        onPanCancel: () => setState(() => _draggingTabIndicator = false),
+        child: AnimatedScale(
+          scale: _draggingTabIndicator ? .98 : 1,
+          duration: const Duration(milliseconds: 140),
+          curve: Curves.easeOutCubic,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 180),
+            curve: Curves.easeOutCubic,
+            decoration: decoration,
+          ),
+        ),
+      );
+
+  void _dragTabIndicator(Offset globalPosition, {required bool vertical}) {
+    final key = vertical ? _sideNavKey : _bottomNavKey;
+    final box = key.currentContext?.findRenderObject();
+    if (box is! RenderBox || !box.hasSize) return;
+    final local = box.globalToLocal(globalPosition);
+    int? target;
+    if (vertical) {
+      const inset = 6.0;
+      const rowStride = 88.0;
+      const tabAreaHeight = 3 * 80.0 + 2 * 8.0;
+      final offset = local.dy - inset;
+      if (offset < 0 || offset >= tabAreaHeight) return;
+      target = (offset / rowStride).floor().clamp(0, 2);
+    } else {
+      const inset = 6.0;
+      final contentWidth = box.size.width - inset * 2;
+      final offset = local.dx - inset;
+      if (offset < 0 || offset >= contentWidth) return;
+      target = (offset / (contentWidth / 3)).floor().clamp(0, 2);
+    }
+    if (target != _tabIndex) _openTab(target);
+  }
+
   Widget _nav() => Container(
+      key: _bottomNavKey,
       height: 84,
       padding: const EdgeInsets.all(6),
       decoration: BoxDecoration(
@@ -6300,15 +6954,17 @@ class _HomePageState extends State<HomePage>
               top: 0,
               bottom: 0,
               width: itemWidth,
-              child: Container(
+              child: _draggableTabIndicator(
+                  vertical: false,
                   decoration: BoxDecoration(
                       gradient: LinearGradient(
                           colors: [_accent.withValues(alpha: .20), _surface]),
                       borderRadius: BorderRadius.circular(21),
                       border: Border.all(color: _accent.withOpacity(.4)),
                       boxShadow: [
-                    BoxShadow(color: _accent.withOpacity(.14), blurRadius: 18)
-                  ]))),
+                        BoxShadow(
+                            color: _accent.withOpacity(.14), blurRadius: 18)
+                      ]))),
           Row(children: [
             _navItem(Icons.shield_outlined, _text('Подключение', 'Connect'), 0),
             _navItem(Icons.alt_route_rounded, _text('Маршрут', 'Routing'), 1),
@@ -6317,6 +6973,7 @@ class _HomePageState extends State<HomePage>
         ]);
       }));
   Widget _sideNav() => Container(
+      key: _sideNavKey,
       padding: const EdgeInsets.all(6),
       decoration: BoxDecoration(
           color: _surface,
@@ -6341,7 +6998,8 @@ class _HomePageState extends State<HomePage>
               left: 0,
               right: 0,
               height: selectedHeight,
-              child: Container(
+              child: _draggableTabIndicator(
+                  vertical: true,
                   decoration: BoxDecoration(
                       gradient: LinearGradient(
                           colors: [_accent.withValues(alpha: .20), _surface],
@@ -6553,36 +7211,4 @@ class _OrbRings extends CustomPainter {
       old.color != color ||
       old.active != active ||
       old.connecting != connecting;
-}
-
-class _SocketByteReader {
-  _SocketByteReader(Socket socket)
-      : _iterator = StreamIterator<List<int>>(socket);
-
-  final StreamIterator<List<int>> _iterator;
-  final List<int> _buffer = [];
-
-  Future<List<int>> read(int count) async {
-    while (_buffer.length < count) {
-      if (!await _iterator.moveNext()) {
-        throw const SocketException('Proxy closed before replying');
-      }
-      _buffer.addAll(_iterator.current);
-    }
-    final result = _buffer.sublist(0, count);
-    _buffer.removeRange(0, count);
-    return result;
-  }
-
-  Future<String> readLine(int maxBytes) async {
-    final bytes = <int>[];
-    while (bytes.length < maxBytes) {
-      final byte = (await read(1)).single;
-      if (byte == 10) break;
-      bytes.add(byte);
-    }
-    return ascii.decode(bytes, allowInvalid: true).trim();
-  }
-
-  Future<void> close() => _iterator.cancel();
 }

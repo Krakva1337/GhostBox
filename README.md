@@ -1,6 +1,6 @@
 # GhostBox
 
-**v1.0-pre-alpha · Linux x86_64/ARM64 · Windows x64 · Xray-core + sing-box**
+**v0.1-alpha · Linux x86_64/ARM64 · Windows x64 · Xray-core + sing-box**
 
 ## Русский
 
@@ -45,18 +45,18 @@ iOS выдаёт только unsigned compile artifact и libbox XCFramework, �
 `x86_64` подходит для Intel/AMD 64-bit, `aarch64` — для ARM64 Linux.
 
 ```bash
-chmod +x GhostBox-1.0.0-pre-alpha-linux-x86_64.AppImage
-./GhostBox-1.0.0-pre-alpha-linux-x86_64.AppImage
+chmod +x GhostBox-0.1.0-alpha-linux-x86_64.AppImage
+./GhostBox-0.1.0-alpha-linux-x86_64.AppImage
 ```
 
 Пакеты для x86_64 и ARM64 содержат нативные бинарники и не взаимозаменяемы.
 Чтобы установить приложение в меню рабочего стола без прав root, из клона репозитория выполни:
 
 ```bash
-./tool/install_appimage.sh ./dist/GhostBox-1.0.0-pre-alpha-linux-x86_64.AppImage
+./tool/install_appimage.sh ./dist/GhostBox-0.1.0-alpha-linux-x86_64.AppImage
 ```
 
-Добавь ссылку-подписку или сервер, выбери профиль и нажми кнопку подключения. TUN включён по умолчанию. Если AppImage не запускается из-за отсутствия FUSE, попробуй `APPIMAGE_EXTRACT_AND_RUN=1 ./GhostBox-1.0.0-pre-alpha-linux-x86_64.AppImage`.
+Добавь ссылку-подписку или сервер, выбери профиль и нажми кнопку подключения. TUN включён по умолчанию. Если AppImage не запускается из-за отсутствия FUSE, попробуй `APPIMAGE_EXTRACT_AND_RUN=1 ./GhostBox-0.1.0-alpha-linux-x86_64.AppImage`.
 
 ### TUN без запуска VPN от root
 
@@ -83,8 +83,8 @@ Kill Switch пока работает в Linux с установленными `
 Артефакты ручного запуска хранятся 14 дней. Чтобы создать GitHub Release, сначала отправь коммит в `main`, затем создай и отправь версионный тег. Например:
 
 ```bash
-git tag v1.0-pre-alpha
-git push origin v1.0-pre-alpha
+git tag v0.1-alpha
+git push origin v0.1-alpha
 ```
 
 Тег запускает те же сборки и автоматически прикрепляет пакеты к prerelease. Workflow **Build GhostBox for Android** запускается отдельно и выдаёт `GhostBox-Android-universal.apk`. Android-сборка требует Android 7.0 (API 24) или новее и включает sing-box XHTTP. Без ключа из секретов APK подписывается временным тестовым ключом и подходит для разовой установки вручную. При подключении Android запросит разрешение на VPN и, если доступно, уведомления.
@@ -106,7 +106,7 @@ base64 -w0 ghostbox-release.jks
 ./build.sh
 ```
 
-Чтобы выбрать Linux без меню: `./build.sh linux`. После сборки установить AppImage в меню можно командой `./tool/install_appimage.sh ./dist/GhostBox-1.0.0-pre-alpha-linux-x86_64.AppImage`. Другие платформы выбираются в меню скрипта; требования платформ описаны в [deploy/PLATFORMS.md](deploy/PLATFORMS.md).
+Чтобы выбрать Linux без меню: `./build.sh linux`. После сборки установить AppImage в меню можно командой `./tool/install_appimage.sh ./dist/GhostBox-0.1.0-alpha-linux-x86_64.AppImage`. Другие платформы выбираются в меню скрипта; требования платформ описаны в [deploy/PLATFORMS.md](deploy/PLATFORMS.md).
 
 ### Приватность и диагностика
 
@@ -157,20 +157,20 @@ development artifacts are available in **Actions → Build GhostBox for Apple
 platforms**. The macOS `.app` is ad-hoc signed for local testing; the iOS output
 is only an unsigned compile artifact and libbox XCFramework, not a VPN release.
 
-Download `GhostBox-1.0.0-pre-alpha-linux-x86_64.AppImage` from GitHub Releases and run:
+Download `GhostBox-0.1.0-alpha-linux-x86_64.AppImage` from GitHub Releases and run:
 
 ```bash
-chmod +x GhostBox-1.0.0-pre-alpha-linux-x86_64.AppImage
-./GhostBox-1.0.0-pre-alpha-linux-x86_64.AppImage
+chmod +x GhostBox-0.1.0-alpha-linux-x86_64.AppImage
+./GhostBox-0.1.0-alpha-linux-x86_64.AppImage
 ```
 
 To add GhostBox to the desktop app menu without root access, run this from a repository checkout:
 
 ```bash
-./tool/install_appimage.sh ./dist/GhostBox-1.0.0-pre-alpha-linux-x86_64.AppImage
+./tool/install_appimage.sh ./dist/GhostBox-0.1.0-alpha-linux-x86_64.AppImage
 ```
 
-Add a subscription URL or server, select a profile and press Connect. TUN is enabled by default. If AppImage cannot start because FUSE is unavailable, try `APPIMAGE_EXTRACT_AND_RUN=1 ./GhostBox-1.0.0-pre-alpha-linux-x86_64.AppImage`.
+Add a subscription URL or server, select a profile and press Connect. TUN is enabled by default. If AppImage cannot start because FUSE is unavailable, try `APPIMAGE_EXTRACT_AND_RUN=1 ./GhostBox-0.1.0-alpha-linux-x86_64.AppImage`.
 
 ### TUN without running the VPN as root
 
@@ -197,8 +197,8 @@ To build packages with GitHub Actions:
 Artifacts from a manual run are kept for 14 days. To create a GitHub Release, push the commit to `main`, then create and push a version tag. For example:
 
 ```bash
-git tag v1.0-pre-alpha
-git push origin v1.0-pre-alpha
+git tag v0.1-alpha
+git push origin v0.1-alpha
 ```
 
 The tag runs the same builds and attaches the packages to a prerelease automatically. Run **Build GhostBox for Android** separately to get `GhostBox-Android-universal.apk`. The Android build requires Android 7.0 (API 24) or later and includes sing-box XHTTP. Without a private signing key in repository secrets, the APK uses a temporary test key for one-off sideloading. On connect, Android requests VPN consent and, when available, notification permission.

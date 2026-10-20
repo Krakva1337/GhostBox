@@ -13,7 +13,9 @@ class GhostNotice {
   static int _generation = 0;
 
   static void show(BuildContext context, String message,
-      {bool error = false, IconData? icon}) {
+      {bool error = false,
+      IconData? icon,
+      String dismissTooltip = 'Закрыть уведомление'}) {
     if (!context.mounted || message.trim().isEmpty) return;
     final overlay = Overlay.maybeOf(context, rootOverlay: true);
     if (overlay == null) return;
@@ -31,16 +33,23 @@ class GhostNotice {
         if (generation != _generation) return;
         _transitioning = false;
         if (context.mounted) {
-          _insert(overlay, themes, context, message, error, icon);
+          _insert(
+              overlay, themes, context, message, error, icon, dismissTooltip);
         }
       }));
       return;
     }
-    _insert(overlay, themes, context, message, error, icon);
+    _insert(overlay, themes, context, message, error, icon, dismissTooltip);
   }
 
-  static void _insert(OverlayState overlay, CapturedThemes themes,
-      BuildContext context, String message, bool error, IconData? icon) {
+  static void _insert(
+      OverlayState overlay,
+      CapturedThemes themes,
+      BuildContext context,
+      String message,
+      bool error,
+      IconData? icon,
+      String dismissTooltip) {
     final key = GlobalKey<_NoticeState>();
     var removed = false;
     late final OverlayEntry entry;
@@ -62,6 +71,7 @@ class GhostNotice {
           message: message,
           error: error,
           icon: icon,
+          dismissTooltip: dismissTooltip,
           onDismissed: removeEntry,
         ),
       ),
@@ -104,12 +114,14 @@ class _Notice extends StatefulWidget {
     required this.message,
     required this.error,
     required this.icon,
+    required this.dismissTooltip,
     required this.onDismissed,
   });
 
   final String message;
   final bool error;
   final IconData? icon;
+  final String dismissTooltip;
   final VoidCallback onDismissed;
 
   @override
@@ -251,13 +263,20 @@ class _NoticeState extends State<_Notice> with SingleTickerProviderStateMixin {
                             ),
                           ),
                           Padding(
-                            padding: const EdgeInsets.only(top: 4, right: 4),
-                            child: IconButton(
-                              onPressed: _dismiss,
-                              tooltip: 'Закрыть уведомление',
-                              iconSize: 18,
-                              color: colors.onSurfaceVariant,
-                              icon: const Icon(Icons.close),
+                            padding: const EdgeInsets.only(top: 7, right: 7),
+                            child: SizedBox(
+                              width: 30,
+                              height: 30,
+                              child: IconButton(
+                                padding: EdgeInsets.zero,
+                                visualDensity: VisualDensity.compact,
+                                alignment: Alignment.center,
+                                onPressed: _dismiss,
+                                tooltip: widget.dismissTooltip,
+                                iconSize: 17,
+                                color: colors.onSurfaceVariant,
+                                icon: const Icon(Icons.close),
+                              ),
                             ),
                           ),
                         ],
