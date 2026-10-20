@@ -1,6 +1,10 @@
-# GhostBox
+<p align="center">
+  <img src="assets/icons/aurora.svg" width="112" alt="GhostBox logo">
+</p>
 
-**v1.3-Alpha · Linux x86_64/ARM64 · Windows x64 · Xray-core + sing-box**
+<h1 align="center">GhostBox</h1>
+
+<p align="center"><strong>v1.3-Alpha · Linux x86_64/ARM64 · Windows x64 · Xray-core + sing-box</strong></p>
 
 ## Русский
 
