@@ -22,6 +22,7 @@ import io.nekohasekai.libbox.SystemProxyStatus
 import io.nekohasekai.libbox.TunOptions
 import java.lang.reflect.InvocationHandler
 import java.lang.reflect.Proxy
+import java.math.BigInteger
 import java.net.InetAddress
 
 class GhostBoxVpnService : VpnService(), CommandServerHandler {
@@ -176,11 +177,35 @@ class GhostBoxVpnService : VpnService(), CommandServerHandler {
                 val ipv4Routes = options.inet4RouteRange
                 val ipv6Routes = options.inet6RouteRange
                 if (!ipv4Routes.hasNext() && !ipv6Routes.hasNext()) {
-                    if (options.inet4Address.hasNext()) builder.addRoute("0.0.0.0", 0)
-                    if (options.inet6Address.hasNext()) builder.addRoute("::", 0)
+                    if (options.inet4Address.hasNext()) {
+                        addRoutesExcluding(
+                            builder,
+                            listOf(NetPrefix("0.0.0.0", 0)),
+                            collectPrefixes(options.inet4RouteExcludeAddress),
+                            32,
+                        )
+                    }
+                    if (options.inet6Address.hasNext()) {
+                        addRoutesExcluding(
+                            builder,
+                            listOf(NetPrefix("::", 0)),
+                            collectPrefixes(options.inet6RouteExcludeAddress),
+                            128,
+                        )
+                    }
                 } else {
-                    ipv4Routes.forEach { builder.addRoute(it.address(), it.prefix()) }
-                    ipv6Routes.forEach { builder.addRoute(it.address(), it.prefix()) }
+                    addRoutesExcluding(
+                        builder,
+                        collectPrefixes(ipv4Routes),
+                        collectPrefixes(options.inet4RouteExcludeAddress),
+                        32,
+                    )
+                    addRoutesExcluding(
+                        builder,
+                        collectPrefixes(ipv6Routes),
+                        collectPrefixes(options.inet6RouteExcludeAddress),
+                        128,
+                    )
                 }
             }
         }
@@ -190,6 +215,84 @@ class GhostBoxVpnService : VpnService(), CommandServerHandler {
 
     private inline fun <T> RoutePrefixIterator.forEach(action: (RoutePrefix) -> T) {
         while (hasNext()) action(next())
+    }
+
+    /** Android API 21–32 has no Builder.excludeRoute; carve exclusions out of
+     * included routes as CIDR blocks instead of silently routing them into TUN.
+     */
+    private data class NetPrefix(val address: String, val prefix: Int)
+
+    private fun collectPrefixes(iterator: RoutePrefixIterator): List<NetPrefix> =
+        buildList {
+            while (iterator.hasNext()) {
+                val item = iterator.next()
+                add(NetPrefix(item.address(), item.prefix()))
+            }
+        }
+
+    private data class AddressRange(val start: BigInteger, val end: BigInteger)
+
+    private fun addRoutesExcluding(
+        builder: Builder,
+        routes: List<NetPrefix>,
+        exclusions: List<NetPrefix>,
+        bits: Int,
+    ) {
+        val familyExclusions = exclusions.mapNotNull { prefix ->
+            val bytes = InetAddress.getByName(prefix.address).address
+            if (bytes.size * 8 != bits) return@mapNotNull null
+            prefix.toRange(bits)
+        }
+        routes.forEach { route ->
+            val routeBytes = InetAddress.getByName(route.address).address
+            if (routeBytes.size * 8 != bits) return@forEach
+            var remaining = mutableListOf(route.toRange(bits))
+            familyExclusions.forEach { excluded ->
+                remaining = remaining.flatMap { current ->
+                    when {
+                        excluded.end < current.start || excluded.start > current.end ->
+                            listOf(current)
+                        else -> buildList {
+                            if (excluded.start > current.start) {
+                                add(AddressRange(current.start, excluded.start - BigInteger.ONE))
+                            }
+                            if (excluded.end < current.end) {
+                                add(AddressRange(excluded.end + BigInteger.ONE, current.end))
+                            }
+                        }
+                    }
+                }.toMutableList()
+            }
+            remaining.forEach { range -> addRange(builder, range, bits) }
+        }
+    }
+
+    private fun NetPrefix.toRange(bits: Int): AddressRange {
+        val address = BigInteger(1, InetAddress.getByName(address).address)
+        val hostBits = (bits - prefix).coerceIn(0, bits)
+        val size = BigInteger.ONE.shiftLeft(hostBits)
+        val start = address.divide(size).multiply(size)
+        return AddressRange(start, start + size - BigInteger.ONE)
+    }
+
+    private fun addRange(builder: Builder, range: AddressRange, bits: Int) {
+        val addressLimit = BigInteger.ONE.shiftLeft(bits)
+        var cursor = range.start
+        while (cursor <= range.end) {
+            val alignmentBits = if (cursor == BigInteger.ZERO) bits else cursor.lowestSetBit
+            val remainingBits = (range.end - cursor + BigInteger.ONE).bitLength() - 1
+            val hostBits = minOf(alignmentBits, remainingBits, bits)
+            val bytes = cursor.toByteArray().let { encoded ->
+                val result = ByteArray(bits / 8)
+                val sourceOffset = (encoded.size - result.size).coerceAtLeast(0)
+                val copyLength = minOf(encoded.size, result.size)
+                System.arraycopy(encoded, sourceOffset, result, result.size - copyLength, copyLength)
+                result
+            }
+            builder.addRoute(InetAddress.getByAddress(bytes), bits - hostBits)
+            cursor += BigInteger.ONE.shiftLeft(hostBits)
+            if (cursor >= addressLimit) break
+        }
     }
 
     private inline fun StringIterator.forEach(action: (String) -> Unit) {

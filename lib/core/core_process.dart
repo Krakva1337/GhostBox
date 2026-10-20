@@ -141,7 +141,8 @@ class CoreProcessBackend implements VpnBackend {
         executable,
         name == 'sing-box'
             ? ['check', '-c', _runtimeConfig!.path]
-            : ['run', '-test', '-c', _runtimeConfig!.path]);
+            : ['run', '-test', '-c', _runtimeConfig!.path],
+        workingDirectory: File(executable).parent.path);
     if (check.exitCode != 0) {
       throw FormatException(_configError(
         serverProfile,
@@ -155,6 +156,11 @@ class CoreProcessBackend implements VpnBackend {
     _process = await Process.start(
       executable,
       ['run', '-c', _runtimeConfig!.path],
+      // Wintun is loaded dynamically by sing-box. Keep its executable
+      // directory as the working directory so Windows DLL loading also works
+      // when GhostBox was launched from a shortcut or the Start menu with an
+      // unrelated current directory.
+      workingDirectory: File(executable).parent.path,
       runInShell: false,
       environment: {'GOMEMLIMIT': '${settings.memoryMb}MiB'},
     );

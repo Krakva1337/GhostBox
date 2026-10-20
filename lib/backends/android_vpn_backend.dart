@@ -128,6 +128,25 @@ class AndroidVpnBackend implements VpnBackend {
   }
 
   Future<void> _connectXrayThroughSingBox(ServerProfile profile) async {
+    // Resolve the upstream before Android installs the full-device route.
+    // The sing-box router must bypass the Xray server itself or Xray's
+    // outbound connection can be captured by the TUN and loop back into its
+    // own SOCKS inbound. Keep the original hostname in the Xray profile for
+    // SNI/Host handling; only add resolved addresses to the TUN exclusions.
+    final endpointAddresses = await InternetAddress.lookup(profile.address)
+        .timeout(const Duration(seconds: 8));
+    if (endpointAddresses.isEmpty) {
+      throw SocketException(
+          'Could not resolve Xray server ${profile.address} before enabling Android TUN');
+    }
+    final endpointExclusions = {
+      if (profile.raw['_tunExcludeAddresses'] is List)
+        ...(profile.raw['_tunExcludeAddresses'] as List)
+            .map((value) => value.toString()),
+      ...endpointAddresses.map((address) =>
+          '${address.address}/${address.type == InternetAddressType.IPv4 ? 32 : 128}'),
+    }.toList();
+
     final socksReservation =
         await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
     final socksPort = socksReservation.port;
@@ -186,6 +205,17 @@ class AndroidVpnBackend implements VpnBackend {
         port: socksPort,
         raw: const {'_tunBridge': true},
       );
+      final routedBridgeProfile = ServerProfile(
+        id: bridgeProfile.id,
+        name: bridgeProfile.name,
+        protocol: bridgeProfile.protocol,
+        address: bridgeProfile.address,
+        port: bridgeProfile.port,
+        raw: {
+          ...bridgeProfile.raw,
+          '_tunExcludeAddresses': endpointExclusions,
+        },
+      );
       final singBoxBuilder = CoreProcessBackend(
         name: 'sing-box',
         executable: '',
@@ -194,7 +224,7 @@ class AndroidVpnBackend implements VpnBackend {
           core: 'sing-box',
           connectionMode: 'tun',
         );
-      final singBoxConfig = singBoxBuilder.makeConfig(bridgeProfile);
+      final singBoxConfig = singBoxBuilder.makeConfig(routedBridgeProfile);
       final route = singBoxConfig['route'];
       if (route is Map<String, dynamic>) route.remove('auto_detect_interface');
       await _channel.invokeMethod<void>('startVpn', {

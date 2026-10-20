@@ -62,6 +62,7 @@ class _HomePageState extends State<HomePage>
   Color get _foreground => Theme.of(context).colorScheme.onSurface;
   Color get _line => Theme.of(context).colorScheme.outlineVariant;
   Color get _muted => Theme.of(context).colorScheme.onSurfaceVariant;
+  bool get _glassMode => ThemeController.instance.glassMode;
   Color get _mint => Color(0xFF77D6B0);
   late final AnimationController glow;
   late final AnimationController ambientMotion;
@@ -3640,49 +3641,39 @@ foreach ($route in $routes) {
                       _header(wideLayout: wideLayout),
                       const SizedBox(height: 8),
                       Expanded(
-                          child: Row(children: [
-                        AnimatedContainer(
-                          duration: const Duration(milliseconds: 280),
-                          curve: Curves.easeInOutCubic,
-                          width: wideLayout ? 120 : 0,
-                          child: ClipRect(
-                            child: IgnorePointer(
-                              ignoring: !wideLayout,
-                              child: AnimatedOpacity(
-                                duration: const Duration(milliseconds: 180),
-                                curve: Curves.easeOutCubic,
-                                opacity: wideLayout ? 1 : 0,
-                                child: _sideNav(),
+                        child: Stack(children: [
+                          Row(children: [
+                            AnimatedContainer(
+                              duration: const Duration(milliseconds: 220),
+                              curve: Curves.easeOutCubic,
+                              width: wideLayout ? 120 : 0,
+                              child: ClipRect(
+                                child: IgnorePointer(
+                                  ignoring: !wideLayout,
+                                  child: AnimatedOpacity(
+                                    duration: const Duration(milliseconds: 150),
+                                    curve: Curves.easeOutCubic,
+                                    opacity: wideLayout ? 1 : 0,
+                                    child: _sideNav(),
+                                  ),
+                                ),
                               ),
                             ),
-                          ),
-                        ),
-                        AnimatedContainer(
-                          duration: const Duration(milliseconds: 280),
-                          curve: Curves.easeInOutCubic,
-                          width: wideLayout ? 10 : 0,
-                        ),
-                        Expanded(child: page),
-                      ])),
-                      const SizedBox(height: 8),
-                      ClipRect(
-                        child: AnimatedSize(
-                          duration: const Duration(milliseconds: 260),
-                          curve: Curves.easeInOutCubic,
-                          alignment: Alignment.topCenter,
-                          child: Align(
-                            heightFactor: wideLayout ? 0 : 1,
-                            child: IgnorePointer(
-                              ignoring: wideLayout,
-                              child: AnimatedOpacity(
-                                duration: const Duration(milliseconds: 180),
-                                curve: Curves.easeOutCubic,
-                                opacity: wideLayout ? 0 : 1,
-                                child: _nav(),
-                              ),
+                            AnimatedContainer(
+                              duration: const Duration(milliseconds: 220),
+                              curve: Curves.easeOutCubic,
+                              width: wideLayout ? 10 : 0,
                             ),
-                          ),
-                        ),
+                            Expanded(child: page),
+                          ]),
+                          if (!wideLayout)
+                            Positioned(
+                              left: 10,
+                              right: 10,
+                              bottom: 8,
+                              child: _nav(),
+                            ),
+                        ]),
                       ),
                     ]);
                   }))
@@ -3715,6 +3706,12 @@ foreach ($route in $routes) {
     final action = await showMenu<String>(
         context: context,
         position: RelativeRect.fromRect(rect, Offset.zero & overlay.size),
+        popUpAnimationStyle: AnimationStyle(
+          duration: const Duration(milliseconds: 170),
+          reverseDuration: const Duration(milliseconds: 130),
+          curve: Curves.easeOutCubic,
+          reverseCurve: Curves.easeInCubic,
+        ),
         items: [
           _menuItem('ping_all', Icons.speed_rounded, 'Пинговать все'),
           _menuItem('refresh_all', Icons.sync_rounded, 'Обновить подписки'),
@@ -3873,109 +3870,101 @@ foreach ($route in $routes) {
                   ),
                 );
               },
-              child: wideLayout && !routeListOpen && !settings && !routingTab
-                  ? Center(
-                      key: const ValueKey('header-brand-mark'),
-                      child: InkWell(
-                        borderRadius: BorderRadius.circular(14),
-                        onTap: _showAbout,
-                        child: _brandMark(36),
-                      ),
-                    )
-                  : _topButton(
-                      routeListOpen || settings || routingTab
-                          ? Icons.arrow_back_ios_new_rounded
-                          : Icons.settings_rounded, () {
-                      if (routeListOpen) {
-                        setState(() => routeListOpen = false);
-                      } else if (settings && settingsSubpage != null) {
-                        setState(() => settingsSubpage = null);
-                      } else {
-                        _openTab(settings || routingTab ? 0 : 2);
-                      }
-                    },
-                      key: ValueKey(
-                          'header-button-${routeListOpen || settings || routingTab ? 'back' : 'settings'}')),
+              child: _topButton(
+                  routeListOpen || settings || routingTab
+                      ? Icons.arrow_back_ios_new_rounded
+                      : Icons.settings_rounded, () {
+                if (routeListOpen) {
+                  setState(() => routeListOpen = false);
+                } else if (settings && settingsSubpage != null) {
+                  setState(() => settingsSubpage = null);
+                } else {
+                  _openTab(settings || routingTab ? 0 : 2);
+                }
+              },
+                  key: ValueKey(
+                      'header-button-${routeListOpen || settings || routingTab ? 'back' : 'settings'}')),
             ),
           ),
         ),
         Center(
             child: Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 64),
-                child: AnimatedSwitcher(
-                    duration: const Duration(milliseconds: 270),
-                    reverseDuration: const Duration(milliseconds: 220),
-                    switchInCurve: Curves.easeOutCubic,
-                    switchOutCurve: Curves.easeInCubic,
-                    transitionBuilder: (child, animation) {
-                      final motion = CurvedAnimation(
-                          parent: animation, curve: Curves.easeOutCubic);
-                      return FadeTransition(
-                        opacity: animation,
-                        child: SlideTransition(
-                          position: Tween<Offset>(
-                                  begin: const Offset(0, .10), end: Offset.zero)
-                              .animate(motion),
-                          child: ScaleTransition(
-                            scale: Tween<double>(begin: .985, end: 1)
-                                .animate(motion),
-                            child: child,
-                          ),
-                        ),
-                      );
-                    },
-                    child: routeListOpen || settings || routingTab
-                        ? Text(
-                            key: ValueKey(routeListOpen
-                                ? 'header-domains'
-                                : settings
-                                    ? 'header-settings-$settingsSubpage'
-                                    : 'header-routing'),
-                            routeListOpen
-                                ? _localized('Список доменов')
-                                : settings
-                                    ? switch (settingsSubpage) {
-                                        'contacts' => _localized('Контакты'),
-                                        'release' => _localized('О релизе'),
-                                        _ => _localized('Настройки'),
-                                      }
-                                    : _localized('Маршрут'),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            textAlign: TextAlign.center,
-                            style: const TextStyle(
-                                fontSize: 17,
-                                fontWeight: FontWeight.w700,
-                                letterSpacing: .2),
-                          )
-                        : FittedBox(
-                            key: ValueKey('header-brand-$wideLayout'),
-                            fit: BoxFit.scaleDown,
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                if (!wideLayout) ...[
-                                  InkWell(
-                                    borderRadius: BorderRadius.circular(10),
-                                    onTap: _showAbout,
-                                    child: _brandMark(23),
-                                  ),
-                                  const SizedBox(width: 8),
-                                ],
-                                Text('GhostBox',
-                                    style: const TextStyle(
-                                        fontSize: 17,
-                                        fontWeight: FontWeight.w700,
-                                        letterSpacing: .2)),
-                                const SizedBox(width: 7),
-                                InkWell(
-                                  borderRadius: BorderRadius.circular(8),
-                                  onTap: _openReleaseDetails,
-                                  child: _versionMark(),
-                                ),
-                              ],
+                child: _headerIsland(
+                    child: AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 270),
+                        reverseDuration: const Duration(milliseconds: 220),
+                        switchInCurve: Curves.easeOutCubic,
+                        switchOutCurve: Curves.easeInCubic,
+                        transitionBuilder: (child, animation) {
+                          final motion = CurvedAnimation(
+                              parent: animation, curve: Curves.easeOutCubic);
+                          return FadeTransition(
+                            opacity: animation,
+                            child: SlideTransition(
+                              position: Tween<Offset>(
+                                      begin: const Offset(0, .10),
+                                      end: Offset.zero)
+                                  .animate(motion),
+                              child: ScaleTransition(
+                                scale: Tween<double>(begin: .985, end: 1)
+                                    .animate(motion),
+                                child: child,
+                              ),
                             ),
-                          )))),
+                          );
+                        },
+                        child: routeListOpen || settings || routingTab
+                            ? Text(
+                                key: ValueKey(routeListOpen
+                                    ? 'header-domains'
+                                    : settings
+                                        ? 'header-settings-$settingsSubpage'
+                                        : 'header-routing'),
+                                routeListOpen
+                                    ? _localized('Список доменов')
+                                    : settings
+                                        ? switch (settingsSubpage) {
+                                            'contacts' =>
+                                              _localized('Контакты'),
+                                            'release' => _localized('О релизе'),
+                                            _ => _localized('Настройки'),
+                                          }
+                                        : _localized('Маршрут'),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                textAlign: TextAlign.center,
+                                style: const TextStyle(
+                                    fontSize: 17,
+                                    fontWeight: FontWeight.w700,
+                                    letterSpacing: .2),
+                              )
+                            : FittedBox(
+                                key: ValueKey('header-brand-$wideLayout'),
+                                fit: BoxFit.scaleDown,
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    InkWell(
+                                      borderRadius: BorderRadius.circular(9),
+                                      onTap: _showAbout,
+                                      child: _brandMark(22),
+                                    ),
+                                    const SizedBox(width: 7),
+                                    Text('GhostBox',
+                                        style: const TextStyle(
+                                            fontSize: 17,
+                                            fontWeight: FontWeight.w700,
+                                            letterSpacing: .2)),
+                                    const SizedBox(width: 7),
+                                    InkWell(
+                                      borderRadius: BorderRadius.circular(8),
+                                      onTap: _openReleaseDetails,
+                                      child: _versionMark(),
+                                    ),
+                                  ],
+                                ),
+                              ))))),
         if (refreshingSubscriptions)
           const Positioned(
               right: 50,
@@ -3989,15 +3978,73 @@ foreach ($route in $routes) {
                 width: 44,
                 height: 44,
                 child: Builder(
-                    builder: (buttonContext) => IconButton(
-                        tooltip: _localized('Действия'),
-                        onPressed: () => _openActionsMenu(buttonContext),
-                        padding: EdgeInsets.zero,
-                        constraints: const BoxConstraints.tightFor(
-                            width: 44, height: 44),
-                        icon: Icon(Icons.more_horiz_rounded,
-                            color: _foreground, size: 25))))),
+                    builder: (buttonContext) => _headerActionIsland(
+                        child: IconButton(
+                            tooltip: _localized('Действия'),
+                            onPressed: () => _openActionsMenu(buttonContext),
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints.tightFor(
+                                width: 44, height: 44),
+                            icon: Icon(Icons.more_horiz_rounded,
+                                color: _foreground, size: 25)))))),
       ]));
+
+  Widget _headerIsland({required Widget child}) => ClipRRect(
+        borderRadius: BorderRadius.circular(20),
+        child: BackdropFilter(
+          filter: ui.ImageFilter.blur(
+              sigmaX: _glassMode ? 24 : 0, sigmaY: _glassMode ? 24 : 0),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 190),
+            curve: Curves.easeOutCubic,
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+            decoration: BoxDecoration(
+              color: _surface.withValues(alpha: _glassMode ? .52 : .72),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(
+                  color: Colors.white.withValues(alpha: _glassMode ? .22 : .1)),
+              gradient: _glassMode
+                  ? LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [
+                        Colors.white.withValues(alpha: .16),
+                        _accent.withValues(alpha: .055),
+                        _surface.withValues(alpha: .32),
+                      ],
+                    )
+                  : null,
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: .12),
+                  blurRadius: 12,
+                  offset: const Offset(0, 4),
+                ),
+              ],
+            ),
+            child: child,
+          ),
+        ),
+      );
+
+  Widget _headerActionIsland({required Widget child}) => ClipRRect(
+        borderRadius: BorderRadius.circular(16),
+        child: BackdropFilter(
+          filter: ui.ImageFilter.blur(
+              sigmaX: _glassMode ? 20 : 0, sigmaY: _glassMode ? 20 : 0),
+          child: Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              color: _surface.withValues(alpha: _glassMode ? .54 : .48),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(
+                  color: Colors.white.withValues(alpha: _glassMode ? .2 : .08)),
+            ),
+            child: child,
+          ),
+        ),
+      );
 
   Widget _brandMark(double size) {
     final appearance = ThemeScope.of(context);
@@ -4037,27 +4084,28 @@ foreach ($route in $routes) {
 
   void _openReleaseDetails() => _openSettingsPage('release');
 
-  Widget _topButton(IconData icon, VoidCallback onTap, {Key? key}) => IconButton(
-      key: key,
-      onPressed: onTap,
-      icon: AnimatedSwitcher(
-          duration: const Duration(milliseconds: 210),
-          transitionBuilder: (child, animation) => FadeTransition(
-              opacity: animation,
-              child: RotationTransition(
-                  turns: Tween<double>(begin: -.08, end: 0).animate(
-                      CurvedAnimation(
-                          parent: animation, curve: Curves.easeOutCubic)),
-                  child: ScaleTransition(
-                      scale: Tween<double>(begin: .76, end: 1).animate(
-                          CurvedAnimation(
-                              parent: animation, curve: Curves.easeOutBack)),
-                      child: child))),
-          child:
-              Icon(icon, key: ValueKey(icon.codePoint), size: 25, color: _foreground)),
-      padding: EdgeInsets.zero,
-      constraints: const BoxConstraints.tightFor(width: 44, height: 44),
-      style: IconButton.styleFrom(shape: const CircleBorder()));
+  Widget _topButton(IconData icon, VoidCallback onTap, {Key? key}) =>
+      _headerActionIsland(
+          child: IconButton(
+              key: key,
+              onPressed: onTap,
+              icon: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 210),
+                  transitionBuilder: (child, animation) => FadeTransition(
+                      opacity: animation,
+                      child: RotationTransition(
+                          turns: Tween<double>(begin: -.08, end: 0).animate(
+                              CurvedAnimation(
+                                  parent: animation,
+                                  curve: Curves.easeOutCubic)),
+                          child: ScaleTransition(
+                              scale: Tween<double>(begin: .76, end: 1).animate(
+                                  CurvedAnimation(parent: animation, curve: Curves.easeOutBack)),
+                              child: child))),
+                  child: Icon(icon, key: ValueKey(icon.codePoint), size: 25, color: _foreground)),
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints.tightFor(width: 44, height: 44),
+              style: IconButton.styleFrom(shape: const CircleBorder())));
 
   Widget _home() => SingleChildScrollView(
       controller: homeScroll,
@@ -4065,7 +4113,8 @@ foreach ($route in $routes) {
         ClipRRect(
             borderRadius: BorderRadius.circular(30),
             child: BackdropFilter(
-                filter: ui.ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+                filter: ui.ImageFilter.blur(
+                    sigmaX: _glassMode ? 28 : 10, sigmaY: _glassMode ? 28 : 10),
                 child: Container(
                     width: double.infinity,
                     padding: EdgeInsets.fromLTRB(18, 12, 18, 16),
@@ -4074,8 +4123,8 @@ foreach ($route in $routes) {
                             begin: Alignment.topCenter,
                             end: Alignment.bottomCenter,
                             colors: [
-                              _accent.withValues(alpha: .10),
-                              _surface.withValues(alpha: .1)
+                              _accent.withValues(alpha: _glassMode ? .18 : .10),
+                              _surface.withValues(alpha: _glassMode ? .22 : .1)
                             ]),
                         borderRadius: BorderRadius.circular(30),
                         border:
@@ -4173,7 +4222,7 @@ foreach ($route in $routes) {
                 icon: Icon(Icons.add_rounded, size: 23),
                 label: Text(_localized('Добавить подписку или сервер'),
                     style: TextStyle(fontSize: 12)))),
-        SizedBox(height: 18),
+        SizedBox(height: 112),
       ]));
 
   Widget _routingPage() => routeListOpen
@@ -4181,7 +4230,7 @@ foreach ($route in $routes) {
       : ListView(
           controller: routingScroll,
           key: const PageStorageKey('routing'),
-          padding: const EdgeInsets.only(top: 14, bottom: 24),
+          padding: const EdgeInsets.only(top: 14, bottom: 120),
           children: [
             Text(_text('Как пускать трафик', 'Traffic routing'),
                 textAlign: TextAlign.center,
@@ -4363,7 +4412,7 @@ foreach ($route in $routes) {
   Widget _routeListEditor() => ListView(
         controller: routingScroll,
         key: const PageStorageKey('routing-domains'),
-        padding: const EdgeInsets.only(top: 14, bottom: 24),
+        padding: const EdgeInsets.only(top: 14, bottom: 120),
         children: [
           Text(
               routeListMode == 'rules'
@@ -4571,12 +4620,12 @@ foreach ($route in $routes) {
   Widget _animatedReconnectBanner(
           {required bool visible, required Widget child}) =>
       AnimatedSize(
-        duration: const Duration(milliseconds: 260),
+        duration: const Duration(milliseconds: 190),
         curve: Curves.easeOutCubic,
         alignment: Alignment.topCenter,
         child: AnimatedSwitcher(
-          duration: const Duration(milliseconds: 220),
-          reverseDuration: const Duration(milliseconds: 180),
+          duration: const Duration(milliseconds: 170),
+          reverseDuration: const Duration(milliseconds: 140),
           switchInCurve: Curves.easeOutCubic,
           switchOutCurve: Curves.easeInCubic,
           transitionBuilder: (child, animation) => FadeTransition(
@@ -6397,6 +6446,8 @@ foreach ($route in $routes) {
   }
 
   Widget _trafficStatsPanel() {
+    const downloadColor = Color(0xFF55C6F2);
+    const uploadColor = Color(0xFFB88AFF);
     String keyFor(DateTime date) =>
         '${date.year.toString().padLeft(4, '0')}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
     final now = DateTime.now();
@@ -6425,171 +6476,232 @@ foreach ($route in $routes) {
     );
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       _section(_text('СТАТИСТИКА ТРАФИКА', 'TRAFFIC STATISTICS')),
-      Container(
-        width: double.infinity,
-        padding: const EdgeInsets.all(15),
-        decoration: BoxDecoration(
-          color: _surface.withOpacity(.68),
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: _line.withOpacity(.45)),
-        ),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Row(children: [
-            Expanded(
-              child: _trafficTotal(
-                _text('Загружено сегодня', 'Downloaded today'),
-                formatTrafficBytes(today.received),
-                Icons.south_rounded,
-              ),
+      ClipRRect(
+        borderRadius: BorderRadius.circular(20),
+        child: BackdropFilter(
+          filter: ui.ImageFilter.blur(
+              sigmaX: _glassMode ? 22 : 0, sigmaY: _glassMode ? 22 : 0),
+          child: Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(15),
+            decoration: BoxDecoration(
+              color: _surface.withValues(alpha: _glassMode ? .58 : .78),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(
+                  color: _line.withValues(alpha: _glassMode ? .58 : .45)),
+              gradient: _glassMode
+                  ? LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [
+                        Colors.white.withValues(alpha: .10),
+                        _surface.withValues(alpha: .42),
+                      ],
+                    )
+                  : null,
             ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: _trafficTotal(
-                _text('Отправлено сегодня', 'Uploaded today'),
-                formatTrafficBytes(today.sent),
-                Icons.north_rounded,
-              ),
-            ),
-          ]),
-          const SizedBox(height: 14),
-          Row(children: [
-            Expanded(
-              child: Text(
-                  trafficRangeDays > 7
-                      ? _text('ИСТОРИЯ · ПО НЕДЕЛЯМ', 'HISTORY · WEEKLY')
-                      : _text('ИСТОРИЯ · ПО ДНЯМ', 'HISTORY · DAILY'),
-                  style: TextStyle(
-                      color: _muted,
-                      fontSize: 9,
-                      letterSpacing: 1.1,
-                      fontWeight: FontWeight.w700)),
-            ),
-            for (final range in const [7, 30, 90])
-              Padding(
-                padding: const EdgeInsets.only(left: 4),
-                child: ChoiceChip(
-                  label: Text('$range${_text(' д', ' d')}'),
-                  selected: trafficRangeDays == range,
-                  onSelected: (_) => setState(() => trafficRangeDays = range),
-                  visualDensity: VisualDensity.compact,
-                  labelStyle: TextStyle(
-                      fontSize: 9,
-                      color: trafficRangeDays == range ? _foreground : _muted),
-                  padding: EdgeInsets.zero,
-                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                ),
-              ),
-          ]),
-          const SizedBox(height: 8),
-          for (final row in rows)
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 5),
-              child: Row(children: [
-                SizedBox(
-                  width: 43,
-                  child: Text(
-                    '${row.$1.day.toString().padLeft(2, '0')}.${row.$1.month.toString().padLeft(2, '0')}',
-                    style: TextStyle(color: _muted, fontSize: 10),
-                  ),
-                ),
+            child:
+                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Row(children: [
                 Expanded(
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(5),
-                    child: SizedBox(
-                      height: 6,
-                      child: LinearProgressIndicator(
-                        value: maxUsage == 0
-                            ? 0
-                            : ((row.$2.received + row.$2.sent) / maxUsage)
-                                .clamp(0, 1),
-                        backgroundColor: Colors.white.withOpacity(.07),
-                        valueColor: AlwaysStoppedAnimation(_accent),
-                      ),
-                    ),
+                  child: _trafficTotal(
+                    _text('Загружено сегодня', 'Downloaded today'),
+                    formatTrafficBytes(today.received),
+                    Icons.south_rounded,
+                    color: downloadColor,
                   ),
                 ),
-                const SizedBox(width: 10),
-                SizedBox(
-                  width: 145,
-                  child: Text(
-                    '↓ ${formatTrafficBytes(row.$2.received)}   ↑ ${formatTrafficBytes(row.$2.sent)}',
-                    textAlign: TextAlign.right,
-                    style: TextStyle(
-                      color: _foreground,
-                      fontSize: 9,
-                      fontFeatures: const [ui.FontFeature.tabularFigures()],
-                    ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: _trafficTotal(
+                    _text('Отправлено сегодня', 'Uploaded today'),
+                    formatTrafficBytes(today.sent),
+                    Icons.north_rounded,
+                    color: uploadColor,
                   ),
                 ),
               ]),
-            ),
-          const SizedBox(height: 9),
-          Divider(height: 1, color: _line.withOpacity(.45)),
-          const SizedBox(height: 9),
-          Row(children: [
-            Expanded(
-              child: Text(
-                _text('Всего за $trafficRangeDays дней',
-                    'Total for $trafficRangeDays days'),
+              const SizedBox(height: 14),
+              Row(children: [
+                Expanded(
+                  child: Text(
+                      trafficRangeDays > 7
+                          ? _text('ИСТОРИЯ · ПО НЕДЕЛЯМ', 'HISTORY · WEEKLY')
+                          : _text('ИСТОРИЯ · ПО ДНЯМ', 'HISTORY · DAILY'),
+                      style: TextStyle(
+                          color: _muted,
+                          fontSize: 9,
+                          letterSpacing: 1.1,
+                          fontWeight: FontWeight.w700)),
+                ),
+                for (final range in const [7, 30, 90])
+                  Padding(
+                    padding: const EdgeInsets.only(left: 4),
+                    child: ChoiceChip(
+                      label: Text('$range${_text(' д', ' d')}'),
+                      selected: trafficRangeDays == range,
+                      onSelected: (_) =>
+                          setState(() => trafficRangeDays = range),
+                      visualDensity: VisualDensity.compact,
+                      labelStyle: TextStyle(
+                          fontSize: 9,
+                          color:
+                              trafficRangeDays == range ? _foreground : _muted),
+                      padding: EdgeInsets.zero,
+                      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                  ),
+              ]),
+              const SizedBox(height: 7),
+              Row(children: [
+                _trafficLegendDot(downloadColor),
+                const SizedBox(width: 4),
+                Text(_text('Загрузка', 'Download'),
+                    style: TextStyle(color: _muted, fontSize: 9)),
+                const SizedBox(width: 12),
+                _trafficLegendDot(uploadColor),
+                const SizedBox(width: 4),
+                Text(_text('Отдача', 'Upload'),
+                    style: TextStyle(color: _muted, fontSize: 9)),
+              ]),
+              const SizedBox(height: 8),
+              for (final row in rows)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 5),
+                  child: Row(children: [
+                    SizedBox(
+                      width: 43,
+                      child: Text(
+                        '${row.$1.day.toString().padLeft(2, '0')}.${row.$1.month.toString().padLeft(2, '0')}',
+                        style: TextStyle(color: _muted, fontSize: 10),
+                      ),
+                    ),
+                    Expanded(
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(5),
+                        child: SizedBox(
+                          height: 7,
+                          child: Row(children: [
+                            if (row.$2.received > 0)
+                              Expanded(
+                                flex: row.$2.received,
+                                child: ColoredBox(color: downloadColor),
+                              ),
+                            if (row.$2.sent > 0)
+                              Expanded(
+                                flex: row.$2.sent,
+                                child: ColoredBox(color: uploadColor),
+                              ),
+                            if (row.$2.received + row.$2.sent == 0)
+                              Expanded(
+                                  child: ColoredBox(
+                                      color:
+                                          Colors.white.withValues(alpha: .07))),
+                            if (maxUsage > row.$2.received + row.$2.sent)
+                              Expanded(
+                                flex: maxUsage - row.$2.received - row.$2.sent,
+                                child: ColoredBox(
+                                    color: Colors.white.withValues(alpha: .07)),
+                              ),
+                          ]),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    SizedBox(
+                      width: 145,
+                      child: Text(
+                        '↓ ${formatTrafficBytes(row.$2.received)}   ↑ ${formatTrafficBytes(row.$2.sent)}',
+                        textAlign: TextAlign.right,
+                        style: TextStyle(
+                          color: _foreground,
+                          fontSize: 9,
+                          fontFeatures: const [ui.FontFeature.tabularFigures()],
+                        ),
+                      ),
+                    ),
+                  ]),
+                ),
+              const SizedBox(height: 9),
+              Divider(height: 1, color: _line.withOpacity(.45)),
+              const SizedBox(height: 9),
+              Row(children: [
+                Expanded(
+                  child: Text(
+                    _text('Всего за $trafficRangeDays дней',
+                        'Total for $trafficRangeDays days'),
+                    style: TextStyle(color: _muted, fontSize: 10),
+                  ),
+                ),
+                Text(
+                  '↓ ${formatTrafficBytes(total.received)}   ↑ ${formatTrafficBytes(total.sent)}',
+                  style: TextStyle(
+                    color: _foreground,
+                    fontSize: 10,
+                    fontWeight: FontWeight.w600,
+                    fontFeatures: const [ui.FontFeature.tabularFigures()],
+                  ),
+                ),
+              ]),
+              const SizedBox(height: 12),
+              Row(children: [
+                Expanded(
+                  child: _trafficTotal(
+                    _text('Скорость сейчас ↓', 'Current download ↓'),
+                    formatTrafficRate(trafficStats.receivedPerSecond),
+                    Icons.south_rounded,
+                    color: downloadColor,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: _trafficTotal(
+                    _text('Скорость сейчас ↑', 'Current upload ↑'),
+                    formatTrafficRate(trafficStats.sentPerSecond),
+                    Icons.north_rounded,
+                    color: uploadColor,
+                  ),
+                ),
+              ]),
+              const SizedBox(height: 8),
+              Text(
+                '${_text('Пик за запуск', 'Peak since app launch')}: ↓ ${formatTrafficRate(trafficStats.peakReceivedPerSecond)} · ↑ ${formatTrafficRate(trafficStats.peakSentPerSecond)}',
                 style: TextStyle(color: _muted, fontSize: 10),
               ),
-            ),
-            Text(
-              '↓ ${formatTrafficBytes(total.received)}   ↑ ${formatTrafficBytes(total.sent)}',
-              style: TextStyle(
-                color: _foreground,
-                fontSize: 10,
-                fontWeight: FontWeight.w600,
-                fontFeatures: const [ui.FontFeature.tabularFigures()],
-              ),
-            ),
-          ]),
-          const SizedBox(height: 12),
-          Row(children: [
-            Expanded(
-              child: _trafficTotal(
-                _text('Скорость сейчас ↓', 'Current download ↓'),
-                formatTrafficRate(trafficStats.receivedPerSecond),
-                Icons.south_rounded,
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: _trafficTotal(
-                _text('Скорость сейчас ↑', 'Current upload ↑'),
-                formatTrafficRate(trafficStats.sentPerSecond),
-                Icons.north_rounded,
-              ),
-            ),
-          ]),
-          const SizedBox(height: 8),
-          Text(
-            '${_text('Пик за запуск', 'Peak since app launch')}: ↓ ${formatTrafficRate(trafficStats.peakReceivedPerSecond)} · ↑ ${formatTrafficRate(trafficStats.peakSentPerSecond)}',
-            style: TextStyle(color: _muted, fontSize: 10),
+              if (!trafficStats.available &&
+                  total.received + total.sent == 0) ...[
+                const SizedBox(height: 7),
+                Text(
+                  Platform.isAndroid || Platform.isIOS
+                      ? _text(
+                          'Системные счётчики трафика пока недоступны на этой платформе.',
+                          'System traffic counters are not available on this platform yet.')
+                      : _text(
+                          'Данные собираются во время TUN/Mixed подключения.',
+                          'Usage is collected while connected in TUN/Mixed mode.'),
+                  style: TextStyle(color: _muted, fontSize: 10),
+                ),
+              ],
+            ]),
           ),
-          if (!trafficStats.available && total.received + total.sent == 0) ...[
-            const SizedBox(height: 7),
-            Text(
-              Platform.isAndroid || Platform.isIOS
-                  ? _text(
-                      'Системные счётчики трафика пока недоступны на этой платформе.',
-                      'System traffic counters are not available on this platform yet.')
-                  : _text('Данные собираются во время TUN/Mixed подключения.',
-                      'Usage is collected while connected in TUN/Mixed mode.'),
-              style: TextStyle(color: _muted, fontSize: 10),
-            ),
-          ],
-        ]),
+        ),
       ),
       const SizedBox(height: 14),
     ]);
   }
 
-  Widget _trafficTotal(String label, String value, IconData icon) => Column(
+  Widget _trafficLegendDot(Color color) => Container(
+      width: 7,
+      height: 7,
+      decoration: BoxDecoration(color: color, shape: BoxShape.circle));
+
+  Widget _trafficTotal(String label, String value, IconData icon,
+          {Color? color}) =>
+      Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(children: [
-            Icon(icon, size: 14, color: _accent),
+            Icon(icon, size: 14, color: color ?? _accent),
             const SizedBox(width: 5),
             Expanded(
               child: Text(label,
@@ -6611,7 +6723,7 @@ foreach ($route in $routes) {
   Widget _settings() => ListView(
         controller: settingsScroll,
         key: const PageStorageKey('settings'),
-        padding: const EdgeInsets.only(bottom: 24),
+        padding: const EdgeInsets.only(bottom: 120),
         children: [
           const SizedBox(height: 8),
           AnimatedSwitcher(
@@ -8821,128 +8933,183 @@ foreach ($route in $routes) {
 
   Widget _nav() => _draggableTabSurface(
       vertical: false,
-      child: Container(
-          key: _bottomNavKey,
-          height: 84,
-          padding: const EdgeInsets.all(6),
-          decoration: BoxDecoration(
-              color: _surface,
-              borderRadius: BorderRadius.circular(27),
-              border: Border.all(color: Colors.white.withOpacity(.15)),
-              boxShadow: [
-                BoxShadow(
-                    color: Colors.black.withOpacity(.2),
-                    blurRadius: 28,
-                    offset: const Offset(0, 12))
-              ]),
-          child: LayoutBuilder(builder: (context, bounds) {
-            final itemWidth = bounds.maxWidth / 3;
-            return Stack(children: [
-              AnimatedPositioned(
-                  duration: const Duration(milliseconds: 280),
-                  curve: Curves.easeOutCubic,
-                  left: itemWidth * _tabIndex,
-                  top: 0,
-                  bottom: 0,
-                  width: itemWidth,
-                  child: _draggableTabIndicator(
-                      vertical: false,
-                      decoration: BoxDecoration(
-                          gradient: LinearGradient(colors: [
-                            _accent.withValues(alpha: .20),
-                            _surface
-                          ]),
-                          borderRadius: BorderRadius.circular(21),
-                          border: Border.all(color: _accent.withOpacity(.4)),
-                          boxShadow: [
-                            BoxShadow(
-                                color: _accent.withOpacity(.14), blurRadius: 18)
-                          ]))),
-              Row(children: [
-                _navItem(
-                    Icons.shield_outlined, _text('Подключение', 'Connect'), 0),
-                _navItem(
-                    Icons.alt_route_rounded, _text('Маршрут', 'Routing'), 1),
-                _navItem(Icons.tune_rounded, _text('Настройки', 'Settings'), 2),
-              ]),
-            ]);
-          })));
-  Widget _sideNav() => _draggableTabSurface(
-      vertical: true,
-      child: Container(
-          key: _sideNavKey,
-          padding: const EdgeInsets.all(6),
-          decoration: BoxDecoration(
-              color: _surface,
-              borderRadius: BorderRadius.circular(25),
-              border: Border.all(color: Colors.white.withOpacity(.15)),
-              boxShadow: [
-                BoxShadow(
-                    color: Colors.black.withOpacity(.18),
-                    blurRadius: 24,
-                    offset: const Offset(0, 8))
-              ]),
-          child: LayoutBuilder(builder: (context, _) {
-            const itemHeight = 72.0;
-            const itemGap = 8.0;
-            const selectedHeight = 72.0;
-            return Stack(children: [
-              AnimatedPositioned(
-                  duration: const Duration(milliseconds: 280),
-                  curve: Curves.easeOutCubic,
-                  top: (itemHeight + itemGap) * _tabIndex +
-                      (itemHeight - selectedHeight) / 2,
-                  left: 0,
-                  right: 0,
-                  height: selectedHeight,
-                  child: _draggableTabIndicator(
-                      vertical: true,
-                      decoration: BoxDecoration(
-                          gradient: LinearGradient(
-                              colors: [
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(29),
+        child: BackdropFilter(
+          filter: ui.ImageFilter.blur(
+              sigmaX: _glassMode ? 28 : 0, sigmaY: _glassMode ? 28 : 0),
+          child: Container(
+              key: _bottomNavKey,
+              height: 84,
+              padding: const EdgeInsets.all(6),
+              decoration: BoxDecoration(
+                  color: _surface.withValues(alpha: _glassMode ? .62 : .94),
+                  borderRadius: BorderRadius.circular(27),
+                  border: Border.all(
+                      color: Colors.white
+                          .withValues(alpha: _glassMode ? .24 : .15)),
+                  gradient: _glassMode
+                      ? LinearGradient(
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                          colors: [
+                            Colors.white.withValues(alpha: .14),
+                            _accent.withValues(alpha: .07),
+                            _surface.withValues(alpha: .42),
+                          ],
+                        )
+                      : null,
+                  boxShadow: [
+                    BoxShadow(
+                        color: Colors.black.withOpacity(.24),
+                        blurRadius: 25,
+                        offset: const Offset(0, 10)),
+                    if (_glassMode)
+                      BoxShadow(
+                          color: Colors.white.withValues(alpha: .06),
+                          blurRadius: 1,
+                          spreadRadius: .5)
+                  ]),
+              child: LayoutBuilder(builder: (context, bounds) {
+                final itemWidth = bounds.maxWidth / 3;
+                return Stack(children: [
+                  AnimatedPositioned(
+                      duration: const Duration(milliseconds: 205),
+                      curve: Curves.easeOutQuart,
+                      left: itemWidth * _tabIndex,
+                      top: 0,
+                      bottom: 0,
+                      width: itemWidth,
+                      child: _draggableTabIndicator(
+                          vertical: false,
+                          decoration: BoxDecoration(
+                              gradient: LinearGradient(colors: [
                                 _accent.withValues(alpha: .20),
                                 _surface
-                              ],
-                              begin: Alignment.centerLeft,
-                              end: Alignment.centerRight),
-                          borderRadius: BorderRadius.circular(19),
-                          border:
-                              Border.all(color: _accent.withOpacity(.38))))),
-              Column(children: [
-                SizedBox(
-                    height: itemHeight,
-                    child: _sideNavItem(Icons.shield_outlined,
-                        _text('Подключение', 'Connect'), 0)),
-                const SizedBox(height: itemGap),
-                SizedBox(
-                    height: itemHeight,
-                    child: _sideNavItem(Icons.alt_route_rounded,
-                        _text('Маршрут', 'Routing'), 1)),
-                const SizedBox(height: itemGap),
-                SizedBox(
-                    height: itemHeight,
-                    child: _sideNavItem(
-                        Icons.tune_rounded, _text('Настройки', 'Settings'), 2)),
-                const SizedBox(height: itemGap),
-                const Spacer(),
-                Divider(
-                    height: 16,
-                    thickness: 1,
-                    indent: 10,
-                    endIndent: 10,
-                    color: Colors.white.withValues(alpha: .10)),
-                _sideActionItem(
-                    Icons.speed_rounded,
-                    _text('Пинг все', 'Ping all'),
-                    () => _checkAllProfiles(List.of(profiles))),
-                _sideActionItem(
-                    Icons.article_outlined, _text('Логи', 'Logs'), _showLogs),
-                _sideActionItem(Icons.history_rounded,
-                    _text('История', 'History'), _showConnectionHistory),
-                const SizedBox(height: 4),
-              ]),
-            ]);
-          })));
+                              ]),
+                              borderRadius: BorderRadius.circular(21),
+                              border: Border.all(
+                                  color: _accent.withValues(
+                                      alpha: _glassMode ? .56 : .4)),
+                              boxShadow: [
+                                BoxShadow(
+                                    color: _accent.withOpacity(.18),
+                                    blurRadius: 17),
+                                if (_glassMode)
+                                  BoxShadow(
+                                      color:
+                                          Colors.white.withValues(alpha: .12),
+                                      blurRadius: 1,
+                                      offset: const Offset(0, 1))
+                              ]))),
+                  Row(children: [
+                    _navItem(Icons.shield_outlined,
+                        _text('Подключение', 'Connect'), 0),
+                    _navItem(Icons.alt_route_rounded,
+                        _text('Маршрут', 'Routing'), 1),
+                    _navItem(
+                        Icons.tune_rounded, _text('Настройки', 'Settings'), 2),
+                  ]),
+                ]);
+              })),
+        ),
+      ));
+  Widget _sideNav() => _draggableTabSurface(
+      vertical: true,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(25),
+        child: BackdropFilter(
+          filter: ui.ImageFilter.blur(
+              sigmaX: _glassMode ? 24 : 0, sigmaY: _glassMode ? 24 : 0),
+          child: Container(
+              key: _sideNavKey,
+              padding: const EdgeInsets.all(6),
+              decoration: BoxDecoration(
+                  color: _surface.withValues(alpha: _glassMode ? .62 : .94),
+                  borderRadius: BorderRadius.circular(25),
+                  border: Border.all(
+                      color: Colors.white
+                          .withValues(alpha: _glassMode ? .23 : .15)),
+                  gradient: _glassMode
+                      ? LinearGradient(
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                          colors: [
+                            Colors.white.withValues(alpha: .13),
+                            _accent.withValues(alpha: .06),
+                            _surface.withValues(alpha: .42),
+                          ],
+                        )
+                      : null,
+                  boxShadow: [
+                    BoxShadow(
+                        color: Colors.black.withOpacity(.18),
+                        blurRadius: 24,
+                        offset: const Offset(0, 8))
+                  ]),
+              child: LayoutBuilder(builder: (context, _) {
+                const itemHeight = 72.0;
+                const itemGap = 8.0;
+                const selectedHeight = 72.0;
+                return Stack(children: [
+                  AnimatedPositioned(
+                      duration: const Duration(milliseconds: 210),
+                      curve: Curves.easeOutCubic,
+                      top: (itemHeight + itemGap) * _tabIndex +
+                          (itemHeight - selectedHeight) / 2,
+                      left: 0,
+                      right: 0,
+                      height: selectedHeight,
+                      child: _draggableTabIndicator(
+                          vertical: true,
+                          decoration: BoxDecoration(
+                              gradient: LinearGradient(
+                                  colors: [
+                                    _accent.withValues(alpha: .20),
+                                    _surface
+                                  ],
+                                  begin: Alignment.centerLeft,
+                                  end: Alignment.centerRight),
+                              borderRadius: BorderRadius.circular(19),
+                              border: Border.all(
+                                  color: _accent.withOpacity(.38))))),
+                  Column(children: [
+                    SizedBox(
+                        height: itemHeight,
+                        child: _sideNavItem(Icons.shield_outlined,
+                            _text('Подключение', 'Connect'), 0)),
+                    const SizedBox(height: itemGap),
+                    SizedBox(
+                        height: itemHeight,
+                        child: _sideNavItem(Icons.alt_route_rounded,
+                            _text('Маршрут', 'Routing'), 1)),
+                    const SizedBox(height: itemGap),
+                    SizedBox(
+                        height: itemHeight,
+                        child: _sideNavItem(Icons.tune_rounded,
+                            _text('Настройки', 'Settings'), 2)),
+                    const SizedBox(height: itemGap),
+                    const Spacer(),
+                    Divider(
+                        height: 16,
+                        thickness: 1,
+                        indent: 10,
+                        endIndent: 10,
+                        color: Colors.white.withValues(alpha: .10)),
+                    _sideActionItem(
+                        Icons.speed_rounded,
+                        _text('Пинг все', 'Ping all'),
+                        () => _checkAllProfiles(List.of(profiles))),
+                    _sideActionItem(Icons.article_outlined,
+                        _text('Логи', 'Logs'), _showLogs),
+                    _sideActionItem(Icons.history_rounded,
+                        _text('История', 'History'), _showConnectionHistory),
+                    const SizedBox(height: 4),
+                  ]),
+                ]);
+              })),
+        ),
+      ));
 
   Widget _sideActionItem(IconData icon, String label, VoidCallback onTap) =>
       SizedBox(
@@ -9012,7 +9179,7 @@ foreach ($route in $routes) {
       child: GestureDetector(
           onTap: () => _openTab(index),
           child: AnimatedContainer(
-              duration: Duration(milliseconds: 320),
+              duration: Duration(milliseconds: 210),
               curve: Curves.easeOutCubic,
               margin: EdgeInsets.symmetric(horizontal: 4),
               decoration: BoxDecoration(
@@ -9023,7 +9190,7 @@ foreach ($route in $routes) {
                   children: [
                     AnimatedScale(
                       scale: _tabIndex == index ? 1.08 : 1,
-                      duration: const Duration(milliseconds: 250),
+                      duration: const Duration(milliseconds: 190),
                       curve: Curves.easeOutBack,
                       child: Icon(icon,
                           size: 24,
@@ -9046,7 +9213,7 @@ foreach ($route in $routes) {
       child: GestureDetector(
           onTap: onTap,
           child: AnimatedContainer(
-              duration: Duration(milliseconds: 250),
+              duration: Duration(milliseconds: 180),
               padding: EdgeInsets.symmetric(vertical: 11),
               decoration: BoxDecoration(
                   color: Colors.transparent,
