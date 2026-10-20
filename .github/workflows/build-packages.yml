@@ -90,7 +90,16 @@ jobs:
           $wintun = Join-Path $release 'vendor/bin/wintun.dll'
           $singBox = Join-Path $release 'vendor/bin/sing-box.exe'
           if (-not (Test-Path $application)) { throw "Missing app executable: $application" }
-          & mt.exe "-inputresource:$application;#1" "-out:$manifest"
+          # Windows SDK tools are installed on the runner but are not always on
+          # PATH. Resolve the newest x64 Manifest Tool from the SDK explicitly.
+          $sdkBin = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits/10/bin'
+          $mt = Get-ChildItem -Path $sdkBin -Directory -ErrorAction SilentlyContinue |
+            Sort-Object { try { [version]$_.Name } catch { [version]'0.0' } } -Descending |
+            ForEach-Object { Join-Path $_.FullName 'x64/mt.exe' } |
+            Where-Object { Test-Path -LiteralPath $_ } |
+            Select-Object -First 1
+          if (-not $mt) { throw "Windows SDK Manifest Tool (mt.exe) was not found under: $sdkBin" }
+          & $mt "-inputresource:$application;#1" "-out:$manifest"
           if ($LASTEXITCODE -ne 0 -or -not (Test-Path $manifest)) {
             throw 'Could not inspect the embedded GhostBox application manifest.'
           }

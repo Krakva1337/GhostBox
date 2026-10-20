@@ -2,21 +2,29 @@
 set -euo pipefail
 
 DEST_DIR="${GHOSTBOX_BIN_DIR:-$HOME/GhostBoxBin}"
+DOWNLOAD_DIR="${GHOSTBOX_DOWNLOADS_DIR:-$HOME/Downloads}"
 
 usage() {
   cat >&2 <<'EOF'
-Usage: tool/import_github_builds.sh <downloaded-actions-archive> [...]
+Usage: tool/import_github_builds.sh
 
-Extracts GitHub Actions ZIP/TAR archives into ~/GhostBoxBin, recursively
-unpacks nested build archives, then removes each source archive only after
-its contents have been extracted successfully.
+Scans ~/Downloads for files named GhostBox* that are ZIP/TAR archives,
+extracts them into ~/GhostBoxBin, recursively unpacks nested build archives,
+then removes each matching source archive only after successful extraction.
+Other downloads are left untouched.
 Set GHOSTBOX_BIN_DIR to choose another output directory.
+Set GHOSTBOX_DOWNLOADS_DIR to use another downloads directory.
 EOF
 }
 
-if [[ $# -eq 0 ]]; then
-  usage
+if [[ $# -ne 0 ]]; then
+  usage >&2
   exit 2
+fi
+
+if [[ ! -d "$DOWNLOAD_DIR" ]]; then
+  echo "Downloads directory not found: $DOWNLOAD_DIR" >&2
+  exit 1
 fi
 
 mkdir -p -- "$DEST_DIR"
@@ -86,31 +94,13 @@ unpack_nested_archives() {
   done
 }
 
-for input in "$@"; do
-  if [[ ! -e "$input" ]]; then
-    echo "Not found: $input" >&2
-    exit 1
-  fi
-  source="$(cd -- "$(dirname -- "$input")" && pwd)/$(basename -- "$input")"
+found=0
+shopt -s nullglob
+for source in "$DOWNLOAD_DIR"/GhostBox*; do
+  [[ -f "$source" ]] || continue
+  is_archive "$source" || continue
+  found=1
   name="$(basename -- "$source")"
-
-  if [[ -d "$source" && "$source" == *.app ]]; then
-    destination="$(unique_target "$DEST_DIR/$name")"
-    cp -a -- "$source" "$destination"
-    echo "Copied app bundle to: $destination"
-    continue
-  fi
-
-  if ! is_archive "$source"; then
-    destination="$(unique_target "$DEST_DIR/$name")"
-    if [[ -f "$source" ]]; then cp -p -- "$source" "$destination"; else
-      echo "Unsupported input: $source" >&2
-      exit 2
-    fi
-    echo "Copied file to: $destination"
-    continue
-  fi
-
   base="$name"
   base="${base%.tar.gz}"
   base="${base%.tar.xz}"
@@ -141,5 +131,9 @@ for input in "$@"; do
   rm -f -- "$source"
   echo "Imported and removed archive: $source -> $final"
 done
+
+if [[ "$found" -eq 0 ]]; then
+  echo "No GhostBox archives found in: $DOWNLOAD_DIR"
+fi
 
 echo "Builds are in: $DEST_DIR"

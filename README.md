@@ -80,10 +80,10 @@ Kill Switch пока работает в Linux с установленными `
 3. Выбери ветку `main` и нажми **Run workflow**.
 4. Дождись завершения workflow, открой его запуск и скачай нужные артефакты: `GhostBox-Linux-x86_64-AppImage`, `GhostBox-Linux-ARM64-AppImage` или `GhostBox-Windows-x64` (ZIP и установщик).
 
-Скачанные ZIP-архивы Actions можно распаковать одной командой. Она сложит сборки в `~/GhostBoxBin`, распакует вложенные ZIP и удалит исходные архивы после успешной распаковки:
+Скрипт обработает только ZIP/TAR-архивы с именем, начинающимся на `GhostBox`, в `~/Downloads`. Он сложит сборки в `~/GhostBoxBin`, распакует вложенные архивы и удалит исходный архив только после успешной распаковки. Остальные загрузки останутся нетронутыми:
 
 ```bash
-./tool/import_github_builds.sh ~/Downloads/GhostBox-Windows-x64.zip ~/Downloads/GhostBox-Linux-x86_64-AppImage.zip
+./tool/import_github_builds.sh
 ```
 
 Артефакты ручного запуска хранятся 14 дней. Чтобы выпустить релиз, сначала закоммить изменения в `main`, затем запусти скрипт с коротким описанием обновления:
@@ -206,10 +206,10 @@ To build packages with GitHub Actions:
 3. Select the `main` branch and click **Run workflow**.
 4. When the workflow finishes, open the run and download the required artifact: `GhostBox-Linux-x86_64-AppImage`, `GhostBox-Linux-ARM64-AppImage`, or `GhostBox-Windows-x64` (ZIP and installer).
 
-Unpack downloaded Actions ZIPs with one command. It puts the builds in `~/GhostBoxBin`, extracts nested ZIPs, and removes each original archive after successful extraction:
+The script processes only ZIP/TAR archives whose names start with `GhostBox` in `~/Downloads`. It puts builds in `~/GhostBoxBin`, extracts nested archives, and removes a source archive only after successful extraction. All other downloads are left untouched:
 
 ```bash
-./tool/import_github_builds.sh ~/Downloads/GhostBox-Windows-x64.zip ~/Downloads/GhostBox-Linux-x86_64-AppImage.zip
+./tool/import_github_builds.sh
 ```
 
 Artifacts from a manual run are kept for 14 days. To publish a release, commit your changes on `main` and run the script with a short summary:
