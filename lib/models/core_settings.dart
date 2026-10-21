@@ -218,7 +218,8 @@ class CoreSettings {
       sniffingEnabled: data['sniffingEnabled'] != false,
       tcpFastOpen: data['tcpFastOpen'] == true,
       udpFragment: data['udpFragment'] == true,
-      pingMode: choice('pingMode', ['proxy', 'tcp', 'icmp'], 'proxy'),
+      pingMode: choice('pingMode', ['proxy', 'tcp', 'icmp'],
+          Platform.isAndroid ? 'tcp' : 'proxy'),
       proxyGetUrl: data['proxyGetUrl'] == 'https://httpbin.org/status/404'
           ? 'https://example.com/ghostbox-probe-404'
           : data['proxyGetUrl'] as String? ??

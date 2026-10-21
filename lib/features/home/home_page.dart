@@ -74,6 +74,7 @@ class _HomePageState extends State<HomePage>
   bool animatedBackground = true;
   bool optimizedMode = false;
   bool reduceAnimations = false;
+  bool showWelcomeSetup = false;
   bool english = false;
   double contentTopSpacing = 8;
   String? _draggingProfileId;
@@ -112,7 +113,10 @@ class _HomePageState extends State<HomePage>
       : routingTab
           ? 1
           : 0;
-  CoreSettings coreSettings = CoreSettings(memoryMb: Platform.isIOS ? 32 : 128);
+  CoreSettings coreSettings = CoreSettings(
+    memoryMb: Platform.isIOS ? 32 : 128,
+    pingMode: Platform.isAndroid || Platform.isIOS ? 'tcp' : 'proxy',
+  );
   final DnsAdBlocklist dnsAdBlocklist = DnsAdBlocklist();
   bool loadingAdBlocklist = false;
   List<String> customDnsBlocklistUrls = <String>[];
@@ -974,8 +978,13 @@ class _HomePageState extends State<HomePage>
     final migrateDnsDefault = p.getBool('dnsCombinedDefaultMigrated') != true;
     final migrateAndroidXrayDefault =
         Platform.isAndroid && p.getBool('androidXrayDefaultMigrated') != true;
+    final migrateAndroidTcpPingDefault = Platform.isAndroid &&
+        p.getBool('androidTcpPingDefaultMigrated') != true;
+    final isFirstLaunch = saved == null && p.getString('coreSettings') == null;
     setState(() {
       prefs = p;
+      showWelcomeSetup =
+          p.getBool('welcomeSetupCompleted') != true && isFirstLaunch;
       logRetainedConnections = p.getInt('logRetainedConnections') ?? 10;
       logMaxSizeMb = p.getInt('logMaxSizeMb') ?? 5;
       logCoreOutput = p.getBool('logCoreOutput') ?? true;
@@ -1012,7 +1021,8 @@ class _HomePageState extends State<HomePage>
           ? CoreSettings(
               memoryMb: CoreSettings.clampMemoryMb(
                   p.getInt('memoryMb') ?? (Platform.isIOS ? 32 : 128)),
-              autoConnect: p.getBool('autoConnect') ?? false)
+              autoConnect: p.getBool('autoConnect') ?? false,
+              pingMode: Platform.isAndroid ? 'tcp' : 'proxy')
           : CoreSettings.fromJson(
               Map<String, dynamic>.from(jsonDecode(rawCore) as Map));
       if (migrateDnsDefault && coreSettings.dns == 'system') {
@@ -1042,6 +1052,9 @@ class _HomePageState extends State<HomePage>
       }
       if (migrateAutoLocalPortDefault) {
         coreSettings = coreSettings.copyWith(autoLocalPort: true);
+      }
+      if (migrateAndroidTcpPingDefault && coreSettings.pingMode == 'proxy') {
+        coreSettings = coreSettings.copyWith(pingMode: 'tcp');
       }
       backend = Platform.isAndroid
           ? AndroidVpnBackend()
@@ -1075,13 +1088,15 @@ class _HomePageState extends State<HomePage>
         migrateWindowsProxy ||
         migrateAutoLocalPortDefault ||
         migrateDnsDefault ||
-        migrateAndroidXrayDefault) {
+        migrateAndroidXrayDefault ||
+        migrateAndroidTcpPingDefault) {
       await p.setString('coreSettings', jsonEncode(coreSettings.toJson()));
       await p.setBool('xrayDefaultMigrated', true);
       await p.setBool('tunDefaultMigrated', true);
       await p.setBool('dnsCombinedDefaultMigrated', true);
       if (Platform.isAndroid) {
         await p.setBool('androidXrayDefaultMigrated', true);
+        await p.setBool('androidTcpPingDefaultMigrated', true);
       }
     }
     if (Platform.isAndroid || Platform.isIOS || Platform.isMacOS) {
@@ -1099,10 +1114,6 @@ class _HomePageState extends State<HomePage>
       includeCoreOutput: logCoreOutput,
     );
     if (p.getBool('proxyGetPingMigrated') != true) {
-      if (coreSettings.pingMode == 'tcp') {
-        coreSettings = coreSettings.copyWith(pingMode: 'proxy');
-        await p.setString('coreSettings', jsonEncode(coreSettings.toJson()));
-      }
       await p.setBool('proxyGetPingMigrated', true);
     }
     if (coreSettings.dnsBlacklistMode == 'ads') {
@@ -4089,7 +4100,175 @@ foreach ($route in $routes) {
   Widget build(BuildContext context) => GhostMenuScope(
         blurEnabled: !optimizedMode,
         reduceMotion: reduceAnimations,
-        child: _buildMainPage(context),
+        child: showWelcomeSetup ? _welcomeSetupPage() : _buildMainPage(context),
+      );
+
+  Widget _welcomeSetupPage() => Scaffold(
+        backgroundColor: Theme.of(context).scaffoldBackgroundColor,
+        body: SafeArea(
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 760),
+              child: Column(
+                children: [
+                  Expanded(
+                    child: ListView(
+                      padding: const EdgeInsets.fromLTRB(20, 28, 20, 20),
+                      children: [
+                        Row(children: [
+                          _brandMark(48),
+                          const SizedBox(width: 14),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text('GhostBox',
+                                    style: TextStyle(
+                                      fontSize: 26,
+                                      fontWeight: FontWeight.w700,
+                                      color: _foreground,
+                                    )),
+                                Text(
+                                    _text('Быстрая настройка приложения',
+                                        'Quick app setup'),
+                                    style:
+                                        TextStyle(color: _muted, fontSize: 13)),
+                              ],
+                            ),
+                          ),
+                        ]),
+                        const SizedBox(height: 24),
+                        _welcomeSection(
+                          Icons.palette_outlined,
+                          _text('Внешний вид', 'Appearance'),
+                          _text('Выбери тему и значок приложения',
+                              'Choose a theme and app icon'),
+                        ),
+                        const SizedBox(height: 10),
+                        ThemeSettingsPanel(english: english),
+                        const SizedBox(height: 22),
+                        _welcomeSection(
+                          Icons.tune_rounded,
+                          _text('Поведение интерфейса', 'Interface behavior'),
+                          _text('Отступы, анимации и нагрузка на устройство',
+                              'Spacing, animations, and device performance'),
+                        ),
+                        const SizedBox(height: 12),
+                        _row(
+                          Icons.vertical_align_top_rounded,
+                          _text('Верхний отступ', 'Top spacing'),
+                          '${contentTopSpacing.round()} px',
+                          SizedBox(
+                            width: 180,
+                            child: Slider(
+                              value: contentTopSpacing,
+                              min: 0,
+                              max: 120,
+                              divisions: 24,
+                              onChanged: (value) {
+                                setState(() => contentTopSpacing = value);
+                                unawaited(prefs?.setDouble(
+                                    'contentTopSpacing', value));
+                                unawaited(prefs?.setDouble(
+                                    'mobileTopSpacing', value));
+                              },
+                            ),
+                          ),
+                        ),
+                        _row(
+                          Icons.auto_awesome_rounded,
+                          _text('Анимации фона', 'Background animation'),
+                          animatedBackground
+                              ? _text('Включены', 'On')
+                              : _text('Выключены', 'Off'),
+                          _compactSwitch(
+                            value: animatedBackground,
+                            onChanged: (value) async {
+                              setState(() => animatedBackground = value);
+                              if (value && !reduceAnimations) {
+                                ambientMotion.repeat();
+                              } else {
+                                ambientMotion.stop();
+                                ambientMotion.value = .12;
+                              }
+                              await prefs?.setBool('animatedBackground', value);
+                            },
+                          ),
+                        ),
+                        _row(
+                          Icons.speed_rounded,
+                          _text('Режим производительности', 'Performance mode'),
+                          _text('Меньше размытия и нагрузки',
+                              'Less blur and GPU work'),
+                          _compactSwitch(
+                            value: optimizedMode,
+                            onChanged: (value) async {
+                              setState(() => optimizedMode = value);
+                              await prefs?.setBool('optimizedMode', value);
+                            },
+                          ),
+                        ),
+                        _row(
+                          Icons.motion_photos_off_rounded,
+                          _text('Сократить анимации', 'Reduce motion'),
+                          _text(
+                              'Более короткие переходы', 'Shorter transitions'),
+                          _compactSwitch(
+                            value: reduceAnimations,
+                            onChanged: (value) async {
+                              setState(() => reduceAnimations = value);
+                              if (value || !animatedBackground) {
+                                ambientMotion.stop();
+                                ambientMotion.value = .12;
+                              } else {
+                                ambientMotion.repeat();
+                              }
+                              await prefs?.setBool('reduceAnimations', value);
+                            },
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 8, 20, 16),
+                    child: SizedBox(
+                      width: double.infinity,
+                      child: FilledButton.icon(
+                        onPressed: () async {
+                          await prefs?.setBool('welcomeSetupCompleted', true);
+                          if (mounted) setState(() => showWelcomeSetup = false);
+                        },
+                        icon: const Icon(Icons.arrow_forward_rounded),
+                        label: Text(
+                            _text('Готово, открыть GhostBox', 'Finish setup')),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+
+  Widget _welcomeSection(IconData icon, String title, String subtitle) => Row(
+        children: [
+          Icon(icon, color: _accent, size: 20),
+          const SizedBox(width: 9),
+          Expanded(
+            child:
+                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(title,
+                  style: TextStyle(
+                      color: _foreground,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 15)),
+              const SizedBox(height: 2),
+              Text(subtitle, style: TextStyle(color: _muted, fontSize: 11)),
+            ]),
+          ),
+        ],
       );
 
   Widget _buildMainPage(BuildContext context) => AnnotatedRegion<
@@ -5605,28 +5784,17 @@ foreach ($route in $routes) {
     if (reduceAnimations) {
       return FadeTransition(opacity: animation, child: child);
     }
-    final motion = CurvedAnimation(
-      parent: animation,
-      curve: Curves.easeInOutCubic,
-      reverseCurve: Curves.easeInOutCubic,
-    );
-    return AnimatedBuilder(
-      animation: motion,
-      child: child,
-      builder: (context, stableChild) {
-        final exiting = motion.status == AnimationStatus.reverse;
-        final progress = 1 - motion.value;
-        return Opacity(
-          opacity: motion.value,
-          child: Transform.translate(
-            offset: Offset(0, (exiting ? -1 : 1) * 20 * progress),
-            child: Transform.scale(
-              scale: .965 + (.035 * motion.value),
-              child: stableChild,
-            ),
-          ),
-        );
-      },
+    final motion =
+        CurvedAnimation(parent: animation, curve: Curves.easeOutCubic);
+    return FadeTransition(
+      opacity: motion,
+      child: SlideTransition(
+        position: Tween<Offset>(
+          begin: const Offset(0, .018),
+          end: Offset.zero,
+        ).animate(motion),
+        child: child,
+      ),
     );
   }
 
@@ -5661,23 +5829,15 @@ foreach ($route in $routes) {
       curve: Curves.easeOutCubic,
       reverseCurve: Curves.easeInCubic,
     );
-    return AnimatedBuilder(
-      animation: motion,
-      child: child,
-      builder: (context, stableChild) {
-        final isOutgoing = motion.status == AnimationStatus.reverse;
-        final distance = (1 - motion.value) * 7;
-        return Opacity(
-          opacity: motion.value,
-          child: Transform.translate(
-            offset: Offset(0, isOutgoing ? -distance : distance),
-            child: Transform.scale(
-              scale: .995 + (.005 * motion.value),
-              child: stableChild,
-            ),
-          ),
-        );
-      },
+    return FadeTransition(
+      opacity: motion,
+      child: SlideTransition(
+        position: Tween<Offset>(
+          begin: const Offset(0, .012),
+          end: Offset.zero,
+        ).animate(motion),
+        child: child,
+      ),
     );
   }
 
@@ -6050,6 +6210,11 @@ foreach ($route in $routes) {
       return;
     }
     try {
+      if (Platform.isAndroid) {
+        await const MethodChannel('app.ghostbox.ghostbox/vpn')
+            .invokeMethod<bool>('openExternalUrl', uri.toString());
+        return;
+      }
       final command = Platform.isWindows
           ? ('rundll32', ['url.dll,FileProtocolHandler', uri.toString()])
           : Platform.isMacOS
@@ -8601,6 +8766,12 @@ foreach ($route in $routes) {
             GitHubUpdater.releasesPage,
           ),
           _contactLink(
+            Icons.send_rounded,
+            _text('Telegram · GhostBox', 'GhostBox on Telegram'),
+            't.me/GhostBoxVPN',
+            'https://t.me/GhostBoxVPN',
+          ),
+          _contactLink(
             Icons.language_rounded,
             _text('Сайт GhostBox', 'GhostBox website'),
             'ghostbox.krakva1337.ru',
@@ -10161,6 +10332,7 @@ foreach ($route in $routes) {
     final defaults = CoreSettings(
       core: Platform.isAndroid || Platform.isIOS ? 'sing-box' : 'xray',
       connectionMode: 'tun',
+      pingMode: Platform.isAndroid || Platform.isIOS ? 'tcp' : 'proxy',
     );
     await _saveCore(defaults, requiresReconnect: false);
     process?.settings = defaults;

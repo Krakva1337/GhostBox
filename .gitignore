@@ -3,6 +3,8 @@ AGENTS.md
 .packages
 build/
 dist/
+/old/*.apk
+/old/*.apk.sha256
 .flutter-plugins*
 .idea/
 *.iml

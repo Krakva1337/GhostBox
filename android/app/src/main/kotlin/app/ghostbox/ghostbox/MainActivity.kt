@@ -102,6 +102,12 @@ class MainActivity : FlutterActivity() {
                         )
                     }
                     "vpnConnectedAt" -> result.success(VpnStateStore.connectedAtMs(this))
+                    "androidTrafficCounters" -> {
+                        val uid = applicationInfo.uid
+                        val received = android.net.TrafficStats.getUidRxBytes(uid)
+                        val sent = android.net.TrafficStats.getUidTxBytes(uid)
+                        result.success(mapOf("received" to received, "sent" to sent))
+                    }
                     "vpnError" -> result.success(VpnStateStore.error(this))
                     "androidCoreInventory" -> result.success(androidCoreInventory())
                     "androidKillSwitchStatus" -> result.success(androidKillSwitchStatus())
@@ -114,6 +120,20 @@ class MainActivity : FlutterActivity() {
                                 result.success(true)
                             } catch (_: Exception) {
                                 result.success(false)
+                            }
+                        }
+                    }
+                    "openExternalUrl" -> {
+                        val value = call.arguments as? String
+                        val uri = value?.let(Uri::parse)
+                        if (uri == null || uri.scheme !in setOf("http", "https") || uri.host.isNullOrBlank()) {
+                            result.error("invalid_url", "A valid HTTP(S) URL is required", null)
+                        } else {
+                            try {
+                                startActivity(Intent(Intent.ACTION_VIEW, uri))
+                                result.success(true)
+                            } catch (error: Exception) {
+                                result.error("open_url_failed", error.message, null)
                             }
                         }
                     }

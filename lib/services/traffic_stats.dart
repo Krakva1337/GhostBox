@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class TrafficCounters {
@@ -36,6 +37,7 @@ class DailyTraffic {
 /// Unsupported modes/platforms return null rather than reporting misleading data.
 class TrafficStats {
   static const _storageKey = 'dailyTrafficBytesV1';
+  static const _androidChannel = MethodChannel('app.ghostbox.ghostbox/vpn');
   Map<String, DailyTraffic> _days = <String, DailyTraffic>{};
   TrafficCounters? _previous;
   DateTime? _previousAt;
@@ -171,22 +173,36 @@ class TrafficStats {
   }
 
   Future<TrafficCounters?> _androidTunnelCounters() async {
-    final lines = await File('/proc/net/dev').readAsLines();
-    for (final line in lines.skip(2)) {
-      final separator = line.indexOf(':');
-      if (separator < 0) continue;
-      final name = line.substring(0, separator).trim();
-      if (!RegExp(r'^tun\d+$').hasMatch(name)) continue;
-      final counters =
-          line.substring(separator + 1).trim().split(RegExp(r'\s+'));
-      if (counters.length < 9) continue;
-      final received = int.tryParse(counters[0]);
-      final sent = int.tryParse(counters[8]);
-      if (received != null && sent != null) {
-        return TrafficCounters(received: received, sent: sent);
+    try {
+      final lines = await File('/proc/net/dev').readAsLines();
+      for (final line in lines.skip(2)) {
+        final separator = line.indexOf(':');
+        if (separator < 0) continue;
+        final name = line.substring(0, separator).trim();
+        if (!RegExp(r'^tun\d+$').hasMatch(name)) continue;
+        final counters =
+            line.substring(separator + 1).trim().split(RegExp(r'\s+'));
+        if (counters.length < 9) continue;
+        final received = int.tryParse(counters[0]);
+        final sent = int.tryParse(counters[8]);
+        if (received != null && sent != null) {
+          return TrafficCounters(received: received, sent: sent);
+        }
       }
+    } on Object {
+      // Some Android versions hide the VPN interface from the app's proc view.
     }
-    return null;
+    // Android accounts the VPN service's underlying sockets to the app UID.
+    // This keeps the live rate visible when /proc/net/dev omits tun*.
+    final counters = await _androidChannel.invokeMapMethod<String, Object?>(
+      'androidTrafficCounters',
+    );
+    final received = (counters?['received'] as num?)?.toInt();
+    final sent = (counters?['sent'] as num?)?.toInt();
+    if (received == null || sent == null || received < 0 || sent < 0) {
+      return null;
+    }
+    return TrafficCounters(received: received, sent: sent);
   }
 
   Future<TrafficCounters?> _windowsTunnelCounters() async {
