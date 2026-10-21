@@ -12,10 +12,16 @@ class LinuxKillSwitch {
 
   static Future<ServerProfile> arm(ServerProfile profile,
       {String? knownEndpoint}) async {
+    if (profile.port < 1 || profile.port > 65535) {
+      throw FormatException('Некорректный порт VPN-сервера: ${profile.port}');
+    }
     final knownAddress =
         knownEndpoint == null ? null : InternetAddress.tryParse(knownEndpoint);
     final endpoint = knownAddress?.address ?? await _resolve(profile.address);
-    final address = InternetAddress.tryParse(endpoint)!;
+    final address = InternetAddress.tryParse(endpoint);
+    if (address == null) {
+      throw FormatException('Некорректный IP VPN-сервера: $endpoint');
+    }
     final family = address.type == InternetAddressType.IPv4 ? 'ip' : 'ip6';
     final existed = await _tableExists();
     final delete = existed ? 'delete table inet $_table\n' : '';
@@ -26,11 +32,10 @@ table inet $_table {
     type filter hook output priority -150; policy drop;
     oifname "lo" accept
     oifname "ghostbox0" accept
-    $family daddr $endpoint tcp dport ${profile.port} accept
-    $family daddr $endpoint udp dport ${profile.port} accept
-    udp dport 67 accept
-    udp sport 68 accept
-    udp dport 547 accept
+    oifname != "ghostbox0" $family daddr $endpoint tcp dport ${profile.port} accept
+    oifname != "ghostbox0" $family daddr $endpoint udp dport ${profile.port} accept
+    oifname != "ghostbox0" udp sport 68 udp dport 67 accept
+    oifname != "ghostbox0" udp sport 546 udp dport 547 accept
   }
 }
 ''';
@@ -58,33 +63,40 @@ table inet $_table {
 
   static Future<String> _resolve(String host) async {
     final literal = InternetAddress.tryParse(host);
-    if (literal != null) return literal.address;
+    if (literal != null) {
+      return literal.address;
+    }
     final addresses =
         await InternetAddress.lookup(host).timeout(const Duration(seconds: 5));
-    if (addresses.isEmpty)
+    if (addresses.isEmpty) {
       throw SocketException('Не удалось найти IP сервера $host');
+    }
     return addresses.first.address;
   }
 
   static Future<bool> _tableExists() async {
-    final result =
-        await _runPrivileged(['nft', 'list', 'table', 'inet', _table]);
-    if (result.exitCode == 0) return true;
+    final result = await _runPrivileged(['list', 'table', 'inet', _table]);
+    if (result.exitCode == 0) {
+      return true;
+    }
     final error = '${result.stderr} ${result.stdout}';
     if (error.contains('No such file or directory') ||
-        error.contains('does not exist')) return false;
+        error.contains('does not exist')) {
+      return false;
+    }
     if (_needsPolkit(error)) {
       throw ProcessException(
           'Kill Switch', const [], _polkitHint, result.exitCode);
     }
-    throw ProcessException('privileged nft', ['list', 'table', 'inet', _table],
+    throw ProcessException('nft', ['list', 'table', 'inet', _table],
         '${result.stderr}'.trim(), result.exitCode);
   }
 
   static Future<void> _runPrivilegedNft(String script) async {
+    final nft = await _nftPath();
     final command = await _privilegeCommand();
     final process =
-        await Process.start(command.$1, [...command.$2, 'nft', '-f', '-']);
+        await Process.start(command.$1, [...command.$2, nft, '-f', '-']);
     process.stdin.write(script);
     await process.stdin.close();
     final stdout =
@@ -94,14 +106,46 @@ table inet $_table {
     final exitCode = await process.exitCode;
     if (exitCode != 0) {
       final error = (stderr.isEmpty ? stdout : stderr).trim();
-      throw ProcessException('privileged nft', ['-f', '-'],
+      throw ProcessException('nft', ['-f', '-'],
           _needsPolkit(error) ? _polkitHint : error, exitCode);
     }
   }
 
   static Future<ProcessResult> _runPrivileged(List<String> arguments) async {
+    final nft = await _nftPath();
     final command = await _privilegeCommand();
-    return Process.run(command.$1, [...command.$2, ...arguments]);
+    return Process.run(command.$1, [...command.$2, nft, ...arguments]);
+  }
+
+  static Future<String> _nftPath() async {
+    final paths = <String>{
+      ...(Platform.environment['PATH'] ?? '').split(':'),
+      '/usr/local/sbin',
+      '/usr/local/bin',
+      '/usr/sbin',
+      '/sbin',
+      '/usr/bin',
+      '/bin',
+    };
+    for (final directory in paths) {
+      if (directory.isEmpty) {
+        continue;
+      }
+      final file = File('$directory/nft');
+      try {
+        if (await file.exists() &&
+            (await file.stat()).type == FileSystemEntityType.file) {
+          return file.path;
+        }
+      } on FileSystemException {
+        // Keep checking the common nftables locations.
+      }
+    }
+    throw const ProcessException(
+      'nft',
+      [],
+      'Команда nft не найдена. Установи пакет nftables и повтори попытку.',
+    );
   }
 
   /// Prefer the desktop authorization dialog. On minimal desktop installs
@@ -131,8 +175,11 @@ table inet $_table {
     final normalized = error.toLowerCase();
     return normalized.contains('password is required') ||
         normalized.contains('a terminal is required') ||
-        normalized.contains('not found') ||
-        normalized.contains('no such file or directory');
+        normalized.contains('not authorized') ||
+        normalized.contains('authentication failed') ||
+        normalized.contains('failed to authenticate') ||
+        normalized.contains('authorization failed') ||
+        normalized.contains('permission denied');
   }
 
   static Future<bool> _executableExists(

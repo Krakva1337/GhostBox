@@ -14,6 +14,22 @@ class AndroidVpnBackend implements VpnBackend {
   static const _channel = MethodChannel('app.ghostbox.ghostbox/vpn');
   late CoreProcessBackend _configBuilder;
 
+  Map<String, dynamic> _stringKeyedMap(Object? value) {
+    if (value is! Map) {
+      throw const FormatException('Android VPN core config is not an object');
+    }
+    return value.map<String, dynamic>(
+      (key, item) => MapEntry(key.toString(), item),
+    );
+  }
+
+  List<Map<String, dynamic>> _configObjects(Object? value) {
+    if (value is! List) {
+      throw const FormatException('Android VPN config has no inbound list');
+    }
+    return value.map(_stringKeyedMap).toList();
+  }
+
   @override
   VpnState state = VpnState.disconnected;
 
@@ -52,6 +68,25 @@ class AndroidVpnBackend implements VpnBackend {
   Future<int?> readMemoryMb() async =>
       _channel.invokeMethod<int>('vpnMemoryMb');
 
+  /// Opens Android's VPN settings so the user can enable Always-on VPN and
+  /// "Block connections without VPN" (the OS-enforced kill switch).
+  /// Ordinary apps cannot toggle lockdown themselves.
+  Future<bool> openKillSwitchSettings() async =>
+      await _channel.invokeMethod<bool>('openAndroidVpnSettings') ?? false;
+
+  /// Returns the lockdown state last reported by Android's VpnService API.
+  /// Android API 29+ exposes this only from inside a running service; before
+  /// that (or before the service has started), `lockdownEnabled` is null.
+  Future<Map<String, Object?>> readKillSwitchStatus() async {
+    final value = await _channel.invokeMethod<Map<dynamic, dynamic>>(
+      'androidKillSwitchStatus',
+    );
+    return value?.map<String, Object?>(
+          (key, item) => MapEntry(key.toString(), item),
+        ) ??
+        const <String, Object?>{};
+  }
+
   @override
   Future<void> connect(String profileJson) async {
     if (state == VpnState.connected || state == VpnState.connecting) return;
@@ -59,7 +94,7 @@ class AndroidVpnBackend implements VpnBackend {
     lastError = null;
     try {
       final profile = ServerProfile.fromJson(
-        Map<String, dynamic>.from(jsonDecode(profileJson) as Map),
+        _stringKeyedMap(jsonDecode(profileJson)),
       );
       final coreName = settings.core == 'xray' ? 'xray' : 'sing-box';
       if (coreName == 'xray') {
@@ -78,19 +113,13 @@ class AndroidVpnBackend implements VpnBackend {
         connectionMode: 'tun',
       );
       final config = _configBuilder.makeConfig(profile);
-      if (coreName == 'xray') {
-        final inbounds =
-            (config['inbounds'] as List).cast<Map<String, dynamic>>();
-        final local =
-            inbounds.firstWhere((inbound) => inbound['tag'] == 'local');
-        // Android's active tunnel has a small HTTP proxy for Proxy GET checks.
-        local['protocol'] = 'http';
-        local['settings'] = {'allowTransparent': false};
-      }
       // VpnService protects the core's outbound sockets; sing-box's automatic
       // desktop interface picker has no Android interface index to discover.
-      final route = config['route'];
-      if (route is Map<String, dynamic>) route.remove('auto_detect_interface');
+      final routeValue = config['route'];
+      if (routeValue is Map) {
+        config['route'] = _stringKeyedMap(routeValue)
+          ..remove('auto_detect_interface');
+      }
       await _channel.invokeMethod<void>('startVpn', {
         'config': const JsonEncoder.withIndent('  ').convert(config),
         'profileName': profile.name,
@@ -162,8 +191,8 @@ class AndroidVpnBackend implements VpnBackend {
         localPort: settings.localPort,
       );
     final xrayConfig = xrayBuilder.makeConfig(profile);
-    final xrayInbounds =
-        (xrayConfig['inbounds'] as List).cast<Map<String, dynamic>>();
+    final xrayInbounds = _configObjects(xrayConfig['inbounds']);
+    xrayConfig['inbounds'] = xrayInbounds;
     final localInbound = xrayInbounds.firstWhere(
       (inbound) => inbound['tag'] == 'local',
       orElse: () => throw const FormatException(
@@ -225,8 +254,11 @@ class AndroidVpnBackend implements VpnBackend {
           connectionMode: 'tun',
         );
       final singBoxConfig = singBoxBuilder.makeConfig(routedBridgeProfile);
-      final route = singBoxConfig['route'];
-      if (route is Map<String, dynamic>) route.remove('auto_detect_interface');
+      final routeValue = singBoxConfig['route'];
+      if (routeValue is Map) {
+        singBoxConfig['route'] = _stringKeyedMap(routeValue)
+          ..remove('auto_detect_interface');
+      }
       await _channel.invokeMethod<void>('startVpn', {
         'config': const JsonEncoder.withIndent('  ').convert(singBoxConfig),
         'profileName': profile.name,

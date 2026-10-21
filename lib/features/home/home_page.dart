@@ -12,6 +12,7 @@ import 'package:file_selector/file_selector.dart';
 import 'package:app_links/app_links.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 
 import '../../backends/sing_box_backend.dart';
 import '../../backends/android_vpn_backend.dart';
@@ -25,6 +26,7 @@ import '../../models/subscription_metadata.dart';
 import '../../platform/system_proxy.dart';
 import '../../platform/windows_elevation.dart';
 import '../../platform/linux_kill_switch.dart';
+import '../../platform/windows_kill_switch.dart';
 import '../../services/profile_parser.dart';
 import '../../services/device_identity.dart';
 import '../../services/dns_ad_blocklist.dart';
@@ -69,8 +71,19 @@ class _HomePageState extends State<HomePage>
   late final AnimationController ambientMotion;
   bool animatedBackground = true;
   bool english = false;
+  double mobileTopSpacing = 8;
   bool powerHovered = false;
-  VpnBackend backend = XrayBackend();
+  Map<String, Object?> androidKillSwitchStatus = const <String, Object?>{};
+  bool readingAndroidKillSwitchStatus = false;
+  bool killSwitchActive = false;
+  // The first frame is interactive while preferences load. Select the native
+  // VPN adapter immediately so Android never tries to launch a desktop core
+  // executable from the initial XrayBackend placeholder.
+  VpnBackend backend = Platform.isAndroid
+      ? AndroidVpnBackend()
+      : Platform.isIOS
+          ? SingBoxBackend()
+          : XrayBackend();
   CoreProcessBackend? tunnelBridgeBackend;
   bool xrayTunnelBridgeActive = false;
   int? activeLocalPort;
@@ -121,6 +134,7 @@ class _HomePageState extends State<HomePage>
   bool hideProfiles = false;
   final Set<String> collapsedSubscriptions = <String>{};
   final Set<String> collapsedSubscriptionInfo = <String>{};
+  final Map<String, GlobalKey> _subscriptionMenuKeys = <String, GlobalKey>{};
   bool routeListOpen = false;
   String? routeListMode;
   bool autoRefreshSubscriptions = true;
@@ -158,6 +172,11 @@ class _HomePageState extends State<HomePage>
     'Подключение': 'Connection',
     'Настройки': 'Settings',
     'Маршрут': 'Routing',
+    'Маршрут и DNS': 'Routing and DNS',
+    'Диагностика': 'Diagnostics',
+    'Приложение': 'App',
+    'Персонализация': 'Personalization',
+    'Все настройки': 'All settings',
     'Список доменов': 'Domain list',
     'Основные': 'Basic',
     'Для профи': 'Advanced',
@@ -192,6 +211,16 @@ class _HomePageState extends State<HomePage>
     'Язык интерфейса': 'Language',
     'Сканировать QR-код': 'Scan QR code',
     'Сканировать QR': 'Scan QR',
+    'QR-код подписки': 'Subscription QR code',
+    'Показать QR-код': 'Show QR code',
+    'Отступ острова сверху': 'Top island spacing',
+    'Отключать VPN во время пинга': 'Disconnect VPN while pinging',
+    'Проверка TCP/ICMP идёт напрямую, после неё сервер включится снова':
+        'TCP/ICMP checks run directly, then the VPN reconnects automatically',
+    'Дождитесь завершения подключения перед проверкой задержки.':
+        'Wait for the connection attempt to finish before checking latency.',
+    'Proxy GET на Android требует активное VPN-подключение. Выберите TCP для проверки без VPN.':
+        'Proxy GET on Android requires an active VPN. Choose TCP to check without VPN.',
     'Показывать расход RAM': 'Show RAM usage',
     'Память ядра': 'Core memory',
     'Мягкий бюджет': 'Soft memory budget',
@@ -302,6 +331,12 @@ class _HomePageState extends State<HomePage>
         'Download and reinstall the latest release',
     'Проверить обновления': 'Check for updates',
     'Проверить версию на GitHub': 'Check GitHub for a newer version',
+    'APK повреждён или загружен не полностью. Проверь размер файла и checksum релиза.':
+        'The APK is damaged or incomplete. Check its file size and the release checksum.',
+    'Версия APK старее уже установленной. Проверь ветку обновлений GitHub.':
+        'The APK is older than the installed app. Check the GitHub update branch.',
+    'Подпись APK не совпадает с установленной версией. Android запрещает обновление. Используй в GitHub Actions тот же постоянный Android keystore, которым подписана установленная сборка.':
+        'The APK signature does not match the installed app. Android blocks this update. Sign GitHub Actions builds with the same persistent Android keystore as the installed build.',
     'Источники': 'Sources',
     'Обновить все': 'Refresh all',
     'Автообновление': 'Auto refresh',
@@ -643,7 +678,7 @@ class _HomePageState extends State<HomePage>
         'The profile has no valid UUID. Refresh the subscription or link.',
     'XHTTP требует ядро Xray. Переключите ядро на Xray в настройках.':
         'XHTTP requires the Xray core. Select Xray in Settings.',
-    'Защита': 'Security',
+    'Защита': 'Protection',
     'пока не поддерживается.': 'is not supported yet.',
     'В профиле REALITY нет корректного публичного ключа (pbk). Обновите подписку.':
         'The profile has no valid REALITY public key (pbk). Refresh the subscription.',
@@ -778,6 +813,33 @@ class _HomePageState extends State<HomePage>
     if (link.scheme.toLowerCase() == 'ghostbox' &&
         link.host.toLowerCase() == 'addserver') {
       final query = link.queryParameters;
+      final encodedProfile = query['b64'];
+      if (encodedProfile != null && encodedProfile.isNotEmpty) {
+        try {
+          final decoded = utf8
+              .decode(base64Url.decode(base64Url.normalize(encodedProfile)));
+          final profile = ServerProfile.fromJson(
+              Map<String, dynamic>.from(jsonDecode(decoded) as Map));
+          setState(() {
+            profiles = [
+              ...profiles.where((existing) => existing.id != profile.id),
+              profile,
+            ];
+            selectedId = profile.id;
+          });
+          await _persist();
+          if (mounted) {
+            _message(_text('Сервер добавлен из ссылки GhostBox',
+                'Server imported from GhostBox link'));
+          }
+        } catch (error) {
+          _handledAppLinks.remove(linkKey);
+          if (mounted) {
+            _message('Не удалось открыть ссылку GhostBox: $error');
+          }
+        }
+        return;
+      }
       final candidate = query['url'] ?? query['link'] ?? query['uri'];
       final decodedQuery = Uri.decodeComponent(link.query);
       final source = candidate ??
@@ -852,6 +914,11 @@ class _HomePageState extends State<HomePage>
     final resumeAfterElevation =
         Platform.isWindows && (p.getBool('connectAfterElevation') ?? false);
     if (resumeAfterElevation) await p.setBool('connectAfterElevation', false);
+    final disableKillSwitchAfterElevation = Platform.isWindows &&
+        (p.getBool('disableKillSwitchAfterElevation') ?? false);
+    if (disableKillSwitchAfterElevation) {
+      await p.setBool('disableKillSwitchAfterElevation', false);
+    }
     if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
       try {
         await systemProxy.restore();
@@ -871,12 +938,16 @@ class _HomePageState extends State<HomePage>
         Platform.isWindows && p.getBool('windowsProxyDefaultMigrated') != true;
     final migrateAutoLocalPortDefault =
         p.getBool('autoLocalPortDefaultMigrated') != true;
+    final migrateAndroidXrayDefault =
+        Platform.isAndroid && p.getBool('androidXrayDefaultMigrated') != true;
     setState(() {
       prefs = p;
       logRetainedConnections = p.getInt('logRetainedConnections') ?? 10;
       logMaxSizeMb = p.getInt('logMaxSizeMb') ?? 5;
       logCoreOutput = p.getBool('logCoreOutput') ?? true;
       animatedBackground = p.getBool('animatedBackground') ?? true;
+      mobileTopSpacing =
+          (p.getDouble('mobileTopSpacing') ?? 8).clamp(0, 48).toDouble();
       customDnsBlocklistUrls =
           p.getStringList('customDnsBlocklistUrls') ?? <String>[];
       english = p.getBool('appEnglish') ?? false;
@@ -908,6 +979,9 @@ class _HomePageState extends State<HomePage>
       if (p.getBool('xrayDefaultMigrated') != true) {
         coreSettings = coreSettings.copyWith(
             core: Platform.isAndroid || Platform.isIOS ? 'sing-box' : 'xray');
+      }
+      if (migrateAndroidXrayDefault) {
+        coreSettings = coreSettings.copyWith(core: 'xray');
       }
       if (Platform.isAndroid || Platform.isIOS) {
         coreSettings = coreSettings.copyWith(
@@ -957,10 +1031,14 @@ class _HomePageState extends State<HomePage>
     if (p.getBool('xrayDefaultMigrated') != true ||
         p.getBool('tunDefaultMigrated') != true ||
         migrateWindowsProxy ||
-        migrateAutoLocalPortDefault) {
+        migrateAutoLocalPortDefault ||
+        migrateAndroidXrayDefault) {
       await p.setString('coreSettings', jsonEncode(coreSettings.toJson()));
       await p.setBool('xrayDefaultMigrated', true);
       await p.setBool('tunDefaultMigrated', true);
+      if (Platform.isAndroid) {
+        await p.setBool('androidXrayDefaultMigrated', true);
+      }
     }
     if (Platform.isAndroid || Platform.isIOS || Platform.isMacOS) {
       await p.setString('coreSettings', jsonEncode(coreSettings.toJson()));
@@ -1009,17 +1087,79 @@ class _HomePageState extends State<HomePage>
         coreSettings.killSwitchEnabled &&
         selected != null) {
       try {
-        await LinuxKillSwitch.arm(selected!,
+        final armedProfile = await LinuxKillSwitch.arm(selected!,
             knownEndpoint: coreSettings.killSwitchProfileId == selected!.id
                 ? coreSettings.killSwitchEndpoint
                 : null);
+        killSwitchActive = true;
+        coreSettings = coreSettings.copyWith(
+            killSwitchEndpoint: armedProfile.address,
+            killSwitchProfileId: selected!.id);
         _recordAppLog(
             'Kill Switch восстановлен; системный трафик вне TUN заблокирован');
       } on Object catch (error) {
+        killSwitchActive = false;
         connectionIssue = 'Не удалось восстановить Kill Switch: $error';
         _recordAppLog(connectionIssue!);
       }
     }
+    if (Platform.isWindows) {
+      try {
+        final status = await WindowsKillSwitch.status();
+        final wasConfigured = status['configured'] == true;
+        killSwitchActive = status['active'] == true;
+        if (wasConfigured || coreSettings.killSwitchEnabled) {
+          final profile = selected;
+          if (profile != null &&
+              (coreSettings.connectionMode == 'tun' ||
+                  coreSettings.connectionMode == 'mixed')) {
+            final savedEndpoint = status['endpointIp'] is String
+                ? status['endpointIp'] as String
+                : coreSettings.killSwitchEndpoint;
+            final sameConfiguration = status['active'] == true &&
+                wasConfigured &&
+                coreSettings.killSwitchProfileId == profile.id &&
+                savedEndpoint == coreSettings.killSwitchEndpoint &&
+                status['port'] == profile.port;
+            if (!sameConfiguration && await WindowsElevation.isElevated()) {
+              final endpoint = await _armKillSwitchForProfile(profile,
+                  knownEndpoint: coreSettings.killSwitchProfileId == profile.id
+                      ? coreSettings.killSwitchEndpoint
+                      : null);
+              await _saveCore(
+                  coreSettings.copyWith(
+                      killSwitchEnabled: true,
+                      killSwitchEndpoint: endpoint,
+                      killSwitchProfileId: profile.id),
+                  requiresReconnect: false);
+              killSwitchActive = true;
+            } else if (wasConfigured && !coreSettings.killSwitchEnabled) {
+              await _saveCore(
+                  coreSettings.copyWith(
+                      killSwitchEnabled: true,
+                      killSwitchEndpoint: savedEndpoint,
+                      killSwitchProfileId: profile.id),
+                  requiresReconnect: false);
+            }
+          } else {
+            await _saveCore(coreSettings.copyWith(killSwitchEnabled: true),
+                requiresReconnect: false);
+          }
+        }
+      } on Object catch (error) {
+        killSwitchActive = false;
+        connectionIssue = 'Не удалось восстановить Kill Switch: $error';
+        _recordAppLog(connectionIssue!);
+      }
+    }
+    if (Platform.isAndroid) unawaited(_refreshAndroidKillSwitchStatus());
+    final enableKillSwitchAfterElevation = Platform.isWindows &&
+        (p.getBool('enableKillSwitchAfterElevation') ?? false);
+    if (enableKillSwitchAfterElevation) {
+      await p.setBool('enableKillSwitchAfterElevation', false);
+      await _setKillSwitch(true);
+    }
+    if (disableKillSwitchAfterElevation) await _setKillSwitch(false);
     // Import protocol links before a possible update exits/restarts the app,
     // then let the updater finish before auto-connect brings the VPN up.
     await _drainPendingAppLinks();
@@ -1058,10 +1198,28 @@ class _HomePageState extends State<HomePage>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && Platform.isAndroid) {
+      unawaited(_refreshAndroidKillSwitchStatus());
+    }
     if (state == AppLifecycleState.resumed &&
         autoRefreshSubscriptions &&
         prefs != null) {
       unawaited(_refreshDueSubscriptions());
+    }
+  }
+
+  Future<void> _refreshAndroidKillSwitchStatus() async {
+    if (!Platform.isAndroid || readingAndroidKillSwitchStatus) return;
+    final androidBackend = backend;
+    if (androidBackend is! AndroidVpnBackend) return;
+    readingAndroidKillSwitchStatus = true;
+    try {
+      final status = await androidBackend.readKillSwitchStatus();
+      if (mounted) setState(() => androidKillSwitchStatus = status);
+    } on Object catch (error) {
+      _recordAppLog('Не удалось прочитать статус Android Lockdown: $error');
+    } finally {
+      readingAndroidKillSwitchStatus = false;
     }
   }
 
@@ -1188,6 +1346,10 @@ class _HomePageState extends State<HomePage>
             'Подключение: ${attemptProfile.name} · $attemptCore · $attemptMode');
         _recordAppLog(
             'Профиль: ${attemptProfile.protocol}/${attemptProfile.network}${attemptProfile.security == null ? '' : ' · ${attemptProfile.security}'}');
+        if (Platform.isAndroid && attemptCore == 'xray') {
+          _recordAppLog(
+              'Android TUN: Xray обслуживает профиль, sing-box направляет системный VPN-трафик');
+        }
         final runtimeRouting = await _expandSplitRouteIps(coreSettings);
         if (backend is AndroidVpnBackend) {
           (backend as AndroidVpnBackend).settings = runtimeRouting.copyWith(
@@ -1225,21 +1387,27 @@ class _HomePageState extends State<HomePage>
           process?.settings =
               runtimeRouting.copyWith(localPort: runtimeLocalPort);
         }
-        if (Platform.isLinux && coreSettings.killSwitchEnabled) {
+        if ((Platform.isLinux || Platform.isWindows) &&
+            coreSettings.killSwitchEnabled) {
           if (attemptMode != 'tun' && attemptMode != 'mixed') {
             throw const FormatException(
-                'Kill Switch в Linux работает только в режиме TUN или Mixed.');
+                'Kill Switch работает только в режиме TUN или Mixed.');
           }
-          runtimeProfile = await LinuxKillSwitch.arm(runtimeProfile,
+          final endpoint = await _armKillSwitchForProfile(runtimeProfile,
               knownEndpoint:
                   coreSettings.killSwitchProfileId == runtimeProfile.id
                       ? coreSettings.killSwitchEndpoint
                       : null);
+          runtimeProfile = Platform.isLinux
+              ? LinuxKillSwitch.withEndpoint(runtimeProfile, endpoint)
+              : _pinProfileToKillSwitchEndpoint(runtimeProfile, endpoint);
           await _saveCore(
               coreSettings.copyWith(
-                  killSwitchEndpoint: runtimeProfile.address,
+                  killSwitchEnabled: true,
+                  killSwitchEndpoint: endpoint,
                   killSwitchProfileId: runtimeProfile.id),
               requiresReconnect: false);
+          killSwitchActive = true;
           _recordAppLog(
               'Kill Switch активен: разрешён TUN и endpoint выбранного VPN');
         }
@@ -2241,10 +2409,95 @@ foreach ($route in $routes) {
     activeLocalPort = null;
   }
 
+  Future<String> _resolveKillSwitchEndpoint(String host) async {
+    final literal = InternetAddress.tryParse(host);
+    if (literal != null) return literal.address;
+    final addresses =
+        await _lookupHost(host).timeout(const Duration(seconds: 8));
+    if (addresses.isEmpty) {
+      throw SocketException('Не удалось разрешить адрес VPN-сервера $host');
+    }
+    final ipv4 =
+        addresses.where((item) => item.type == InternetAddressType.IPv4);
+    return ipv4.isNotEmpty ? ipv4.first.address : addresses.first.address;
+  }
+
+  Future<String> _armKillSwitchForProfile(ServerProfile profile,
+      {String? knownEndpoint}) async {
+    if (Platform.isLinux) {
+      final armed =
+          await LinuxKillSwitch.arm(profile, knownEndpoint: knownEndpoint);
+      return armed.address;
+    }
+    if (Platform.isWindows) {
+      final endpoint = InternetAddress.tryParse(knownEndpoint ?? '')?.address ??
+          await _resolveKillSwitchEndpoint(profile.address);
+      await WindowsKillSwitch.enable(
+        endpointIp: endpoint,
+        port: profile.port,
+      );
+      return endpoint;
+    }
+    throw UnsupportedError('Kill Switch is unavailable on this platform.');
+  }
+
+  Future<void> _disarmKillSwitch() async {
+    if (Platform.isLinux) {
+      await LinuxKillSwitch.disarm();
+    } else if (Platform.isWindows) {
+      await WindowsKillSwitch.disable();
+    } else {
+      throw UnsupportedError('Kill Switch is unavailable on this platform.');
+    }
+  }
+
+  ServerProfile _pinProfileToKillSwitchEndpoint(
+      ServerProfile profile, String endpoint) {
+    final raw = Map<String, dynamic>.from(profile.raw);
+    if ((profile.security == 'tls' || profile.security == 'reality') &&
+        raw['sni'] == null &&
+        raw['serverName'] == null &&
+        InternetAddress.tryParse(profile.address) == null) {
+      raw['sni'] = profile.address;
+    }
+    return ServerProfile(
+      id: profile.id,
+      name: profile.name,
+      protocol: profile.protocol,
+      address: endpoint,
+      port: profile.port,
+      uuid: profile.uuid,
+      network: profile.network,
+      security: profile.security,
+      raw: raw,
+    );
+  }
+
   Future<void> _setKillSwitch(bool enabled) async {
-    if (!Platform.isLinux) {
-      _message(_text('Kill Switch пока доступен только в Linux',
-          'Kill Switch is currently available on Linux only'));
+    if (Platform.isAndroid) {
+      await _refreshAndroidKillSwitchStatus();
+      final androidBackend = backend;
+      if (androidBackend is! AndroidVpnBackend ||
+          androidKillSwitchStatus['supported'] != true) {
+        _message(_text('Android Lockdown доступен начиная с Android 7.0',
+            'Android Lockdown is available on Android 7.0 and later'));
+        return;
+      }
+      final opened = await androidBackend.openKillSwitchSettings();
+      if (!opened) {
+        _message(_text('Не удалось открыть настройки VPN Android',
+            'Could not open Android VPN settings'));
+      } else {
+        _message(_text(
+            'В настройках VPN включи «Всегда включён VPN» и «Блокировать подключения без VPN»',
+            'In VPN settings, enable “Always-on VPN” and “Block connections without VPN”'));
+      }
+      return;
+    }
+    if (!Platform.isLinux && !Platform.isWindows) {
+      _message(_text(
+          'На этой Apple-сборке Kill Switch недоступен: системный Network Extension VPN ещё не подключён.',
+          'Kill Switch is unavailable in this Apple build because the system Network Extension VPN is not integrated.'));
       return;
     }
     if (enabled &&
@@ -2254,6 +2507,22 @@ foreach ($route in $routes) {
           'Select TUN or Mixed mode to use Kill Switch'));
       return;
     }
+    if (Platform.isWindows) {
+      try {
+        if (!await WindowsElevation.isElevated()) {
+          await prefs?.setBool('enableKillSwitchAfterElevation', enabled);
+          await prefs?.setBool('disableKillSwitchAfterElevation', !enabled);
+          await WindowsElevation.relaunchElevated();
+          await SystemNavigator.pop();
+          return;
+        }
+      } on Object catch (error) {
+        await prefs?.setBool('enableKillSwitchAfterElevation', false);
+        await prefs?.setBool('disableKillSwitchAfterElevation', false);
+        _message('Windows запрос прав администратора отменён: $error');
+        return;
+      }
+    }
     try {
       if (enabled) {
         final profile = selected;
@@ -2261,18 +2530,18 @@ foreach ($route in $routes) {
           _message(_text('Сначала выбери сервер', 'Select a server first'));
           return;
         }
-        final armedProfile = await LinuxKillSwitch.arm(profile,
+        final endpoint = await _armKillSwitchForProfile(profile,
             knownEndpoint: coreSettings.killSwitchProfileId == profile.id
                 ? coreSettings.killSwitchEndpoint
                 : null);
         await _saveCore(
             coreSettings.copyWith(
                 killSwitchEnabled: true,
-                killSwitchEndpoint: armedProfile.address,
+                killSwitchEndpoint: endpoint,
                 killSwitchProfileId: profile.id),
             requiresReconnect: false);
       } else {
-        await LinuxKillSwitch.disarm();
+        await _disarmKillSwitch();
         await _saveCore(
             coreSettings.copyWith(
                 killSwitchEnabled: false,
@@ -2280,13 +2549,20 @@ foreach ($route in $routes) {
                 killSwitchProfileId: ''),
             requiresReconnect: false);
       }
+      if (mounted) setState(() => killSwitchActive = enabled);
       _recordAppLog(enabled
-          ? 'Kill Switch включён: весь исходящий трафик вне ghostbox0 заблокирован'
+          ? Platform.isWindows
+              ? 'Kill Switch включён: Windows Firewall блокирует исходящий трафик вне TUN и VPN endpoint'
+              : 'Kill Switch включён: весь исходящий трафик вне ghostbox0 заблокирован'
           : 'Kill Switch выключен');
       if (enabled) {
         _message(_text(
-            'Kill Switch включён. При отключении VPN интернет останется заблокирован.',
-            'Kill Switch is on. Internet stays blocked when VPN disconnects.'));
+            Platform.isWindows
+                ? 'Kill Switch включён через Windows Firewall. Он останется активен после закрытия приложения.'
+                : 'Kill Switch включён. При отключении VPN интернет останется заблокирован.',
+            Platform.isWindows
+                ? 'Kill Switch is active through Windows Firewall and stays on after the app closes.'
+                : 'Kill Switch is on. Internet stays blocked when VPN disconnects.'));
       }
     } on Object catch (error) {
       _message(_text('Не удалось изменить Kill Switch: $error',
@@ -2306,16 +2582,17 @@ foreach ($route in $routes) {
     _recordAppLog('Переключаю сервер на ${target.name}');
     if (mounted) setState(() {});
     try {
-      if (Platform.isLinux && coreSettings.killSwitchEnabled) {
-        final allowedProfile = await LinuxKillSwitch.arm(target,
+      if ((Platform.isLinux || Platform.isWindows) &&
+          coreSettings.killSwitchEnabled) {
+        final endpoint = await _armKillSwitchForProfile(target,
             knownEndpoint: coreSettings.killSwitchProfileId == target.id
                 ? coreSettings.killSwitchEndpoint
                 : null);
         await _saveCore(
             coreSettings.copyWith(
-                killSwitchEndpoint: allowedProfile.address,
-                killSwitchProfileId: target.id),
+                killSwitchEndpoint: endpoint, killSwitchProfileId: target.id),
             requiresReconnect: false);
+        killSwitchActive = true;
       }
       await _disconnectActive();
       activeProfileId = null;
@@ -2342,7 +2619,7 @@ foreach ($route in $routes) {
           : 'Android подключает приложения через системный VPN (TUN)');
       return;
     }
-    if (Platform.isLinux &&
+    if ((Platform.isLinux || Platform.isWindows) &&
         coreSettings.killSwitchEnabled &&
         mode != 'tun' &&
         mode != 'mixed') {
@@ -2705,7 +2982,8 @@ foreach ($route in $routes) {
       pingSamples = [];
     });
     try {
-      final samples = await _probeProfile(profile);
+      final samples =
+          await _withVpnDisconnectedForPing(() => _probeProfile(profile));
       if (mounted && generation == _probeGeneration)
         setState(() {
           pingSamples = samples;
@@ -2733,11 +3011,36 @@ foreach ($route in $routes) {
     }
   }
 
+  Future<T> _withVpnDisconnectedForPing<T>(Future<T> Function() action) async {
+    if (!coreSettings.disconnectVpnForPing) return action();
+    if (backend.state == VpnState.connecting) {
+      throw const SocketException(
+          'Дождитесь завершения подключения перед проверкой задержки.');
+    }
+    if (backend.state != VpnState.connected) return action();
+    if (Platform.isAndroid && coreSettings.pingMode == 'proxy') {
+      throw const SocketException(
+          'Proxy GET на Android требует активное VPN-подключение. Выберите TCP для проверки без VPN.');
+    }
+
+    await _disconnectActive();
+    try {
+      return await action();
+    } finally {
+      if (mounted &&
+          selected != null &&
+          backend.state == VpnState.disconnected) {
+        await _toggle();
+      }
+    }
+  }
+
   Future<void> _checkOneProfile(ServerProfile profile) async {
     if (_checkingProfileIds.contains(profile.id)) return;
     setState(() => _checkingProfileIds.add(profile.id));
     try {
-      final samples = await _probeProfile(profile);
+      final samples =
+          await _withVpnDisconnectedForPing(() => _probeProfile(profile));
       if (!mounted) return;
       final latency = samples[samples.length ~/ 2];
       setState(() {
@@ -2804,8 +3107,8 @@ foreach ($route in $routes) {
       }
     }
 
-    await Future.wait(List.generate(
-        targets.length < 4 ? targets.length : 4, (_) => worker()));
+    await _withVpnDisconnectedForPing(() => Future.wait(List.generate(
+        targets.length < 4 ? targets.length : 4, (_) => worker())));
     if (mounted) {
       setState(() => checkingAll = false);
       _message('Проверено серверов: $pingAllDone из $pingAllTotal');
@@ -2947,6 +3250,109 @@ foreach ($route in $routes) {
     if (action == 'profile') await _addProfile();
   }
 
+  Future<String?> _scanQrCode(BuildContext parentContext) => showDialog<String>(
+        context: parentContext,
+        builder: (scanContext) => Dialog(
+          backgroundColor: _surface,
+          clipBehavior: Clip.antiAlias,
+          child: SizedBox(
+            width: 420,
+            height: 500,
+            child: Column(
+              children: [
+                ListTile(
+                  title: Text(_localized('Сканировать QR-код')),
+                  trailing: IconButton(
+                    onPressed: () => Navigator.pop(scanContext),
+                    icon: const Icon(Icons.close_rounded),
+                  ),
+                ),
+                Expanded(
+                  child: MobileScanner(
+                    onDetect: (capture) {
+                      final value = capture.barcodes
+                          .map((barcode) => barcode.rawValue)
+                          .firstWhere(
+                            (value) => value != null && value.trim().isNotEmpty,
+                            orElse: () => null,
+                          );
+                      if (value != null && scanContext.mounted) {
+                        Navigator.pop(scanContext, value.trim());
+                      }
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+
+  Future<void> _showSubscriptionQr(String url) => showDialog<void>(
+        context: context,
+        builder: (dialogContext) => Dialog(
+          backgroundColor: _surface,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(24),
+            side: BorderSide(color: Colors.white.withValues(alpha: .12)),
+          ),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 360),
+            child: Padding(
+              padding: const EdgeInsets.all(22),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Row(
+                    children: [
+                      Icon(Icons.qr_code_2_rounded, color: _accent),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          _localized('QR-код подписки'),
+                          style: const TextStyle(
+                              fontSize: 17, fontWeight: FontWeight.w700),
+                        ),
+                      ),
+                      IconButton(
+                        onPressed: () => Navigator.pop(dialogContext),
+                        icon: const Icon(Icons.close_rounded),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 14),
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(18),
+                    ),
+                    child: QrImageView(
+                      data: url,
+                      version: QrVersions.auto,
+                      size: 244,
+                      errorCorrectionLevel: QrErrorCorrectLevel.M,
+                      backgroundColor: Colors.white,
+                      eyeStyle: const QrEyeStyle(
+                          eyeShape: QrEyeShape.square, color: Colors.black),
+                      dataModuleStyle: const QrDataModuleStyle(
+                          dataModuleShape: QrDataModuleShape.square,
+                          color: Colors.black),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  SelectableText(
+                    url,
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: _muted, fontSize: 11),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+
   Future<String?> _showPasteDialog({
     required String title,
     required String description,
@@ -3015,61 +3421,9 @@ foreach ($route in $routes) {
                                 if (Platform.isAndroid || Platform.isIOS)
                                   TextButton.icon(
                                     onPressed: () async {
-                                      final scanned = await showDialog<String>(
-                                        context: ctx,
-                                        builder: (scanContext) => Dialog(
-                                          backgroundColor: _surface,
-                                          clipBehavior: Clip.antiAlias,
-                                          child: SizedBox(
-                                            width: 420,
-                                            height: 500,
-                                            child: Column(
-                                              children: [
-                                                ListTile(
-                                                  title: Text(_localized(
-                                                      'Сканировать QR-код')),
-                                                  trailing: IconButton(
-                                                    onPressed: () =>
-                                                        Navigator.pop(
-                                                            scanContext),
-                                                    icon: const Icon(
-                                                        Icons.close_rounded),
-                                                  ),
-                                                ),
-                                                Expanded(
-                                                  child: MobileScanner(
-                                                    onDetect: (capture) {
-                                                      final value = capture
-                                                          .barcodes
-                                                          .map((barcode) =>
-                                                              barcode.rawValue)
-                                                          .firstWhere(
-                                                              (value) =>
-                                                                  value !=
-                                                                      null &&
-                                                                  value
-                                                                      .trim()
-                                                                      .isNotEmpty,
-                                                              orElse: () =>
-                                                                  null);
-                                                      if (value != null &&
-                                                          scanContext.mounted) {
-                                                        Navigator.pop(
-                                                            scanContext, value);
-                                                      }
-                                                    },
-                                                  ),
-                                                ),
-                                              ],
-                                            ),
-                                          ),
-                                        ),
-                                      );
+                                      final scanned = await _scanQrCode(ctx);
                                       if (scanned != null && ctx.mounted) {
-                                        controller
-                                          ..text = scanned.trim()
-                                          ..selection = TextSelection.collapsed(
-                                              offset: controller.text.length);
+                                        Navigator.pop(ctx, scanned.trim());
                                       }
                                     },
                                     icon: const Icon(Icons.qr_code_scanner,
@@ -3156,6 +3510,17 @@ foreach ($route in $routes) {
                         },
                         icon: Icon(Icons.content_paste_rounded),
                         label: Text(_localized('Вставить из буфера'))),
+                    if (Platform.isAndroid || Platform.isIOS)
+                      TextButton.icon(
+                        onPressed: () async {
+                          final scanned = await _scanQrCode(context);
+                          if (scanned != null && context.mounted) {
+                            Navigator.pop(context, (scanned, label.text));
+                          }
+                        },
+                        icon: const Icon(Icons.qr_code_scanner_rounded),
+                        label: Text(_localized('Сканировать QR-код')),
+                      ),
                   ])),
               actions: [
                 TextButton(
@@ -3259,6 +3624,9 @@ foreach ($route in $routes) {
         final ids = (sub['ids'] as List? ?? []).cast<String>().toSet();
         await _checkAllProfiles(
             profiles.where((p) => ids.contains(p.id)).toList());
+        break;
+      case 'show_qr':
+        await _showSubscriptionQr(url);
         break;
       case 'copy':
         await Clipboard.setData(ClipboardData(text: url));
@@ -3371,6 +3739,194 @@ foreach ($route in $routes) {
     }
   }
 
+  Future<void> _openSubscriptionMenu(
+      BuildContext anchorContext, String url) async {
+    final anchor = anchorContext.findRenderObject() as RenderBox?;
+    final overlay = Overlay.of(context);
+    final overlayBox = overlay.context.findRenderObject() as RenderBox?;
+    if (anchor == null || overlayBox == null || !anchor.hasSize) return;
+
+    final anchorTopLeft =
+        anchor.localToGlobal(Offset.zero, ancestor: overlayBox);
+    final anchorRect = anchorTopLeft & anchor.size;
+    final screen = overlayBox.size;
+    const menuWidth = 270.0;
+    const itemHeight = 44.0;
+    final menuHeight = math.min(8 * itemHeight + 18, screen.height - 24);
+    final left = (anchorRect.right - menuWidth)
+        .clamp(12.0, screen.width - menuWidth - 12);
+    final below = anchorRect.bottom + 6;
+    final top = (below + menuHeight <= screen.height - 12
+            ? below
+            : anchorRect.top - menuHeight - 6)
+        .clamp(12.0, screen.height - menuHeight - 12);
+    final controller = AnimationController(
+        vsync: this, duration: const Duration(milliseconds: 190));
+    var hovered = -1;
+    var closing = false;
+    late final OverlayEntry entry;
+
+    Future<void> close([String? action]) async {
+      if (closing) return;
+      closing = true;
+      await controller.reverse();
+      if (entry.mounted) entry.remove();
+      controller.dispose();
+      if (action != null && mounted) await _subscriptionAction(action, url);
+    }
+
+    const actions = <(String, IconData, String)>[
+      ('ping_all', Icons.speed_rounded, 'Пинговать все'),
+      ('refresh', Icons.sync_rounded, 'Обновить'),
+      ('copy', Icons.copy_rounded, 'Скопировать URL'),
+      ('show_qr', Icons.qr_code_2_rounded, 'Показать QR-код'),
+      ('copy_ghostbox', Icons.link_rounded, 'Короткая GhostBox-ссылка'),
+      ('edit_url', Icons.edit_location_alt_rounded, 'Изменить путь подписки'),
+      ('rename', Icons.edit_rounded, 'Переименовать'),
+      ('remove', Icons.delete_outline_rounded, 'Убрать подписку'),
+    ];
+
+    entry = OverlayEntry(
+        builder: (overlayContext) => Positioned.fill(
+              child: Stack(children: [
+                GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () => close(),
+                  child: const SizedBox.expand(),
+                ),
+                Positioned(
+                  left: left,
+                  top: top,
+                  width: math.min(menuWidth, screen.width - 24),
+                  child: AnimatedBuilder(
+                    animation: controller,
+                    builder: (context, child) {
+                      final curved =
+                          Curves.easeOutCubic.transform(controller.value);
+                      return Opacity(
+                        opacity: curved,
+                        child: Transform.scale(
+                          scale: .94 + (.06 * curved),
+                          alignment: Alignment.topRight,
+                          child: child,
+                        ),
+                      );
+                    },
+                    child: StatefulBuilder(builder: (context, setMenuState) {
+                      final panelColor = Color.alphaBlend(
+                          _surface.withValues(alpha: .96),
+                          Theme.of(context).scaffoldBackgroundColor);
+                      return ClipRRect(
+                        borderRadius: BorderRadius.circular(18),
+                        child: BackdropFilter(
+                          filter: ui.ImageFilter.blur(sigmaX: 17, sigmaY: 17),
+                          child: Container(
+                            constraints: BoxConstraints(maxHeight: menuHeight),
+                            decoration: BoxDecoration(
+                              color: panelColor,
+                              border: Border.all(
+                                  color: Colors.white.withValues(alpha: .12)),
+                              borderRadius: BorderRadius.circular(18),
+                              boxShadow: [
+                                BoxShadow(
+                                    color: Colors.black.withValues(alpha: .34),
+                                    blurRadius: 28,
+                                    offset: const Offset(0, 12)),
+                              ],
+                            ),
+                            padding: const EdgeInsets.all(7),
+                            child: SingleChildScrollView(
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  for (var i = 0; i < actions.length; i++)
+                                    MouseRegion(
+                                      onEnter: (_) =>
+                                          setMenuState(() => hovered = i),
+                                      onExit: (_) => setMenuState(() {
+                                        if (hovered == i) hovered = -1;
+                                      }),
+                                      child: AnimatedContainer(
+                                        duration:
+                                            const Duration(milliseconds: 130),
+                                        curve: Curves.easeOutCubic,
+                                        decoration: BoxDecoration(
+                                          color: hovered == i
+                                              ? _accent.withValues(alpha: .16)
+                                              : Colors.transparent,
+                                          borderRadius:
+                                              BorderRadius.circular(12),
+                                        ),
+                                        child: Material(
+                                          color: Colors.transparent,
+                                          child: InkWell(
+                                            borderRadius:
+                                                BorderRadius.circular(12),
+                                            splashColor:
+                                                _accent.withValues(alpha: .18),
+                                            highlightColor:
+                                                _accent.withValues(alpha: .10),
+                                            onTap: () => close(actions[i].$1),
+                                            child: SizedBox(
+                                              height: itemHeight,
+                                              child: Padding(
+                                                padding:
+                                                    const EdgeInsets.symmetric(
+                                                        horizontal: 11),
+                                                child: Row(children: [
+                                                  Icon(actions[i].$2,
+                                                      size: 18, color: _accent),
+                                                  const SizedBox(width: 11),
+                                                  Expanded(
+                                                    child: Text(
+                                                      _localized(actions[i].$3),
+                                                      maxLines: 1,
+                                                      overflow:
+                                                          TextOverflow.ellipsis,
+                                                      style: TextStyle(
+                                                          color: _foreground,
+                                                          fontSize: 12,
+                                                          fontWeight:
+                                                              FontWeight.w500),
+                                                    ),
+                                                  ),
+                                                ]),
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      );
+                    }),
+                  ),
+                ),
+              ]),
+            ));
+    overlay.insert(entry);
+    unawaited(controller.forward());
+  }
+
+  Widget _subscriptionMenuButton(String url) {
+    final key = _subscriptionMenuKeys.putIfAbsent(url, GlobalKey.new);
+    return IconButton(
+      key: key,
+      tooltip: _localized('Действия с подпиской'),
+      onPressed: () {
+        final anchorContext = key.currentContext;
+        if (anchorContext != null) {
+          unawaited(_openSubscriptionMenu(anchorContext, url));
+        }
+      },
+      icon: Icon(Icons.more_horiz_rounded, size: 20, color: _muted),
+    );
+  }
+
   void _bindCoreRecoveryNotices(CoreProcessBackend core) {
     core.onRecoveryNotice = (message, {bool error = false}) {
       if (!mounted) return;
@@ -3438,6 +3994,13 @@ foreach ($route in $routes) {
       ('Не удалось экспортировать журнал: ', 'Could not export the journal: '),
       ('Не удалось проверить обновления: ', 'Could not check for updates: '),
       ('Не удалось установить обновление: ', 'Could not install the update: '),
+      ('Загрузка ', 'Download of '),
+      (' неполная: ожидалось ', ' is incomplete: expected '),
+      (' байт, получено ', ' bytes, received '),
+      (
+        'Этот APK предназначен для другого приложения: ',
+        'This APK is for a different app: '
+      ),
       (
         'Не удалось открыть страницу релизов: ',
         'Could not open the releases page: '
@@ -3522,6 +4085,10 @@ foreach ($route in $routes) {
     );
     controller.dispose();
     if (input == null || input.trim().isEmpty) return;
+    if (Uri.tryParse(input)?.scheme.toLowerCase() == 'ghostbox') {
+      _receiveAppLink(Uri.parse(input));
+      return;
+    }
     try {
       final parsedResult = await ProfileParser().parseSourceDetailed(input);
       final parsed = parsedResult.profiles;
@@ -3589,119 +4156,140 @@ foreach ($route in $routes) {
   }
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
-      body: Container(
-          decoration: BoxDecoration(
-              gradient: LinearGradient(
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                  colors: [
-                _surface,
-                Theme.of(context).scaffoldBackgroundColor,
-                Theme.of(context).scaffoldBackgroundColor
-              ])),
-          child: SafeArea(
-            top: false,
-            child: Stack(children: [
-              Positioned.fill(
-                  child: IgnorePointer(
-                      child: RepaintBoundary(
-                          child: CustomPaint(
-                              painter: _AmbientBackgroundPainter(
-                                  animation: ambientMotion,
-                                  color: _accent,
-                                  enabled: animatedBackground))))),
-              Padding(
-                  padding: const EdgeInsets.fromLTRB(5, 16, 5, 12),
-                  child: LayoutBuilder(builder: (context, bounds) {
-                    final wideLayout = bounds.maxWidth >= 800;
-                    final page = ClipRRect(
-                        borderRadius: BorderRadius.circular(24),
-                        child: AnimatedSwitcher(
-                            duration: const Duration(milliseconds: 280),
-                            reverseDuration: const Duration(milliseconds: 180),
-                            layoutBuilder: (current, previous) => Stack(
-                                  fit: StackFit.passthrough,
-                                  children: [
-                                    ...previous,
-                                    if (current != null) current,
-                                  ],
-                                ),
-                            transitionBuilder: (child, animation) {
-                              final fade = CurvedAnimation(
-                                parent: animation,
-                                curve: Curves.easeInOutCubic,
-                                reverseCurve: Curves.easeInOutCubic,
-                              );
-                              return FadeTransition(
-                                opacity: fade,
-                                child: SlideTransition(
-                                  position: Tween<Offset>(
-                                          begin: const Offset(0, .012),
-                                          end: Offset.zero)
-                                      .animate(fade),
-                                  child: child,
-                                ),
-                              );
-                            },
-                            child: KeyedSubtree(
-                                key: ValueKey(_tabIndex),
-                                child: settings
-                                    ? _scrollFrame(_settings(), settingsScroll)
-                                    : routingTab
+  Widget build(BuildContext context) => AnnotatedRegion<SystemUiOverlayStyle>(
+      value: SystemUiOverlayStyle(
+        statusBarColor: Colors.transparent,
+        statusBarIconBrightness: Theme.of(context).brightness == Brightness.dark
+            ? Brightness.light
+            : Brightness.dark,
+        statusBarBrightness: Theme.of(context).brightness,
+      ),
+      child: Scaffold(
+          backgroundColor: Theme.of(context).scaffoldBackgroundColor,
+          body: Container(
+              decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: [
+                    _surface,
+                    Theme.of(context).scaffoldBackgroundColor,
+                    Theme.of(context).scaffoldBackgroundColor
+                  ])),
+              child: SafeArea(
+                top: false,
+                child: Stack(children: [
+                  Positioned.fill(
+                      child: IgnorePointer(
+                          child: RepaintBoundary(
+                              child: CustomPaint(
+                                  painter: _AmbientBackgroundPainter(
+                                      animation: ambientMotion,
+                                      color: _accent,
+                                      enabled: animatedBackground))))),
+                  Padding(
+                      padding: EdgeInsets.fromLTRB(
+                          5,
+                          Platform.isAndroid || Platform.isIOS
+                              ? MediaQuery.paddingOf(context).top +
+                                  mobileTopSpacing
+                              : 16,
+                          5,
+                          12),
+                      child: LayoutBuilder(builder: (context, bounds) {
+                        final wideLayout = bounds.maxWidth >= 800;
+                        final page = ClipRRect(
+                            borderRadius: BorderRadius.circular(24),
+                            child: AnimatedSwitcher(
+                                duration: const Duration(milliseconds: 300),
+                                reverseDuration:
+                                    const Duration(milliseconds: 220),
+                                switchInCurve: Curves.easeOutCubic,
+                                switchOutCurve: Curves.easeInCubic,
+                                layoutBuilder: _currentChildSwitcherLayout,
+                                transitionBuilder: _fadeSlideSwap,
+                                child: KeyedSubtree(
+                                    key: ValueKey(_tabIndex),
+                                    child: settings
                                         ? _scrollFrame(
-                                            _routingPage(), routingScroll)
-                                        : _scrollFrame(_home(), homeScroll))));
-                    if (wideLayout) {
-                      return Row(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          SizedBox(
-                            width: 120,
-                            child: Padding(
-                              padding: const EdgeInsets.fromLTRB(0, 4, 0, 12),
-                              child: _sideNav(),
-                            ),
-                          ),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: Stack(
-                              children: [
-                                Positioned.fill(child: page),
+                                            _settings(), settingsScroll)
+                                        : routingTab
+                                            ? _scrollFrame(
+                                                _routingPage(), routingScroll)
+                                            : _scrollFrame(
+                                                _home(), homeScroll))));
+                        final responsiveLayout = wideLayout
+                            ? Row(
+                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                                children: [
+                                  SizedBox(
+                                    width: 120,
+                                    child: Padding(
+                                      padding: const EdgeInsets.fromLTRB(
+                                          0, 4, 0, 12),
+                                      child: _sideNav(),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 10),
+                                  Expanded(
+                                    child: Stack(
+                                      children: [
+                                        Positioned.fill(
+                                            child:
+                                                RepaintBoundary(child: page)),
+                                        Positioned(
+                                          top: 0,
+                                          left: 0,
+                                          right: 0,
+                                          child: RepaintBoundary(
+                                              child: _header(wideLayout: true)),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ],
+                              )
+                            : Stack(children: [
+                                Positioned.fill(
+                                    child: RepaintBoundary(child: page)),
                                 Positioned(
                                   top: 0,
                                   left: 0,
                                   right: 0,
-                                  child: _header(wideLayout: true),
+                                  child: RepaintBoundary(
+                                      child: _header(wideLayout: false)),
                                 ),
-                              ],
+                                Positioned(
+                                  left: 10,
+                                  right: 10,
+                                  bottom: 8,
+                                  child: RepaintBoundary(child: _nav()),
+                                ),
+                              ]);
+                        return AnimatedSize(
+                          duration: const Duration(milliseconds: 320),
+                          curve: Curves.easeInOutCubicEmphasized,
+                          alignment: Alignment.topCenter,
+                          child: AnimatedSwitcher(
+                            duration: const Duration(milliseconds: 300),
+                            reverseDuration: const Duration(milliseconds: 220),
+                            switchInCurve: Curves.easeOutCubic,
+                            switchOutCurve: Curves.easeInCubic,
+                            layoutBuilder: _currentChildSwitcherLayout,
+                            transitionBuilder: _fadeSlideSwap,
+                            child: KeyedSubtree(
+                              key: ValueKey(wideLayout
+                                  ? 'wide-layout'
+                                  : 'compact-layout'),
+                              child: responsiveLayout,
                             ),
                           ),
-                        ],
-                      );
-                    }
-                    return Stack(children: [
-                      Positioned.fill(child: page),
-                      Positioned(
-                        top: 0,
-                        left: 0,
-                        right: 0,
-                        child: _header(wideLayout: false),
-                      ),
-                      Positioned(
-                        left: 10,
-                        right: 10,
-                        bottom: 8,
-                        child: _nav(),
-                      ),
-                    ]);
-                  }))
-            ]),
-          )));
+                        );
+                      }))
+                ]),
+              ))));
 
-  Widget _scrollFrame(
-          Widget child, ScrollController controller) =>
+  Widget _scrollFrame(Widget child, ScrollController controller) =>
       ScrollConfiguration(
           behavior: ScrollConfiguration.of(context).copyWith(
               scrollbars: false,
@@ -3713,7 +4301,10 @@ foreach ($route in $routes) {
               thickness: 3,
               radius: Radius.circular(8),
               child: Padding(
-                  padding: const EdgeInsets.fromLTRB(5, 58, 9, 0),
+                  // The header controls float over page content. Keep a small
+                  // breathing gap at the top while allowing content to pass
+                  // behind the islands as it scrolls.
+                  padding: const EdgeInsets.fromLTRB(5, 18, 9, 0),
                   child: child)));
 
   Future<void> _openActionsMenu(BuildContext anchorContext) async {
@@ -3872,8 +4463,8 @@ foreach ($route in $routes) {
               width: 44,
               height: 44,
               child: AnimatedSwitcher(
-                duration: const Duration(milliseconds: 340),
-                reverseDuration: const Duration(milliseconds: 280),
+                duration: const Duration(milliseconds: 250),
+                reverseDuration: const Duration(milliseconds: 190),
                 switchInCurve: Curves.easeOutCubic,
                 switchOutCurve: Curves.easeInCubic,
                 transitionBuilder: (child, animation) {
@@ -3883,11 +4474,12 @@ foreach ($route in $routes) {
                     opacity: animation,
                     child: SlideTransition(
                       position: Tween<Offset>(
-                        begin: const Offset(0, .08),
+                        begin: const Offset(0, .035),
                         end: Offset.zero,
                       ).animate(motion),
                       child: ScaleTransition(
-                        scale: Tween<double>(begin: .9, end: 1).animate(motion),
+                        scale:
+                            Tween<double>(begin: .96, end: 1).animate(motion),
                         child: child,
                       ),
                     ),
@@ -3900,6 +4492,7 @@ foreach ($route in $routes) {
                   if (routeListOpen) {
                     setState(() => routeListOpen = false);
                   } else if (settings && settingsSubpage != null) {
+                    if (settingsScroll.hasClients) settingsScroll.jumpTo(0);
                     setState(() => settingsSubpage = null);
                   } else {
                     _openTab(settings || routingTab ? 0 : 2);
@@ -3927,28 +4520,12 @@ foreach ($route in $routes) {
                         )
                         .toDouble(),
                     child: AnimatedSwitcher(
-                        duration: const Duration(milliseconds: 270),
-                        reverseDuration: const Duration(milliseconds: 220),
+                        duration: const Duration(milliseconds: 250),
+                        reverseDuration: const Duration(milliseconds: 190),
                         switchInCurve: Curves.easeOutCubic,
                         switchOutCurve: Curves.easeInCubic,
-                        transitionBuilder: (child, animation) {
-                          final motion = CurvedAnimation(
-                              parent: animation, curve: Curves.easeOutCubic);
-                          return FadeTransition(
-                            opacity: animation,
-                            child: SlideTransition(
-                              position: Tween<Offset>(
-                                      begin: const Offset(0, .10),
-                                      end: Offset.zero)
-                                  .animate(motion),
-                              child: ScaleTransition(
-                                scale: Tween<double>(begin: .985, end: 1)
-                                    .animate(motion),
-                                child: child,
-                              ),
-                            ),
-                          );
-                        },
+                        layoutBuilder: _currentChildSwitcherLayout,
+                        transitionBuilder: _fadeSlideSwap,
                         child: routeListOpen || settings || routingTab
                             ? Text(
                                 key: ValueKey(routeListOpen
@@ -3965,6 +4542,22 @@ foreach ($route in $routes) {
                                             'release' => _localized('О релизе'),
                                             'about' =>
                                               _localized('О приложении'),
+                                            'appearance' =>
+                                              _localized('Персонализация'),
+                                            'group_connection' =>
+                                              _localized('Подключение'),
+                                            'group_routing' =>
+                                              _localized('Маршрут и DNS'),
+                                            'group_protection' =>
+                                              _localized('Защита'),
+                                            'group_diagnostics' =>
+                                              _localized('Диагностика'),
+                                            'group_advanced' =>
+                                              _localized('Для профи'),
+                                            'group_app' =>
+                                              _localized('Приложение'),
+                                            'group_all' =>
+                                              _localized('Все настройки'),
                                             _ => _localized('Настройки'),
                                           }
                                         : _localized('Маршрут'),
@@ -4037,16 +4630,16 @@ foreach ($route in $routes) {
           filter: ui.ImageFilter.blur(sigmaX: 9, sigmaY: 9),
           child: AnimatedScale(
             scale: expanded ? 1.045 : 1,
-            duration: const Duration(milliseconds: 360),
-            curve: Curves.easeOutBack,
+            duration: const Duration(milliseconds: 320),
+            curve: Curves.easeOutCubic,
             child: AnimatedSize(
-              duration: const Duration(milliseconds: 420),
-              curve: Curves.easeOutBack,
+              duration: const Duration(milliseconds: 320),
+              curve: Curves.easeInOutCubicEmphasized,
               alignment: Alignment.center,
               child: AnimatedContainer(
                 width: width,
-                duration: const Duration(milliseconds: 440),
-                curve: Curves.easeOutBack,
+                duration: const Duration(milliseconds: 320),
+                curve: Curves.easeInOutCubicEmphasized,
                 padding: EdgeInsets.symmetric(
                     horizontal: expanded ? 16 : 12, vertical: 5),
                 decoration: BoxDecoration(
@@ -4132,17 +4725,30 @@ foreach ($route in $routes) {
     );
   }
 
+  Widget _menuFrost(Widget child) => ClipRRect(
+        borderRadius: BorderRadius.circular(10),
+        child: BackdropFilter(
+          filter: ui.ImageFilter.blur(sigmaX: 8, sigmaY: 8),
+          child: Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(vertical: 5),
+            color: Colors.white.withValues(alpha: .015),
+            child: child,
+          ),
+        ),
+      );
+
   PopupMenuItem<String> _menuItem(String value, IconData icon, String label) =>
       PopupMenuItem<String>(
           value: value,
           height: 44,
-          child: Row(children: [
+          child: _menuFrost(Row(children: [
             Icon(icon, size: 18, color: _accent),
             const SizedBox(width: 12),
             Flexible(
                 child:
                     Text(label, maxLines: 1, overflow: TextOverflow.ellipsis))
-          ]));
+          ])));
 
   void _openTab(int index) => setState(() {
         routeListOpen = false;
@@ -4152,6 +4758,7 @@ foreach ($route in $routes) {
       });
 
   void _openSettingsPage(String page) => setState(() {
+        if (settingsScroll.hasClients) settingsScroll.jumpTo(0);
         settingsSubpage = page;
         settings = true;
         routingTab = false;
@@ -4200,35 +4807,37 @@ foreach ($route in $routes) {
   Widget _home() => SingleChildScrollView(
       controller: homeScroll,
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        ClipRRect(
-            borderRadius: BorderRadius.circular(30),
-            child: BackdropFilter(
-                filter: ui.ImageFilter.blur(sigmaX: 7, sigmaY: 7),
-                child: Container(
-                    width: double.infinity,
-                    padding: EdgeInsets.fromLTRB(18, 12, 18, 16),
-                    decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                            begin: Alignment.topCenter,
-                            end: Alignment.bottomCenter,
-                            colors: [
-                              _accent.withValues(alpha: .10),
-                              _surface.withValues(alpha: .1)
-                            ]),
-                        borderRadius: BorderRadius.circular(30),
-                        border:
-                            Border.all(color: Colors.white.withOpacity(.12)),
-                        boxShadow: [
-                          BoxShadow(
-                              color: Colors.black.withOpacity(.12),
-                              blurRadius: 28,
-                              offset: Offset(0, 12))
-                        ]),
-                    child: Column(children: [
-                      _power(),
-                      SizedBox(height: 12),
-                      _connectionDetails()
-                    ])))),
+        RepaintBoundary(
+          child: ClipRRect(
+              borderRadius: BorderRadius.circular(30),
+              child: BackdropFilter(
+                  filter: ui.ImageFilter.blur(sigmaX: 7, sigmaY: 7),
+                  child: Container(
+                      width: double.infinity,
+                      padding: EdgeInsets.fromLTRB(18, 12, 18, 16),
+                      decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                              begin: Alignment.topCenter,
+                              end: Alignment.bottomCenter,
+                              colors: [
+                                _accent.withValues(alpha: .10),
+                                _surface.withValues(alpha: .1)
+                              ]),
+                          borderRadius: BorderRadius.circular(30),
+                          border:
+                              Border.all(color: Colors.white.withOpacity(.12)),
+                          boxShadow: [
+                            BoxShadow(
+                                color: Colors.black.withOpacity(.12),
+                                blurRadius: 28,
+                                offset: Offset(0, 12))
+                          ]),
+                      child: Column(children: [
+                        _power(),
+                        SizedBox(height: 12),
+                        _connectionDetails()
+                      ])))),
+        ),
         if (_showTunPermissionHelp) _tunPermissionHint(),
         SizedBox(height: 8),
         Row(children: [
@@ -4801,7 +5410,14 @@ foreach ($route in $routes) {
                         height: 178,
                         decoration: BoxDecoration(
                           shape: BoxShape.circle,
-                          color: _accent.withOpacity(.12),
+                          color: Color.alphaBlend(
+                            _accent.withValues(
+                                alpha: backend.state == VpnState.connected ||
+                                        switchingServer
+                                    ? .12
+                                    : .035),
+                            _surface,
+                          ),
                           border:
                               Border.all(color: Colors.white.withOpacity(.04)),
                         ),
@@ -4812,12 +5428,29 @@ foreach ($route in $routes) {
                         height: 144,
                         decoration: BoxDecoration(
                           shape: BoxShape.circle,
-                          color: _accent.withOpacity(.24),
+                          color: _accent.withValues(
+                              alpha: backend.state == VpnState.connected ||
+                                      switchingServer
+                                  ? .24
+                                  : backend.state == VpnState.connecting
+                                      ? .15
+                                      : .075),
                           border: Border.all(
-                              color: _accent.withOpacity(.35), width: 2),
+                              color: _accent.withValues(
+                                  alpha: backend.state == VpnState.connected ||
+                                          switchingServer
+                                      ? .35
+                                      : .14),
+                              width: 2),
                           boxShadow: [
                             BoxShadow(
-                                color: _accent.withOpacity(.3), blurRadius: 28),
+                                color: _accent.withValues(
+                                    alpha:
+                                        backend.state == VpnState.connected ||
+                                                switchingServer
+                                            ? .3
+                                            : .09),
+                                blurRadius: 28),
                           ],
                         ),
                       ),
@@ -4841,9 +5474,11 @@ foreach ($route in $routes) {
                                         Color.lerp(_accent, Colors.black, .18)!,
                                       ]
                                     : [
-                                        Color.lerp(_accent, Colors.white, .22)!,
-                                        _accent,
-                                        Color.lerp(_accent, Colors.black, .22)!,
+                                        Color.lerp(
+                                            _surface, Colors.white, .10)!,
+                                        _surface,
+                                        Color.lerp(
+                                            _surface, Colors.black, .18)!,
                                       ],
                           ),
                           border: Border.all(
@@ -4852,8 +5487,18 @@ foreach ($route in $routes) {
                           boxShadow: [
                             BoxShadow(
                               color: _accent.withValues(
-                                  alpha: powerHovered ? .48 : .34),
-                              blurRadius: powerHovered ? 34 : 25,
+                                  alpha: backend.state == VpnState.connected ||
+                                          switchingServer
+                                      ? (powerHovered ? .48 : .34)
+                                      : powerHovered
+                                          ? .20
+                                          : .10),
+                              blurRadius: backend.state == VpnState.connected ||
+                                      switchingServer
+                                  ? (powerHovered ? 34 : 25)
+                                  : powerHovered
+                                      ? 24
+                                      : 15,
                               spreadRadius: powerHovered ? 1 : 0,
                               offset: const Offset(0, 5),
                             ),
@@ -4906,20 +5551,32 @@ foreach ($route in $routes) {
                                     ),
                             ),
                             const SizedBox(height: 7),
-                            Text(
-                              switchingServer
-                                  ? 'ПЕРЕКЛЮЧАЕМ'
-                                  : backend.state == VpnState.connected
-                                      ? _connectedLabel()
-                                      : backend.state == VpnState.connecting
-                                          ? 'ПОДКЛЮЧАЕМ'
-                                          : 'НАЖМИТЕ',
-                              style: const TextStyle(
-                                  fontSize: 9,
-                                  color: Colors.white,
-                                  fontWeight: FontWeight.w600,
-                                  letterSpacing: .5),
-                            ),
+                            AnimatedSwitcher(
+                                duration: const Duration(milliseconds: 200),
+                                reverseDuration:
+                                    const Duration(milliseconds: 150),
+                                transitionBuilder: _fadeSlideSwap,
+                                child: Text(
+                                  key: ValueKey(switchingServer
+                                      ? 'switching'
+                                      : backend.state == VpnState.connected
+                                          ? _connectedLabel()
+                                          : backend.state == VpnState.connecting
+                                              ? 'connecting'
+                                              : 'tap'),
+                                  switchingServer
+                                      ? 'ПЕРЕКЛЮЧАЕМ'
+                                      : backend.state == VpnState.connected
+                                          ? _connectedLabel()
+                                          : backend.state == VpnState.connecting
+                                              ? 'ПОДКЛЮЧАЕМ'
+                                              : 'НАЖМИТЕ',
+                                  style: const TextStyle(
+                                      fontSize: 9,
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.w600,
+                                      letterSpacing: .5),
+                                )),
                             if (backend.state == VpnState.connected &&
                                 !switchingServer)
                               Text(_uptimeLabel(),
@@ -4940,13 +5597,7 @@ foreach ($route in $routes) {
             duration: const Duration(milliseconds: 260),
             switchInCurve: Curves.easeOutCubic,
             switchOutCurve: Curves.easeInCubic,
-            transitionBuilder: (child, animation) => FadeTransition(
-                opacity: animation,
-                child: SlideTransition(
-                    position: Tween<Offset>(
-                            begin: const Offset(0, .12), end: Offset.zero)
-                        .animate(animation),
-                    child: child)),
+            transitionBuilder: _fadeSlideSwap,
             child: SizedBox(
                 key: ValueKey(
                     '${activeProfileId ?? selectedId}:${backend.state}'),
@@ -4982,6 +5633,71 @@ foreach ($route in $routes) {
       'mixed' => _text('MIXED АКТИВЕН', 'MIXED ACTIVE'),
       _ => _text('ПОДКЛЮЧЕНО', 'CONNECTED'),
     };
+  }
+
+  Widget _fadeSlideSwap(Widget child, Animation<double> animation) {
+    final motion = CurvedAnimation(
+      parent: animation,
+      curve: Curves.easeOutCubic,
+      reverseCurve: Curves.easeInCubic,
+    );
+    return AnimatedBuilder(
+      animation: motion,
+      child: child,
+      builder: (context, stableChild) {
+        final exiting = motion.status == AnimationStatus.reverse;
+        final progress = 1 - motion.value;
+        return Opacity(
+          opacity: motion.value,
+          child: Transform.translate(
+            offset: Offset(0, (exiting ? -1 : 1) * 8 * progress),
+            child: Transform.scale(
+              scale: .99 + (.01 * motion.value),
+              child: stableChild,
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _currentChildSwitcherLayout(
+          Widget? currentChild, List<Widget> previousChildren) =>
+      ClipRect(
+        child: Stack(
+          alignment: Alignment.topCenter,
+          children: [
+            for (final previousChild in previousChildren)
+              Positioned.fill(child: IgnorePointer(child: previousChild)),
+            if (currentChild != null) currentChild,
+          ],
+        ),
+      );
+
+  Widget _settingsModeTransition(Widget child, Animation<double> animation) {
+    final motion = CurvedAnimation(
+      parent: animation,
+      curve: Curves.easeOutCubic,
+      reverseCurve: Curves.easeInCubic,
+    );
+    return AnimatedBuilder(
+      animation: motion,
+      child: child,
+      builder: (context, stableChild) {
+        final isOutgoing = motion.status == AnimationStatus.reverse;
+        final distance = (1 - motion.value) * 7;
+        return Opacity(
+          opacity: motion.value,
+          child: Transform.translate(
+            offset: Offset(0, isOutgoing ? -distance : distance),
+            child: Transform.scale(
+              scale: .995 + (.005 * motion.value),
+              child: stableChild,
+            ),
+          ),
+        );
+      },
+    );
   }
 
   Widget _connectionDetails() =>
@@ -5092,12 +5808,17 @@ foreach ($route in $routes) {
           {required List<(String, String)> choices,
           required ValueChanged<String> onSelected}) =>
       PopupMenuButton<String>(
+          popUpAnimationStyle: const AnimationStyle(
+              duration: Duration(milliseconds: 230),
+              reverseDuration: Duration(milliseconds: 160),
+              curve: Curves.easeOutCubic,
+              reverseCurve: Curves.easeInCubic),
           tooltip: _text('Изменить $label', 'Edit $label'),
           onSelected: onSelected,
           itemBuilder: (_) => [
                 for (final choice in choices)
                   PopupMenuItem<String>(
-                      value: choice.$1, child: Text(choice.$2)),
+                      value: choice.$1, child: _menuFrost(Text(choice.$2))),
               ],
           child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 8),
@@ -5242,32 +5963,7 @@ foreach ($route in $routes) {
                               onPressed: () => _refreshSubscription(url),
                               icon: Icon(Icons.sync_rounded,
                                   size: 19, color: _muted)),
-                          PopupMenuButton<String>(
-                              tooltip: _localized('Действия с подпиской'),
-                              icon: Icon(Icons.more_horiz_rounded,
-                                  size: 20, color: _muted),
-                              onSelected: (action) =>
-                                  _subscriptionAction(action, url),
-                              itemBuilder: (_) => [
-                                    _menuItem('ping_all', Icons.speed_rounded,
-                                        'Пинговать все'),
-                                    _menuItem('refresh', Icons.sync_rounded,
-                                        'Обновить'),
-                                    _menuItem('copy', Icons.copy_rounded,
-                                        'Скопировать URL'),
-                                    _menuItem(
-                                        'copy_ghostbox',
-                                        Icons.link_rounded,
-                                        'Короткая GhostBox-ссылка'),
-                                    _menuItem(
-                                        'edit_url',
-                                        Icons.edit_location_alt_rounded,
-                                        'Изменить путь подписки'),
-                                    _menuItem('rename', Icons.edit_rounded,
-                                        'Переименовать'),
-                                    _menuItem('remove', Icons.delete_outline,
-                                        'Убрать подписку'),
-                                  ]),
+                          _subscriptionMenuButton(url),
                         ])),
                     AnimatedSize(
                         duration: const Duration(milliseconds: 260),
@@ -5436,6 +6132,9 @@ foreach ($route in $routes) {
     final hasProviderLinks =
         metadata.websiteUrl != null || metadata.supportUrl != null;
     final linksAtTop = MediaQuery.sizeOf(context).width >= 900;
+    final updatedAtValue = sub['updatedAt'];
+    final updatedAt = updatedAtValue is String ? updatedAtValue : null;
+    final updatedAtInline = MediaQuery.sizeOf(context).width >= 720;
     final progress = total != null && total > 0 && used != null
         ? (used / total).clamp(0.0, 1.0)
         : null;
@@ -5559,7 +6258,8 @@ foreach ($route in $routes) {
               ],
               if (expiryText != null ||
                   metadata.deviceLimit != null ||
-                  metadata.updateIntervalHours != null) ...[
+                  metadata.updateIntervalHours != null ||
+                  (updatedAtInline && updatedAt != null)) ...[
                 SizedBox(height: 11),
                 Wrap(spacing: 12, runSpacing: 7, children: [
                   if (expiryText != null)
@@ -5577,6 +6277,12 @@ foreach ($route in $routes) {
                         _text(
                             'Совет провайдера: ${metadata.updateIntervalHours} ч',
                             'Provider recommends ${metadata.updateIntervalHours} h'),
+                        _muted),
+                  if (updatedAtInline && updatedAt != null)
+                    _metadataBadge(
+                        Icons.update_rounded,
+                        _text('Обновлено ${_updatedLabel(updatedAt)}',
+                            'Updated ${_updatedLabel(updatedAt)}'),
                         _muted),
                 ]),
               ],
@@ -5619,13 +6325,13 @@ foreach ($route in $routes) {
                           color: _accent, size: 16),
                     ])),
               ],
-              if (sub['updatedAt'] is String) ...[
+              if (updatedAt != null && !updatedAtInline) ...[
                 SizedBox(height: 8),
-                Text(
-                    _text(
-                        'Обновлено ${_updatedLabel(sub['updatedAt'] as String)}',
-                        'Updated ${_updatedLabel(sub['updatedAt'] as String)}'),
-                    style: TextStyle(color: _muted, fontSize: 10)),
+                _metadataBadge(
+                    Icons.update_rounded,
+                    _text('Обновлено ${_updatedLabel(updatedAt)}',
+                        'Updated ${_updatedLabel(updatedAt)}'),
+                    _muted),
               ],
               if (hasProviderLinks && !linksAtTop) ...[
                 SizedBox(height: 9),
@@ -5820,7 +6526,15 @@ foreach ($route in $routes) {
   }
 
   Future<ServerProfile> _withDeviceMetadata(ServerProfile profile) async {
-    final headers = await DeviceIdentity.transportHeaders;
+    Map<String, String> headers;
+    try {
+      headers = await DeviceIdentity.transportHeaders;
+    } on Object catch (error) {
+      // Provider headers are advisory and must not block Android's VPN core
+      // when a platform preferences plugin fails after an app update.
+      _recordAppLog('Метаданные устройства пропущены: $error');
+      return profile;
+    }
     return ServerProfile(
       id: profile.id,
       name: profile.name,
@@ -5947,6 +6661,11 @@ foreach ($route in $routes) {
                                 ui.FontFeature.tabularFigures()
                               ]))),
                 PopupMenuButton<String>(
+                    popUpAnimationStyle: const AnimationStyle(
+                        duration: Duration(milliseconds: 230),
+                        reverseDuration: Duration(milliseconds: 160),
+                        curve: Curves.easeOutCubic,
+                        reverseCurve: Curves.easeInCubic),
                     tooltip: _localized('Действия с сервером'),
                     icon: Icon(Icons.more_horiz_rounded, color: _muted),
                     onSelected: (value) async {
@@ -6816,33 +7535,497 @@ foreach ($route in $routes) {
         padding: const EdgeInsets.only(bottom: 120),
         children: [
           const SizedBox(height: 8),
-          AnimatedSwitcher(
-            duration: const Duration(milliseconds: 280),
-            reverseDuration: const Duration(milliseconds: 210),
-            switchInCurve: Curves.easeOutCubic,
-            switchOutCurve: Curves.easeInCubic,
-            transitionBuilder: (child, animation) => FadeTransition(
-              opacity: CurvedAnimation(
-                  parent: animation, curve: Curves.easeInOutCubic),
-              child: SlideTransition(
-                position: Tween<Offset>(
-                        begin: const Offset(0, .018), end: Offset.zero)
-                    .animate(CurvedAnimation(
-                        parent: animation, curve: Curves.easeOutCubic)),
-                child: child,
+          AnimatedSize(
+            duration: const Duration(milliseconds: 320),
+            curve: Curves.easeInOutCubicEmphasized,
+            alignment: Alignment.topCenter,
+            child: AnimatedSwitcher(
+              duration: const Duration(milliseconds: 300),
+              reverseDuration: const Duration(milliseconds: 220),
+              switchInCurve: Curves.easeOutCubic,
+              switchOutCurve: Curves.easeInCubic,
+              transitionBuilder: _fadeSlideSwap,
+              child: KeyedSubtree(
+                key: ValueKey(settingsSubpage ?? 'settings-home'),
+                child: settingsSubpage == null
+                    ? _settingsHomeContent()
+                    : _settingsSubpageContent(),
               ),
-            ),
-            child: KeyedSubtree(
-              key: ValueKey(settingsSubpage ?? 'settings-home'),
-              child: settingsSubpage == null
-                  ? _settingsHomeContent()
-                  : _settingsSubpageContent(),
             ),
           ),
         ],
       );
 
   Widget _settingsHomeContent() => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const SizedBox(height: 12),
+          _settingLabel(_text('Настройки', 'Settings'),
+              style: const TextStyle(
+                  fontSize: 25,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: -.7),
+              maxLines: 1),
+          const SizedBox(height: 5),
+          _settingLabel(
+              _text('Выбери раздел — связанные параметры собраны вместе',
+                  'Choose a section; related controls are grouped together'),
+              style: TextStyle(color: _muted, fontSize: 13)),
+          const SizedBox(height: 18),
+          _settingsCategoryTile(
+              Icons.power_settings_new_rounded,
+              _text('Подключение и ядро', 'Connection and core'),
+              _text('Движок, режим и локальный порт',
+                  'Engine, mode and local port'),
+              'group_connection'),
+          _settingsCategoryTile(
+              Icons.alt_route_rounded,
+              _text('Маршрут и DNS', 'Routing and DNS'),
+              _text('Правила маршрутизации, резолвер и фильтры',
+                  'Routing rules, resolver and filters'),
+              'group_routing'),
+          _settingsCategoryTile(
+              Icons.shield_moon_outlined,
+              _text('Защита', 'Protection'),
+              _text('Kill Switch и защита трафика',
+                  'Kill Switch and traffic protection'),
+              'group_protection'),
+          _settingsCategoryTile(
+              Icons.monitor_heart_outlined,
+              _text('Диагностика и статистика', 'Diagnostics and statistics'),
+              _text(
+                  'Скорость, задержка и журнал', 'Speed, latency and journal'),
+              'group_diagnostics'),
+          _settingsCategoryTile(
+              Icons.tune_rounded,
+              _text('Для профи', 'Advanced'),
+              _text('Фрагментация и расширенные параметры ядра',
+                  'Fragmentation and advanced core settings'),
+              'group_advanced'),
+          _settingsCategoryTile(
+              Icons.palette_outlined,
+              _text('Персонализация', 'Personalization'),
+              _text('Тема, цвета, иконка, язык и фон',
+                  'Theme, colors, icon, language and background'),
+              'appearance'),
+          _settingsCategoryTile(
+              Icons.apps_rounded,
+              _text('Приложение и обновления', 'App and updates'),
+              _text('Подписки, обновления и локальные данные',
+                  'Subscriptions, updates and local data'),
+              'group_app'),
+          _settingsCategoryTile(
+              Icons.view_agenda_outlined,
+              _text('Полный список настроек', 'All settings'),
+              _text('Открыть все параметры в одном списке',
+                  'Browse every setting in one list'),
+              'group_all'),
+          const SizedBox(height: 12),
+          InkWell(
+            borderRadius: BorderRadius.circular(16),
+            onTap: () => _openSettingsPage('contacts'),
+            child: _row(
+              Icons.alternate_email_rounded,
+              _text('Контакты', 'Contacts'),
+              _text('Репозиторий, релизы и сайты',
+                  'Repository, releases and websites'),
+              const Icon(Icons.chevron_right_rounded),
+            ),
+          ),
+        ],
+      );
+
+  Widget _settingsCategoryTile(
+          IconData icon, String title, String subtitle, String page) =>
+      Padding(
+        padding: const EdgeInsets.only(bottom: 8),
+        child: Material(
+          color: Colors.transparent,
+          borderRadius: BorderRadius.circular(17),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(17),
+            onTap: () => _openSettingsPage(page),
+            child: _row(icon, title, subtitle,
+                Icon(Icons.chevron_right_rounded, color: _muted)),
+          ),
+        ),
+      );
+
+  Widget _settingsGroupPage() => switch (settingsSubpage) {
+        'group_connection' => _connectionSettingsPage(),
+        'group_routing' => _routingSettingsPage(),
+        'group_protection' => _protectionSettingsPage(),
+        'group_diagnostics' => _diagnosticsSettingsPage(),
+        'group_advanced' => _advancedSettings(),
+        'group_app' => _appSettingsPage(),
+        'group_all' => _legacySettingsHomeContent(),
+        _ => _settingsHomeContent(),
+      };
+
+  Widget _connectionSettingsPage() => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _settingsPageIntro(
+              Icons.power_settings_new_rounded,
+              _text('Подключение и ядро', 'Connection and core'),
+              _text('Основные параметры локального подключения',
+                  'Core settings for the local connection')),
+          const SizedBox(height: 16),
+          _section(_text('ДВИЖОК И РЕЖИМ', 'ENGINE AND MODE')),
+          _row(
+              Icons.settings_rounded,
+              _text('Движок подключения', 'Core engine'),
+              coreSettings.core == 'xray'
+                  ? 'Xray · REALITY / XHTTP'
+                  : 'sing-box',
+              _menu(
+                  coreSettings.core,
+                  const {'xray': 'Xray', 'sing-box': 'sing-box'},
+                  (v) => _selectCore(v == 'xray' ? 'Xray' : 'sing-box'))),
+          _row(
+              Icons.power_rounded,
+              _text('Способ подключения', 'Connection mode'),
+              _connectionModeLabel(coreSettings.connectionMode),
+              _menu(
+                  coreSettings.connectionMode,
+                  const {
+                    'proxy': 'Локальный прокси',
+                    'system': 'Системный прокси',
+                    'tun': 'TUN · весь трафик',
+                    'mixed': 'Mixed · TUN + прокси',
+                  },
+                  _setConnectionMode)),
+          _row(
+              Icons.lan_rounded,
+              _text('Локальный порт', 'Local port'),
+              coreSettings.autoLocalPort
+                  ? _text('Автовыбор · ${activeLocalPort ?? "при подключении"}',
+                      'Automatic · ${activeLocalPort ?? "on connect"}')
+                  : '127.0.0.1:${coreSettings.localPort}',
+              Row(mainAxisSize: MainAxisSize.min, children: [
+                _menu(
+                    coreSettings.autoLocalPort ? 'auto' : 'manual',
+                    const {'auto': 'Автовыбор', 'manual': 'Вручную'},
+                    (value) => _saveCore(
+                        coreSettings.copyWith(autoLocalPort: value == 'auto'))),
+                if (!coreSettings.autoLocalPort)
+                  IconButton(
+                      tooltip: _localized('Изменить порт'),
+                      onPressed: _editPort,
+                      icon: const Icon(Icons.edit_outlined)),
+              ])),
+          _row(
+              Icons.power_rounded,
+              _text('Автоподключение', 'Auto-connect'),
+              _text('Подключаться к выбранному серверу при запуске',
+                  'Connect to the selected server at launch'),
+              _compactSwitch(
+                  value: coreSettings.autoConnect,
+                  onChanged: (v) => _saveCore(
+                      coreSettings.copyWith(autoConnect: v),
+                      requiresReconnect: false))),
+          _row(
+              Icons.memory_rounded,
+              _text('Память ядра', 'Core memory'),
+              '${coreSettings.memoryMb} MB',
+              SizedBox(
+                  width: 180,
+                  child: _compactSlider(
+                      value: coreSettings.memoryMb.toDouble(),
+                      min: Platform.isIOS ? 25 : 64,
+                      max: Platform.isIOS ? 50 : 256,
+                      divisions: Platform.isIOS ? 5 : 12,
+                      onChanged: (v) => _saveCore(
+                          coreSettings.copyWith(memoryMb: v.round()))))),
+        ],
+      );
+
+  Widget _routingSettingsPage() => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _settingsPageIntro(
+              Icons.alt_route_rounded,
+              _text('Маршрут и DNS', 'Routing and DNS'),
+              _text('Правила выхода, DNS и фильтрация доменов',
+                  'Traffic rules, DNS and domain filtering')),
+          const SizedBox(height: 16),
+          _section(_text('МАРШРУТИЗАЦИЯ', 'ROUTING')),
+          _row(
+              Icons.alt_route_rounded,
+              _text('Режим', 'Mode'),
+              _routingLabel(),
+              _menu(
+                  coreSettings.routing,
+                  const {
+                    'proxy': 'Всё через VPN',
+                    'rules': 'Только из списка',
+                    'exclude': 'Всё, кроме списка',
+                  },
+                  (v) => _applyRoutingSettings(
+                      coreSettings.copyWith(routing: v)))),
+          _row(
+              Icons.list_alt_rounded,
+              coreSettings.routing == 'rules'
+                  ? _text('Сайты через VPN', 'Sites through VPN')
+                  : _text('Исключения из VPN', 'VPN exclusions'),
+              '${(coreSettings.routing == 'rules' ? coreSettings.proxyDomains : coreSettings.directDomains).length} ${_text('правил', 'rules')}',
+              IconButton(
+                  onPressed: () {
+                    _openTab(1);
+                    _openRouteList(
+                        coreSettings.routing == 'rules' ? 'rules' : 'exclude');
+                  },
+                  icon: const Icon(Icons.chevron_right_rounded))),
+          const SizedBox(height: 12),
+          _section(_text('DNS И ФИЛЬТРАЦИЯ', 'DNS AND FILTERING')),
+          _row(
+              Icons.dns_rounded,
+              _text('Резолвер', 'Resolver'),
+              _dnsLabel(),
+              _menu(
+                  coreSettings.dns,
+                  const {
+                    'system': 'Системный',
+                    'cloudflare': 'Cloudflare DoH',
+                    'google': 'Google DoH',
+                    'combined': 'Cloudflare + Google',
+                    'custom': 'Свой резолвер',
+                  },
+                  _selectDnsResolver)),
+          if (coreSettings.dns == 'custom')
+            _row(
+                Icons.dns_outlined,
+                _text('Адрес резолвера', 'Resolver address'),
+                coreSettings.customDnsResolver,
+                IconButton(
+                    tooltip: _localized('Изменить DNS-резолвер'),
+                    onPressed: () => _selectDnsResolver('custom'),
+                    icon: const Icon(Icons.edit_outlined))),
+          _row(
+              Icons.shield_outlined,
+              'DNS blacklist',
+              _dnsBlacklistLabel(),
+              _menu(
+                  coreSettings.dnsBlacklistMode,
+                  const {
+                    'none': 'Нет',
+                    'ads': 'Блок рекламы',
+                    'custom': 'Кастом'
+                  },
+                  _setDnsBlacklistMode)),
+          if (coreSettings.dnsBlacklistMode == 'custom')
+            _row(
+                Icons.list_alt_rounded,
+                _text('Домены для блокировки', 'Blocked domains'),
+                '${coreSettings.blockedDomains.length} ${_text('доменов', 'domains')}',
+                IconButton(
+                    tooltip: _localized('Изменить список'),
+                    onPressed: () => _editDomains(
+                        'Домены для блокировки',
+                        coreSettings.blockedDomains,
+                        (v) => coreSettings.copyWith(blockedDomains: v)),
+                    icon: const Icon(Icons.chevron_right_rounded))),
+          if (coreSettings.dnsBlacklistMode == 'ads')
+            _row(
+                Icons.ads_click_rounded,
+                _text('Список рекламы', 'Ad blocklist'),
+                loadingAdBlocklist
+                    ? _text('Обновляется…', 'Updating…')
+                    : '${coreSettings.adBlockDomains.length} · HaGeZi',
+                IconButton(
+                    onPressed: loadingAdBlocklist ? null : _refreshAdBlocklist,
+                    icon: loadingAdBlocklist
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2))
+                        : const Icon(Icons.refresh_rounded))),
+          _dnsBlocklistSourcesRow(),
+        ],
+      );
+
+  Widget _protectionSettingsPage() => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _settingsPageIntro(
+              Icons.shield_moon_outlined,
+              _text('Защита трафика', 'Traffic protection'),
+              _text('Kill Switch и параметры защиты сети',
+                  'Kill Switch and network protection')),
+          const SizedBox(height: 16),
+          _section('KILL SWITCH'),
+          _row(
+              Icons.shield_moon_outlined,
+              'Kill Switch',
+              Platform.isLinux || Platform.isWindows
+                  ? _text(
+                      'Блокировка трафика вне VPN; требует прав администратора.',
+                      'Blocks traffic outside the VPN; administrator access required.')
+                  : Platform.isAndroid
+                      ? _text(
+                          'Настраивается в системных настройках VPN Android.',
+                          'Configure this in Android VPN settings.')
+                      : _text('Недоступен в этой Apple-сборке.',
+                          'Unavailable in this Apple build.'),
+              _compactSwitch(
+                  value: Platform.isAndroid
+                      ? androidKillSwitchStatus['lockdownEnabled'] == true
+                      : killSwitchActive,
+                  onChanged: Platform.isLinux ||
+                          Platform.isWindows ||
+                          Platform.isAndroid
+                      ? _setKillSwitch
+                      : null)),
+        ],
+      );
+
+  Widget _diagnosticsSettingsPage() => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _settingsPageIntro(
+              Icons.monitor_heart_outlined,
+              _text('Диагностика и статистика', 'Diagnostics and statistics'),
+              _text('Статистика трафика, задержка и журнал',
+                  'Traffic statistics, latency and journal')),
+          const SizedBox(height: 16),
+          _trafficStatsPanel(),
+          const SizedBox(height: 14),
+          _section(_text('ПРОВЕРКА ЗАДЕРЖКИ', 'LATENCY CHECK')),
+          _row(
+              Icons.speed_rounded,
+              _text('Тип проверки', 'Check type'),
+              coreSettings.pingMode.toUpperCase(),
+              _menu(
+                  coreSettings.pingMode,
+                  Platform.isAndroid
+                      ? const {'proxy': 'Proxy GET', 'tcp': 'TCP'}
+                      : const {
+                          'proxy': 'Proxy GET',
+                          'tcp': 'TCP',
+                          'icmp': 'ICMP',
+                        },
+                  (v) => _saveCore(coreSettings.copyWith(pingMode: v),
+                      requiresReconnect: false))),
+          _row(
+              Icons.power_off_rounded,
+              _text('Отключать VPN во время пинга',
+                  'Disconnect VPN while pinging'),
+              _text('TCP и ICMP выполняются напрямую',
+                  'TCP and ICMP run directly'),
+              _compactSwitch(
+                  value: coreSettings.disconnectVpnForPing,
+                  onChanged: (value) => _saveCore(
+                      coreSettings.copyWith(disconnectVpnForPing: value),
+                      requiresReconnect: false))),
+          const SizedBox(height: 12),
+          _section(_text('ЖУРНАЛ', 'JOURNAL')),
+          _row(
+              Icons.article_outlined,
+              _text('Подробные логи ядра', 'Detailed core logs'),
+              logCoreOutput
+                  ? _text('Сохранять вывод Xray и sing-box',
+                      'Record Xray and sing-box output')
+                  : _text('Сохранять только события приложения',
+                      'Record app events only'),
+              _compactSwitch(
+                  value: logCoreOutput, onChanged: _setLogCoreOutput)),
+          _row(
+              Icons.delete_sweep_outlined,
+              _text('Очистить журнал', 'Clear journal'),
+              _text('Удалить все записи', 'Delete all entries'),
+              IconButton(
+                  onPressed: _clearJournal,
+                  icon: const Icon(Icons.delete_outline_rounded))),
+          _row(
+              Icons.article_outlined,
+              _text('Открыть журнал соединения', 'Open connection journal'),
+              _text('Посмотреть текущие и прошлые события',
+                  'Review current and previous events'),
+              IconButton(
+                  onPressed: _showLogs,
+                  icon: const Icon(Icons.chevron_right_rounded))),
+        ],
+      );
+
+  Widget _appSettingsPage() => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _settingsPageIntro(
+              Icons.apps_rounded,
+              _text('Приложение и обновления', 'App and updates'),
+              _text('Подписки, обновления и локальные данные',
+                  'Subscriptions, updates and local data')),
+          const SizedBox(height: 16),
+          _section(_text('ПОДПИСКИ', 'SUBSCRIPTIONS')),
+          _row(
+              Icons.rss_feed_rounded,
+              _text('Источники', 'Sources'),
+              '${subscriptions.length}',
+              IconButton(
+                  onPressed: _showAddMenu,
+                  icon: const Icon(Icons.add_rounded))),
+          _row(
+              Icons.sync_rounded,
+              _text('Обновить все подписки', 'Refresh all subscriptions'),
+              _text('Загрузить последние профили', 'Fetch the latest profiles'),
+              IconButton(
+                  onPressed:
+                      subscriptions.isEmpty ? null : _refreshAllSubscriptions,
+                  icon: const Icon(Icons.refresh_rounded))),
+          _row(
+              Icons.autorenew_rounded,
+              _text('Автообновление подписок', 'Auto-refresh subscriptions'),
+              autoRefreshSubscriptions
+                  ? _text('По расписанию провайдера', 'Provider schedule')
+                  : _text('Выключено', 'Off'),
+              _compactSwitch(
+                  value: autoRefreshSubscriptions, onChanged: _setAutoRefresh)),
+          const SizedBox(height: 12),
+          _section(_text('ОБНОВЛЕНИЯ', 'UPDATES')),
+          _row(
+              Icons.system_update_alt_rounded,
+              _text('Автообновление приложения', 'App auto-update'),
+              autoUpdateApp
+                  ? _text('Скачать и установить при запуске',
+                      'Download and install at launch')
+                  : _text('Только сообщать о новой версии',
+                      'Notify when an update is available'),
+              _compactSwitch(
+                  value: autoUpdateApp, onChanged: _setAutoUpdateApp)),
+          _row(
+              Icons.cloud_download_outlined,
+              _text('Версия приложения', 'App version'),
+              '${GitHubUpdater.displayVersion(GitHubUpdater.currentVersion)} · ${GitHubUpdater.updateBranch}',
+              IconButton(
+                  onPressed: checkingAppUpdate || installingAppUpdate
+                      ? null
+                      : () => _checkAppUpdate(),
+                  icon: checkingAppUpdate || installingAppUpdate
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2))
+                      : const Icon(Icons.refresh_rounded))),
+          InkWell(
+              borderRadius: BorderRadius.circular(16),
+              onTap: () => _openSettingsPage('release'),
+              child: _row(
+                  Icons.new_releases_outlined,
+                  _text('О релизе', 'Release information'),
+                  _text('Примечания и канал обновлений',
+                      'Release notes and update channel'),
+                  const Icon(Icons.chevron_right_rounded))),
+          const SizedBox(height: 14),
+          SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                  onPressed: _deleteAllServers,
+                  icon: const Icon(Icons.delete_sweep_outlined),
+                  label: Text(_localized('Очистить серверы и подписки')))),
+        ],
+      );
+
+  Widget _legacySettingsHomeContent() => Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           SizedBox(height: 12),
@@ -6854,6 +8037,18 @@ foreach ($route in $routes) {
           SizedBox(height: 5),
           Text(_localized('Управление локальным прокси и ядром'),
               style: TextStyle(color: _muted, fontSize: 13)),
+          const SizedBox(height: 16),
+          InkWell(
+            borderRadius: BorderRadius.circular(16),
+            onTap: () => _openSettingsPage('appearance'),
+            child: _row(
+              Icons.palette_outlined,
+              _text('Персонализация', 'Personalization'),
+              _text('Тема, цвета, язык и анимированный фон',
+                  'Theme, colors, language and animated background'),
+              const Icon(Icons.chevron_right_rounded),
+            ),
+          ),
           SizedBox(height: 24),
           GestureDetector(
             behavior: HitTestBehavior.opaque,
@@ -6940,20 +8135,25 @@ foreach ($route in $routes) {
                       ])))),
           SizedBox(height: 22),
           AnimatedSize(
-              duration: const Duration(milliseconds: 290),
-              curve: Curves.easeInOutCubic,
+              duration: const Duration(milliseconds: 340),
+              curve: Curves.easeInOutCubicEmphasized,
               alignment: Alignment.topCenter,
               child: AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 240),
-                  reverseDuration: const Duration(milliseconds: 190),
-                  transitionBuilder: (child, animation) => FadeTransition(
-                        opacity: CurvedAnimation(
-                          parent: animation,
-                          curve: Curves.easeInOutCubic,
-                          reverseCurve: Curves.easeInOutCubic,
+                  duration: const Duration(milliseconds: 260),
+                  reverseDuration: const Duration(milliseconds: 210),
+                  layoutBuilder: (currentChild, previousChildren) => ClipRect(
+                        child: Stack(
+                          alignment: Alignment.topCenter,
+                          children: [
+                            for (final previousChild in previousChildren)
+                              Positioned.fill(
+                                child: IgnorePointer(child: previousChild),
+                              ),
+                            if (currentChild != null) currentChild,
+                          ],
                         ),
-                        child: child,
                       ),
+                  transitionBuilder: _settingsModeTransition,
                   child: KeyedSubtree(
                       key: ValueKey(advanced),
                       child:
@@ -7101,8 +8301,86 @@ foreach ($route in $routes) {
         'contacts' => _contactsPage(),
         'release' => _releaseDetailsPage(),
         'about' => _aboutPage(),
+        'appearance' => _appearancePage(),
+        'group_connection' ||
+        'group_routing' ||
+        'group_protection' ||
+        'group_diagnostics' ||
+        'group_advanced' ||
+        'group_app' =>
+          _settingsGroupPage(),
+        'group_all' => _legacySettingsHomeContent(),
         _ => _settingsHomeContent(),
       };
+
+  Widget _appearancePage() => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _settingsPageIntro(
+            Icons.palette_outlined,
+            _text('Персонализация', 'Personalization'),
+            _text('Внешний вид, язык и поведение фона',
+                'Appearance, language and background behavior'),
+          ),
+          const SizedBox(height: 16),
+          _section(_text('ИНТЕРФЕЙС', 'INTERFACE')),
+          _row(
+              Icons.translate_rounded,
+              _text('Язык интерфейса', 'Interface language'),
+              english ? 'English' : 'Русский',
+              _menu(english ? 'en' : 'ru',
+                  const {'ru': 'Русский', 'en': 'English'}, (value) async {
+                final next = value == 'en';
+                if (next == english) return;
+                setState(() => english = next);
+                await prefs?.setBool('appEnglish', next);
+              })),
+          if (Platform.isAndroid || Platform.isIOS)
+            _row(
+                Icons.vertical_align_top_rounded,
+                _text('Отступ острова сверху', 'Top island spacing'),
+                '${mobileTopSpacing.round()} px',
+                SizedBox(
+                    width: 180,
+                    child: _compactSlider(
+                        value: mobileTopSpacing,
+                        min: 0,
+                        max: 48,
+                        divisions: 12,
+                        onChanged: (value) {
+                          setState(() => mobileTopSpacing = value);
+                          prefs?.setDouble('mobileTopSpacing', value);
+                        }))),
+          _row(
+              Icons.auto_awesome_rounded,
+              _text('Анимированный фон', 'Animated background'),
+              animatedBackground
+                  ? _text('Мягкое движение цветового свечения',
+                      'Subtle animated ambient glow')
+                  : _text('Выключен · меньше графической нагрузки',
+                      'Off · lower graphics usage'),
+              _compactSwitch(
+                  value: animatedBackground,
+                  onChanged: (value) async {
+                    if (value == animatedBackground) return;
+                    setState(() => animatedBackground = value);
+                    if (value) {
+                      ambientMotion.repeat();
+                    } else {
+                      ambientMotion.stop();
+                      ambientMotion.value = .12;
+                    }
+                    await prefs?.setBool('animatedBackground', value);
+                  })),
+          const SizedBox(height: 10),
+          AnimatedSize(
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeInOutCubicEmphasized,
+            alignment: Alignment.topCenter,
+            child: ThemeSettingsPanel(english: english),
+          ),
+        ],
+      );
 
   Widget _contactsPage() => Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -7712,8 +8990,6 @@ foreach ($route in $routes) {
           key: ValueKey('basic'),
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            ThemeSettingsPanel(english: english),
-            SizedBox(height: 24),
             _section('СОЕДИНЕНИЕ'),
             _row(
                 Icons.settings_rounded,
@@ -7839,34 +9115,22 @@ foreach ($route in $routes) {
             _dnsBlocklistSourcesRow(),
             SizedBox(height: 14),
             _section('ПРИЛОЖЕНИЕ'),
-            _row(
-                Icons.language_rounded,
-                'Язык интерфейса',
-                english ? 'English' : 'Русский',
-                _menu(english ? 'en' : 'ru',
-                    const {'ru': 'Русский', 'en': 'English'}, (value) async {
-                  final next = value == 'en';
-                  setState(() => english = next);
-                  await prefs?.setBool('appEnglish', next);
-                })),
-            _row(
-                Icons.auto_awesome_rounded,
-                'Анимированный фон',
-                animatedBackground
-                    ? 'Мягкое движение цветового свечения'
-                    : 'Выключен · меньше графической нагрузки',
-                _compactSwitch(
-                    value: animatedBackground,
-                    onChanged: (value) async {
-                      setState(() => animatedBackground = value);
-                      if (value) {
-                        ambientMotion.repeat();
-                      } else {
-                        ambientMotion.stop();
-                        ambientMotion.value = .12;
-                      }
-                      await prefs?.setBool('animatedBackground', value);
-                    })),
+            if (Platform.isAndroid || Platform.isIOS)
+              _row(
+                  Icons.vertical_align_top_rounded,
+                  'Отступ острова сверху',
+                  '${mobileTopSpacing.round()} px',
+                  SizedBox(
+                      width: 180,
+                      child: _compactSlider(
+                          value: mobileTopSpacing,
+                          min: 0,
+                          max: 48,
+                          divisions: 12,
+                          onChanged: (value) {
+                            setState(() => mobileTopSpacing = value);
+                            prefs?.setDouble('mobileTopSpacing', value);
+                          }))),
             _row(
                 Icons.power_rounded,
                 'Автоподключение',
@@ -7895,13 +9159,37 @@ foreach ($route in $routes) {
                 'Kill Switch',
                 Platform.isLinux
                     ? _text(
-                        'Блокирует сеть вне TUN даже после сбоя ядра. Требует подтверждения pkexec.',
-                        'Blocks traffic outside TUN, even if the core stops. Requires pkexec approval.')
-                    : _text('Доступен только в Linux TUN/Mixed',
-                        'Available only on Linux TUN/Mixed'),
+                        'Linux nftables блокирует сеть вне TUN даже после сбоя ядра. Нужны права администратора.',
+                        'Linux nftables blocks traffic outside TUN, even if the core stops. Administrator approval is required.')
+                    : Platform.isWindows
+                        ? _text(
+                            'Windows Firewall блокирует выход вне TUN. Нужен запуск от администратора; временно отключаются исходящие Allow-правила.',
+                            'Windows Firewall blocks traffic outside TUN. Run as administrator; existing outbound Allow rules are temporarily disabled.')
+                        : Platform.isAndroid
+                            ? androidKillSwitchStatus['lockdownEnabled'] == true
+                                ? _text(
+                                    'Android подтвердил системную блокировку трафика без VPN.',
+                                    'Android confirms that traffic without the VPN is blocked.')
+                                : androidKillSwitchStatus['lockdownEnabled'] ==
+                                        false
+                                    ? _text(
+                                        'Включи «Всегда включён VPN» и «Блокировать подключения без VPN» в настройках Android.',
+                                        'Enable “Always-on VPN” and “Block connections without VPN” in Android settings.')
+                                    : _text(
+                                        'Статус проверяется Android. Нажми, чтобы открыть системные настройки VPN.',
+                                        'Android has not reported the status yet. Tap to open system VPN settings.')
+                            : _text(
+                                'Недоступен: в этой Apple-сборке нет системного Network Extension VPN.',
+                                'Unavailable: this Apple build has no system Network Extension VPN.'),
                 _compactSwitch(
-                    value: coreSettings.killSwitchEnabled,
-                    onChanged: Platform.isLinux ? _setKillSwitch : null)),
+                    value: Platform.isAndroid
+                        ? androidKillSwitchStatus['lockdownEnabled'] == true
+                        : killSwitchActive,
+                    onChanged: Platform.isLinux ||
+                            Platform.isWindows ||
+                            Platform.isAndroid
+                        ? _setKillSwitch
+                        : null)),
             if (Platform.isLinux)
               _row(
                   Icons.monitor_heart_rounded,
@@ -8337,6 +9625,24 @@ foreach ($route in $routes) {
                         coreSettings.copyWith(pingTimeoutSeconds: int.parse(v)),
                         requiresReconnect: false))),
             _row(
+                Icons.power_off_rounded,
+                'Отключать VPN во время пинга',
+                'Проверка TCP/ICMP идёт напрямую, после неё сервер включится снова',
+                _compactSwitch(
+                    value: coreSettings.disconnectVpnForPing,
+                    onChanged: (value) {
+                      if (value &&
+                          Platform.isAndroid &&
+                          coreSettings.pingMode == 'proxy') {
+                        _message(
+                            'На Android Proxy GET требует активное VPN. Выберите TCP для проверки без VPN.');
+                        return;
+                      }
+                      _saveCore(
+                          coreSettings.copyWith(disconnectVpnForPing: value),
+                          requiresReconnect: false);
+                    })),
+            _row(
                 Icons.repeat_rounded,
                 'Число проб',
                 '${coreSettings.pingCount} · медианное значение',
@@ -8377,18 +9683,26 @@ foreach ($route in $routes) {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                          process?.executableAvailable == true
-                              ? '● Ядро найдено'
-                              : '● Ядро не найдено',
+                          Platform.isAndroid
+                              ? _text('● Android-ядра встроены',
+                                  '● Android cores are bundled')
+                              : process?.executableAvailable == true
+                                  ? '● Ядро найдено'
+                                  : '● Ядро не найдено',
                           style: TextStyle(
-                              color: process?.executableAvailable == true
+                              color: Platform.isAndroid ||
+                                      process?.executableAvailable == true
                                   ? _mint
                                   : Colors.orangeAccent,
                               fontSize: 12)),
                       SizedBox(height: 8),
                       Text(
-                          process?.lastError ??
-                              'Локальный SOCKS/HTTP прокси. Системный TUN не включён.',
+                          Platform.isAndroid
+                              ? _text(
+                                  'Xray и sing-box запускаются как встроенные Android VPN-службы.',
+                                  'Xray and sing-box run as bundled Android VPN services.')
+                              : process?.lastError ??
+                                  'Локальный SOCKS/HTTP прокси. Системный TUN не включён.',
                           style: TextStyle(color: _muted, fontSize: 11)),
                       const SizedBox(height: 8),
                       Row(children: [
@@ -8487,8 +9801,11 @@ foreach ($route in $routes) {
         throw const FormatException(
             'Для iOS требуются sing-box, системный VPN (TUN) и TCP-проверка задержки.');
       }
-      if (updated.killSwitchEnabled && !Platform.isLinux) {
-        throw const FormatException('Kill Switch доступен только в Linux.');
+      if (updated.killSwitchEnabled &&
+          !Platform.isLinux &&
+          !Platform.isWindows) {
+        throw const FormatException(
+            'Kill Switch в настройках ядра доступен только для Linux и Windows.');
       }
       if (updated.killSwitchEnabled &&
           updated.connectionMode != 'tun' &&
@@ -8502,19 +9819,19 @@ foreach ($route in $routes) {
             throw const FormatException(
                 'Для Kill Switch сначала выбери сервер.');
           }
-          final armedProfile = await LinuxKillSwitch.arm(profile,
+          final endpoint = await _armKillSwitchForProfile(profile,
               knownEndpoint: coreSettings.killSwitchProfileId == profile.id
                   ? coreSettings.killSwitchEndpoint
                   : null);
           updated = updated.copyWith(
-              killSwitchEndpoint: armedProfile.address,
-              killSwitchProfileId: profile.id);
+              killSwitchEndpoint: endpoint, killSwitchProfileId: profile.id);
         } else {
-          await LinuxKillSwitch.disarm();
+          await _disarmKillSwitch();
           updated =
               updated.copyWith(killSwitchEndpoint: '', killSwitchProfileId: '');
         }
       }
+      killSwitchActive = updated.killSwitchEnabled;
       final wasConnected = backend.state == VpnState.connected;
       await _saveCore(updated);
       process?.settings = updated;
@@ -8545,9 +9862,11 @@ foreach ($route in $routes) {
               ],
             ));
     if (reset != true || !mounted) return;
-    if (Platform.isLinux && coreSettings.killSwitchEnabled) {
+    if ((Platform.isLinux || Platform.isWindows) &&
+        coreSettings.killSwitchEnabled) {
       try {
-        await LinuxKillSwitch.disarm();
+        await _disarmKillSwitch();
+        killSwitchActive = false;
       } on Object catch (error) {
         _message('Сначала отключи Kill Switch: $error');
         return;
@@ -8661,12 +9980,17 @@ foreach ($route in $routes) {
   Widget _menu(String value, Map<String, String> choices,
           ValueChanged<String> onChanged) =>
       PopupMenuButton<String>(
+          popUpAnimationStyle: const AnimationStyle(
+              duration: Duration(milliseconds: 230),
+              reverseDuration: Duration(milliseconds: 160),
+              curve: Curves.easeOutCubic,
+              reverseCurve: Curves.easeInCubic),
           tooltip: _localized('Выбрать'),
           onSelected: onChanged,
           icon: Icon(Icons.unfold_more_rounded, size: 20, color: _accent),
           itemBuilder: (_) => choices.entries
-              .map((e) =>
-                  PopupMenuItem(value: e.key, child: Text(_localized(e.value))))
+              .map((e) => PopupMenuItem(
+                  value: e.key, child: _menuFrost(Text(_localized(e.value)))))
               .toList());
 
   Future<void> _editPort() async {
@@ -8780,25 +10104,58 @@ foreach ($route in $routes) {
                   side: BorderSide(color: active ? _accent : _line),
                   padding: EdgeInsets.all(17)),
               child: Text(name))));
+  Widget _settingLabel(String value, {TextStyle? style, int maxLines = 2}) =>
+      AnimatedSwitcher(
+        duration: const Duration(milliseconds: 240),
+        reverseDuration: const Duration(milliseconds: 180),
+        switchInCurve: Curves.easeOutCubic,
+        switchOutCurve: Curves.easeInCubic,
+        transitionBuilder: (child, animation) => FadeTransition(
+          opacity: animation,
+          child: SlideTransition(
+            position: Tween<Offset>(
+              begin: const Offset(0, .12),
+              end: Offset.zero,
+            ).animate(
+                CurvedAnimation(parent: animation, curve: Curves.easeOutCubic)),
+            child: child,
+          ),
+        ),
+        child: Text(_localized(value),
+            key: ValueKey(_localized(value)),
+            maxLines: maxLines,
+            overflow: TextOverflow.ellipsis,
+            style: style),
+      );
+
   Widget _row(IconData icon, String title, String subtitle, Widget trailing) =>
-      Container(
-          margin: EdgeInsets.only(bottom: 8),
-          padding: EdgeInsets.symmetric(horizontal: 15, vertical: 12),
-          decoration: BoxDecoration(
-              color: _surface, borderRadius: BorderRadius.circular(16)),
-          child: Row(children: [
-            Icon(icon, color: _accent),
-            SizedBox(width: 13),
-            Expanded(
-                child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                  Text(_localized(title)),
-                  Text(_localized(subtitle),
-                      style: TextStyle(color: _muted, fontSize: 11))
-                ])),
-            trailing
-          ]));
+      AnimatedSize(
+        duration: const Duration(milliseconds: 280),
+        curve: Curves.easeInOutCubicEmphasized,
+        alignment: Alignment.topCenter,
+        child: Container(
+            margin: EdgeInsets.only(bottom: 8),
+            padding: EdgeInsets.symmetric(horizontal: 15, vertical: 12),
+            decoration: BoxDecoration(
+                color: _surface, borderRadius: BorderRadius.circular(16)),
+            child: Row(children: [
+              Icon(icon, color: _accent),
+              SizedBox(width: 13),
+              Expanded(
+                  child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                    _settingLabel(title,
+                        style: const TextStyle(fontWeight: FontWeight.w500),
+                        maxLines: 1),
+                    const SizedBox(height: 2),
+                    _settingLabel(subtitle,
+                        style: TextStyle(color: _muted, fontSize: 11),
+                        maxLines: 3),
+                  ])),
+              trailing
+            ])),
+      );
 
   Widget _compactSwitch(
       {required bool value, required ValueChanged<bool>? onChanged}) {
@@ -9085,7 +10442,7 @@ foreach ($route in $routes) {
               duration: const Duration(milliseconds: 150),
               curve: Curves.easeOutCubic,
               decoration: BoxDecoration(
-                  color: _hoveredNavTab == index
+                  color: _hoveredNavTab == index && _tabIndex != index
                       ? _accent.withValues(alpha: .16)
                       : Colors.transparent,
                   borderRadius: BorderRadius.circular(19)),
@@ -9135,7 +10492,7 @@ foreach ($route in $routes) {
                   curve: Curves.easeOutCubic,
                   margin: const EdgeInsets.symmetric(horizontal: 4),
                   decoration: BoxDecoration(
-                      color: _hoveredNavTab == index
+                      color: _hoveredNavTab == index && _tabIndex != index
                           ? Colors.white.withValues(alpha: .095)
                           : Colors.transparent,
                       borderRadius: BorderRadius.circular(20)),

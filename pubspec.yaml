@@ -1,7 +1,7 @@
 name: ghostbox
 description: Cross-platform VPN client powered by xray-core and sing-box.
 publish_to: 'none'
-version: 1.4.0-alpha+6
+version: 1.4.1-alpha+7
 environment:
   sdk: '>=3.3.0 <4.0.0'
   flutter: '>=3.19.0'
@@ -13,6 +13,7 @@ dependencies:
   shared_preferences: ^2.5.3
   app_links: ^7.2.2
   mobile_scanner: ^7.4.2
+  qr_flutter: ^4.1.0
 dependency_overrides:
   # shared_preferences_android 2.5.0 switched to its JNI/Pigeon runtime. Keep
   # the channel-based implementation until that runtime is stable on devices.

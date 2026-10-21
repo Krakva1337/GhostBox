@@ -37,6 +37,7 @@ class XrayVpnService : VpnService() {
     @Volatile private var stopping = false
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        recordAndroidVpnPolicy()
         if (intent?.action == "app.ghostbox.STOP_VPN") {
             stopXray()
             return START_NOT_STICKY
@@ -52,6 +53,17 @@ class XrayVpnService : VpnService() {
         startForeground(notificationId(), createNotification(profileName, false))
         Thread({ startCore(config, profileName) }, "GhostBox-xray-start").start()
         return START_NOT_STICKY
+    }
+
+    private fun recordAndroidVpnPolicy() {
+        val known = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+        val lockdown = if (known) isLockdownEnabled() else false
+        val alwaysOn = if (known) isAlwaysOn() else false
+        VpnStateStore.update(this) {
+            it.put("androidLockdownStatusKnown", known)
+                .put("androidLockdownEnabled", lockdown)
+                .put("androidAlwaysOn", alwaysOn)
+        }
     }
 
     private fun startCore(rawConfig: String, profileName: String) {

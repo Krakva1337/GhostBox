@@ -41,6 +41,7 @@ class GhostBoxVpnService : VpnService(), CommandServerHandler {
     @Volatile private var stopping = false
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        recordAndroidVpnPolicy()
         if (intent?.action == "app.ghostbox.STOP_VPN") {
             stopVpn()
             return START_NOT_STICKY
@@ -57,6 +58,17 @@ class GhostBoxVpnService : VpnService(), CommandServerHandler {
         startForeground(NOTIFICATION_ID, createNotification(name, connected = false))
         Thread({ startCore(config, memoryMb) }, "GhostBox-sing-box-start").start()
         return START_NOT_STICKY
+    }
+
+    private fun recordAndroidVpnPolicy() {
+        val known = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+        val lockdown = if (known) isLockdownEnabled() else false
+        val alwaysOn = if (known) isAlwaysOn() else false
+        VpnStateStore.update(this) {
+            it.put("androidLockdownStatusKnown", known)
+                .put("androidLockdownEnabled", lockdown)
+                .put("androidAlwaysOn", alwaysOn)
+        }
     }
 
     private fun startCore(config: String, memoryMb: Int) {

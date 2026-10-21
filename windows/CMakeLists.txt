@@ -143,3 +143,8 @@ if(EXISTS "${GHOSTBOX_WINTUN_DLL}")
 else()
   message(WARNING "Missing wintun.dll: run tool/build_windows.ps1 to prepare the Windows TUN runtime")
 endif()
+
+# Package the Windows Firewall helper next to the bundled cores. The Dart
+# adapter resolves it relative to GhostBox.exe, so shortcut launch paths work.
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/../tool/windows_killswitch.ps1"
+  DESTINATION "${CMAKE_INSTALL_PREFIX}/vendor/bin" COMPONENT Runtime)

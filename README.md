@@ -4,7 +4,7 @@
 
 <h1 align="center">GhostBox</h1>
 
-<p align="center"><strong>v1.4-Alpha · Linux x86_64/ARM64 · Windows x64 · Xray-core + sing-box</strong></p>
+<p align="center"><strong>v1.4.1 Alpha · Linux x86_64/ARM64 · Windows x64 · Xray-core + sing-box</strong></p>
 
 ## Русский
 
@@ -49,18 +49,18 @@ iOS выдаёт только unsigned compile artifact и libbox XCFramework, �
 `x86_64` подходит для Intel/AMD 64-bit, `aarch64` — для ARM64 Linux.
 
 ```bash
-chmod +x GhostBox-1.4.0-alpha-linux-x86_64.AppImage
-./GhostBox-1.4.0-alpha-linux-x86_64.AppImage
+chmod +x GhostBox-1.4.1-alpha-linux-x86_64.AppImage
+./GhostBox-1.4.1-alpha-linux-x86_64.AppImage
 ```
 
 Пакеты для x86_64 и ARM64 содержат нативные бинарники и не взаимозаменяемы.
 Чтобы установить приложение в меню рабочего стола без прав root, из клона репозитория выполни:
 
 ```bash
-./tool/install_appimage.sh ./dist/GhostBox-1.4.0-alpha-linux-x86_64.AppImage
+./tool/install_appimage.sh ./dist/GhostBox-1.4.1-alpha-linux-x86_64.AppImage
 ```
 
-Добавь ссылку-подписку или сервер, выбери профиль и нажми кнопку подключения. TUN включён по умолчанию. Если AppImage не запускается из-за отсутствия FUSE, попробуй `APPIMAGE_EXTRACT_AND_RUN=1 ./GhostBox-1.4.0-alpha-linux-x86_64.AppImage`.
+Добавь ссылку-подписку или сервер, выбери профиль и нажми кнопку подключения. TUN включён по умолчанию. Если AppImage не запускается из-за отсутствия FUSE, попробуй `APPIMAGE_EXTRACT_AND_RUN=1 ./GhostBox-1.4.1-alpha-linux-x86_64.AppImage`.
 
 ### TUN без запуска VPN от root
 
@@ -105,7 +105,7 @@ keytool -genkeypair -v -keystore ghostbox-release.jks -keyalg RSA -keysize 4096 
 base64 -w0 ghostbox-release.jks
 ```
 
-Добавь в **Settings → Secrets and variables → Actions** секреты `ANDROID_KEYSTORE_BASE64` (вывод второй команды), `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` (`ghostbox`) и `ANDROID_KEY_PASSWORD`. Без них workflow создаёт тестовый APK для sideload, который нельзя обновлять установкой сборок, подписанных другим ключом. Храни keystore и пароли в безопасном месте: без прежнего ключа Android не примет обновление поверх установленной версии.
+Добавь в **Settings → Secrets and variables → Actions** секреты `ANDROID_KEYSTORE_BASE64` (вывод второй команды), `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` (`ghostbox`) и `ANDROID_KEY_PASSWORD`. Основной workflow остановит сборку Android-релиза, если секретов нет: подпись постоянным ключом нужна для установки обновлений поверх приложения. Ручной workflow для тестового sideload может использовать временный ключ. Храни keystore и пароли в безопасном месте: без прежнего ключа Android не примет обновление поверх установленной версии.
 
 ### Сборка из исходников
 
@@ -117,7 +117,7 @@ base64 -w0 ghostbox-release.jks
 ./build.sh
 ```
 
-Чтобы выбрать Linux без меню: `./build.sh linux`. После сборки установить AppImage в меню можно командой `./tool/install_appimage.sh ./dist/GhostBox-1.4.0-alpha-linux-x86_64.AppImage`. Другие платформы выбираются в меню скрипта; требования платформ описаны в [deploy/PLATFORMS.md](deploy/PLATFORMS.md).
+Чтобы выбрать Linux без меню: `./build.sh linux`. После сборки установить AppImage в меню можно командой `./tool/install_appimage.sh ./dist/GhostBox-1.4.1-alpha-linux-x86_64.AppImage`. Другие платформы выбираются в меню скрипта; требования платформ описаны в [deploy/PLATFORMS.md](deploy/PLATFORMS.md).
 
 ### Приватность и диагностика
 
@@ -168,27 +168,27 @@ development artifacts are available in **Actions → Build GhostBox for Apple
 platforms**. The macOS `.app` is ad-hoc signed for local testing; the iOS output
 is only an unsigned compile artifact and libbox XCFramework, not a VPN release.
 
-Download `GhostBox-1.4.0-alpha-linux-x86_64.AppImage` from GitHub Releases and run:
+Download `GhostBox-1.4.1-alpha-linux-x86_64.AppImage` from GitHub Releases and run:
 
 ```bash
-chmod +x GhostBox-1.4.0-alpha-linux-x86_64.AppImage
-./GhostBox-1.4.0-alpha-linux-x86_64.AppImage
+chmod +x GhostBox-1.4.1-alpha-linux-x86_64.AppImage
+./GhostBox-1.4.1-alpha-linux-x86_64.AppImage
 ```
 
 To add GhostBox to the desktop app menu without root access, run this from a repository checkout:
 
 ```bash
-./tool/install_appimage.sh ./dist/GhostBox-1.4.0-alpha-linux-x86_64.AppImage
+./tool/install_appimage.sh ./dist/GhostBox-1.4.1-alpha-linux-x86_64.AppImage
 ```
 
 On macOS, install a built `.app` bundle or ZIP into `/Applications` and launch it with:
 
 ```bash
-./tool/install_macos.sh ./dist/GhostBox-1.4.0-alpha-macOS-arm64.zip
+./tool/install_macos.sh ./dist/GhostBox-1.4.1-alpha-macOS-arm64.zip
 ```
 The script asks for administrator authorization to replace `/Applications/GhostBox.app`.
 
-Add a subscription URL or server, select a profile and press Connect. TUN is enabled by default. If AppImage cannot start because FUSE is unavailable, try `APPIMAGE_EXTRACT_AND_RUN=1 ./GhostBox-1.4.0-alpha-linux-x86_64.AppImage`.
+Add a subscription URL or server, select a profile and press Connect. TUN is enabled by default. If AppImage cannot start because FUSE is unavailable, try `APPIMAGE_EXTRACT_AND_RUN=1 ./GhostBox-1.4.1-alpha-linux-x86_64.AppImage`.
 
 ### TUN without running the VPN as root
 
@@ -224,7 +224,7 @@ Artifacts from a manual run are kept for 14 days. To publish a release, commit y
 ./tool/publish_release.sh "Fixed split tunneling and improved startup"
 ```
 
-The script pushes `main`, creates a version tag from `pubspec.yaml` and starts GitHub Actions. The main workflow builds Linux x86_64/ARM64 AppImages, a Windows installer `.exe` and ZIP, a macOS ARM64 ZIP, and an Android APK, then publishes a prerelease with the version, update summary, commit subjects and build files. It requires a clean worktree, the `main` branch and configured Git authentication. Android requires Android 7.0 (API 24) or later and includes sing-box XHTTP. Without a private signing key in repository secrets, the APK uses a temporary test key for one-off sideloading; configure a persistent keystore below to update an installed Android build. On connect, Android requests VPN consent and, when available, notification permission.
+The script pushes `main`, creates a version tag from `pubspec.yaml` and starts GitHub Actions. The main workflow builds Linux x86_64/ARM64 AppImages, a Windows installer `.exe` and ZIP, a macOS ARM64 ZIP, and an Android APK, then publishes a prerelease with the version, update summary, commit subjects and build files. It requires a clean worktree, the `main` branch and configured Git authentication. Android requires Android 7.0 (API 24) or later and includes sing-box XHTTP. Android releases require the persistent signing secrets below so future APKs can update the installed app. Manual Android builds can still use a temporary test key for one-off sideloading. On connect, Android requests VPN consent and, when available, notification permission.
 
 For Android releases, configure a persistent signing key. Create a private keystore:
 
@@ -233,7 +233,7 @@ keytool -genkeypair -v -keystore ghostbox-release.jks -keyalg RSA -keysize 4096 
 base64 -w0 ghostbox-release.jks
 ```
 
-Add repository secrets under **Settings → Secrets and variables → Actions**: `ANDROID_KEYSTORE_BASE64` (the second command's output), `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` (`ghostbox`), and `ANDROID_KEY_PASSWORD`. Without them, the workflow creates a test-signed APK for sideloading; builds signed with different keys cannot update each other. Keep the keystore and passwords safe: Android will reject updates if the original signing key is lost.
+Add repository secrets under **Settings → Secrets and variables → Actions**: `ANDROID_KEYSTORE_BASE64` (the second command's output), `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` (`ghostbox`), and `ANDROID_KEY_PASSWORD`. The release workflow stops if any are missing, because Android rejects updates signed with a different key. Keep the keystore and passwords safe: Android will reject updates if the original signing key is lost.
 
 ### Build from source
 

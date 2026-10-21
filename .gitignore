@@ -1,4 +1,5 @@
 .dart_tool/
+AGENTS.md
 .packages
 build/
 dist/

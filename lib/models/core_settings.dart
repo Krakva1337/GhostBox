@@ -39,6 +39,7 @@ class CoreSettings {
     this.pingView = 'full',
     this.pingCount = 3,
     this.pingTimeoutSeconds = 4,
+    this.disconnectVpnForPing = false,
   });
 
   final String core,
@@ -53,6 +54,7 @@ class CoreSettings {
       pingView;
   final int pingCount, pingTimeoutSeconds;
   final bool dnsThroughProxy, blocklistEnabled, autoConnect, autoPing;
+  final bool disconnectVpnForPing;
   final bool killSwitchEnabled;
   final String killSwitchEndpoint, killSwitchProfileId;
   final bool showRamUsage;
@@ -113,7 +115,8 @@ class CoreSettings {
           String? proxyGetUrl,
           String? pingView,
           int? pingCount,
-          int? pingTimeoutSeconds}) =>
+          int? pingTimeoutSeconds,
+          bool? disconnectVpnForPing}) =>
       CoreSettings(
           core: core ?? this.core,
           connectionMode: connectionMode ?? this.connectionMode,
@@ -161,7 +164,9 @@ class CoreSettings {
           proxyGetUrl: proxyGetUrl ?? this.proxyGetUrl,
           pingView: pingView ?? this.pingView,
           pingCount: pingCount ?? this.pingCount,
-          pingTimeoutSeconds: pingTimeoutSeconds ?? this.pingTimeoutSeconds);
+          pingTimeoutSeconds: pingTimeoutSeconds ?? this.pingTimeoutSeconds,
+          disconnectVpnForPing:
+              disconnectVpnForPing ?? this.disconnectVpnForPing);
 
   factory CoreSettings.fromJson(Map<String, dynamic> data) {
     String choice(String key, List<String> allowed, String fallback) =>
@@ -224,6 +229,7 @@ class CoreSettings {
       pingTimeoutSeconds: [2, 4, 8].contains(data['pingTimeoutSeconds'])
           ? data['pingTimeoutSeconds'] as int
           : 4,
+      disconnectVpnForPing: data['disconnectVpnForPing'] == true,
       blockedDomains: domains('blockedDomains'),
       directDomains: routePatterns('directDomains'),
       proxyDomains: routePatterns('proxyDomains'),
@@ -273,6 +279,7 @@ class CoreSettings {
         'pingView': pingView,
         'pingCount': pingCount,
         'pingTimeoutSeconds': pingTimeoutSeconds,
+        'disconnectVpnForPing': disconnectVpnForPing,
       };
 
   static bool isValidDomain(String value) => RegExp(

@@ -163,6 +163,8 @@ try {
     }
     Copy-Item -Force $source (Join-Path $releaseCoreDirectory $core)
   }
+  Copy-Item -Force (Join-Path $PSScriptRoot 'windows_killswitch.ps1') `
+    (Join-Path $releaseCoreDirectory 'windows_killswitch.ps1')
 
   $packageDirectory = Join-Path $ProjectRoot 'dist'
   New-Item -ItemType Directory -Force -Path $packageDirectory | Out-Null
@@ -180,7 +182,7 @@ try {
     foreach ($dll in @('flutter_windows.dll', 'vcruntime140.dll', 'msvcp140.dll')) {
       if ($entryNames -notcontains $dll) { throw "Windows ZIP is missing required runtime file: $dll" }
     }
-    foreach ($core in @('vendor/bin/xray.exe', 'vendor/bin/sing-box.exe', 'vendor/bin/wintun.dll')) {
+    foreach ($core in @('vendor/bin/xray.exe', 'vendor/bin/sing-box.exe', 'vendor/bin/wintun.dll', 'vendor/bin/windows_killswitch.ps1')) {
       if ($entryNames -notcontains $core) { throw "Windows ZIP is missing required core file: $core" }
     }
   } finally {

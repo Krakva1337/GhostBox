@@ -44,7 +44,7 @@ class GitHubUpdater {
   );
   static const currentVersion = String.fromEnvironment(
     'GHOSTBOX_VERSION',
-    defaultValue: '1.3.0-alpha',
+    defaultValue: '1.4.1-alpha',
   );
   static const _androidUpdateChannel =
       MethodChannel('app.ghostbox.ghostbox/app_update');
@@ -159,6 +159,13 @@ class GitHubUpdater {
       if (destination.existsSync()) await destination.delete();
       rethrow;
     }
+    final actualSize = await destination.length();
+    if (asset.size > 0 && actualSize != asset.size) {
+      await destination.delete();
+      throw HttpException(
+        'Загрузка ${asset.name} неполная: ожидалось ${asset.size} байт, получено $actualSize.',
+      );
+    }
     return destination;
   }
 
@@ -242,8 +249,8 @@ class GitHubUpdater {
         exit(0);
       }
       if (Platform.isAndroid) {
-        final result = await _androidUpdateChannel.invokeMethod<String>(
-            'installApk', {'path': package.path});
+        final result = await _androidUpdateChannel
+            .invokeMethod<String>('installApk', {'path': package.path});
         if (result == 'permission_required') {
           throw const FileSystemException(
               'Разреши GhostBox устанавливать приложения в системных настройках и нажми «Проверить обновления» ещё раз.');

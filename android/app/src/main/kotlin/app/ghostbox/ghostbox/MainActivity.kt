@@ -68,6 +68,19 @@ class MainActivity : FlutterActivity() {
                     }
                     "vpnState" -> result.success(VpnStateStore.state(this))
                     "vpnError" -> result.success(VpnStateStore.error(this))
+                    "androidKillSwitchStatus" -> result.success(androidKillSwitchStatus())
+                    "openAndroidVpnSettings" -> {
+                        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
+                            result.success(false)
+                        } else {
+                            try {
+                                startActivity(Intent(android.provider.Settings.ACTION_VPN_SETTINGS))
+                                result.success(true)
+                            } catch (_: Exception) {
+                                result.success(false)
+                            }
+                        }
+                    }
                     "xrayProxyState" -> result.success(VpnStateStore.xrayProxyState(this))
                     "xrayProxyError" -> result.success(VpnStateStore.xrayProxyError(this))
                     "vpnMemoryMb" -> {
@@ -166,8 +179,25 @@ class MainActivity : FlutterActivity() {
                         return@setMethodCallHandler
                     }
                     val updateDirectory = File(cacheDir, "updates").apply { mkdirs() }
+                    updateDirectory.listFiles()
+                        ?.filter { it.name.startsWith("GhostBox-update-") }
+                        ?.forEach { it.delete() }
+                    val stagedApk = File(
+                        updateDirectory,
+                        "GhostBox-update-${System.nanoTime()}.apk",
+                    )
+                    source.copyTo(stagedApk, overwrite = true)
+                    if (stagedApk.length() != source.length()) {
+                        stagedApk.delete()
+                        throw IllegalStateException("Downloaded APK copy is incomplete.")
+                    }
+                    validateUpdateApk(stagedApk)
                     val apk = File(updateDirectory, "GhostBox-update.apk")
-                    source.copyTo(apk, overwrite = true)
+                    apk.delete()
+                    if (!stagedApk.renameTo(apk)) {
+                        stagedApk.copyTo(apk, overwrite = true)
+                        stagedApk.delete()
+                    }
                     val apkUri = FileProvider.getUriForFile(
                         this,
                         "$packageName.fileprovider",
@@ -183,6 +213,65 @@ class MainActivity : FlutterActivity() {
                     result.error("install_failed", error.message, null)
                 }
             }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun validateUpdateApk(apk: File) {
+        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            PackageManager.GET_SIGNING_CERTIFICATES
+        } else {
+            PackageManager.GET_SIGNATURES
+        }
+        val candidate = packageManager.getPackageArchiveInfo(apk.absolutePath, flags)
+            ?: throw IllegalArgumentException(
+                "APK повреждён или загружен не полностью. Проверь размер файла и checksum релиза.",
+            )
+        if (candidate.packageName != packageName) {
+            throw IllegalArgumentException(
+                "Этот APK предназначен для другого приложения: ${candidate.packageName}.",
+            )
+        }
+
+        val installed = packageManager.getPackageInfo(packageName, flags)
+        val candidateVersion = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            candidate.longVersionCode
+        } else {
+            @Suppress("DEPRECATION")
+            candidate.versionCode.toLong()
+        }
+        val installedVersion = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            installed.longVersionCode
+        } else {
+            @Suppress("DEPRECATION")
+            installed.versionCode.toLong()
+        }
+        if (candidateVersion < installedVersion) {
+            throw IllegalArgumentException(
+                "Версия APK старее уже установленной. Проверь ветку обновлений GitHub.",
+            )
+        }
+        val candidateSignatures = certificateHistory(candidate)
+        val installedSignatures = certificateHistory(installed)
+        val signerMatches = candidateSignatures.any { candidateSignature ->
+            installedSignatures.any { installedSignature ->
+                candidateSignature.toByteArray()
+                    .contentEquals(installedSignature.toByteArray())
+            }
+        }
+        if (candidateSignatures.isEmpty() || !signerMatches) {
+            throw SecurityException(
+                "Подпись APK не совпадает с установленной версией. Android запрещает обновление. Используй в GitHub Actions тот же постоянный Android keystore, которым подписана установленная сборка.",
+            )
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun certificateHistory(info: android.content.pm.PackageInfo): List<android.content.pm.Signature> {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            info.signingInfo?.signingCertificateHistory?.toList().orEmpty()
+        } else {
+            info.signatures?.toList().orEmpty()
+        }
     }
 
     private fun iconAlias(variant: String?): String? = when (variant) {
@@ -263,6 +352,22 @@ class MainActivity : FlutterActivity() {
 
     private fun saveVpnError(message: String) {
         VpnStateStore.update(this) { it.put("state", "error").put("error", message) }
+    }
+
+    /**
+     * Android owns the lockdown switch. API 29+ lets a running VpnService
+     * query the OS-enforced state; MainActivity reads the value that service
+     * recorded. Before a VPN service has run (or below API 29), the state is
+     * unknown and must not be inferred from a running tunnel.
+     */
+    private fun androidKillSwitchStatus(): Map<String, Any?> {
+        val lockdownEnabled = VpnStateStore.androidLockdownStatus(this)
+        return mapOf(
+            "supported" to (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N),
+            "alwaysOnSupported" to (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N),
+            "lockdownEnabled" to lockdownEnabled,
+            "lockdownStatusKnown" to (lockdownEnabled != null),
+        )
     }
 
     private fun startPreparedVpn() {

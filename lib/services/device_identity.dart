@@ -74,10 +74,6 @@ class DeviceIdentity {
   static Future<String> get installationId => _pending ??= _loadOrCreate();
 
   static Future<String> _loadOrCreate() async {
-    final preferences = await SharedPreferences.getInstance();
-    final existing = preferences.getString(_preferenceKey);
-    if (existing != null && existing.isNotEmpty) return existing;
-
     final bytes = List<int>.generate(16, (_) => Random.secure().nextInt(256));
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
@@ -86,7 +82,18 @@ class DeviceIdentity {
     final id = '${compact.substring(0, 8)}-${compact.substring(8, 12)}-'
         '${compact.substring(12, 16)}-${compact.substring(16, 20)}-'
         '${compact.substring(20)}';
-    await preferences.setString(_preferenceKey, id);
+    // Device metadata is only an optional provider hint. Some Android builds
+    // can have a stale shared_preferences platform implementation after an
+    // in-place update; that must never prevent the VPN core from starting.
+    try {
+      final preferences = await SharedPreferences.getInstance();
+      final existing = preferences.getString(_preferenceKey);
+      if (existing != null && existing.isNotEmpty) return existing;
+      await preferences.setString(_preferenceKey, id);
+    } on Object {
+      // Keep the generated ID for this process. A later app launch can retry
+      // persistence once the platform plugin is available again.
+    }
     return id;
   }
 }

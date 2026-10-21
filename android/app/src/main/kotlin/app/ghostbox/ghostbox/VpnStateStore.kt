@@ -38,6 +38,11 @@ internal object VpnStateStore {
     fun state(context: Context): String = read(context).optString("state", "disconnected")
     fun error(context: Context): String? = read(context).optString("error", null)
     fun activeCore(context: Context): String = read(context).optString("activeCore", "sing-box")
+    fun androidLockdownStatus(context: Context): Boolean? {
+        val value = read(context)
+        if (!value.optBoolean("androidLockdownStatusKnown", false)) return null
+        return value.optBoolean("androidLockdownEnabled", false)
+    }
     fun xrayProxyState(context: Context): String =
         read(context).optString("xrayProxyState", "disconnected")
     fun xrayProxyError(context: Context): String? =

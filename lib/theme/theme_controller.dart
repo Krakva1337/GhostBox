@@ -279,9 +279,13 @@ class ThemeController extends ChangeNotifier {
           shape: const RoundedRectangleBorder(
               borderRadius: BorderRadius.vertical(top: Radius.circular(28)))),
       popupMenuTheme: PopupMenuThemeData(
-          color: surface,
-          shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+          color: surface.withValues(alpha: .92),
+          elevation: 18,
+          shadowColor: Colors.black.withValues(alpha: .4),
+          surfaceTintColor: Colors.white.withValues(alpha: .035),
+          shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(18),
+              side: BorderSide(color: scheme.outline.withValues(alpha: .2))),
           textStyle: TextStyle(fontSize: 13, color: scheme.onSurface)),
       textButtonTheme: TextButtonThemeData(
           style: ButtonStyle(

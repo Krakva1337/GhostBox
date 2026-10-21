@@ -123,7 +123,7 @@ jobs:
         run: |
           for _ in {1..50}; do echo y; done | sdkmanager --licenses
           sdkmanager 'platform-tools' 'platforms;android-36' 'build-tools;36.0.0' 'ndk;28.2.13676358' 'cmake;3.22.1'
-      - name: Configure optional release signing
+      - name: Configure persistent Android release signing
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -131,12 +131,13 @@ jobs:
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         shell: bash
         run: |
-          if [[ -z "$ANDROID_KEYSTORE_BASE64" ]]; then
-            echo "No Android release keystore configured; building a sideloadable debug-signed APK."
-            exit 0
+          if [[ -z "$ANDROID_KEYSTORE_BASE64" || -z "$ANDROID_KEYSTORE_PASSWORD" || -z "$ANDROID_KEY_ALIAS" || -z "$ANDROID_KEY_PASSWORD" ]]; then
+            echo "Android release requires all four persistent signing secrets: ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD."
+            exit 1
           fi
           keystore="$RUNNER_TEMP/ghostbox-release.jks"
           printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$keystore"
+          test -s "$keystore"
           {
             echo "GHOSTBOX_ANDROID_KEYSTORE_FILE=$keystore"
             echo "GHOSTBOX_ANDROID_KEYSTORE_PASSWORD=$ANDROID_KEYSTORE_PASSWORD"
@@ -145,8 +146,11 @@ jobs:
           } >> "$GITHUB_ENV"
       - name: Build APK and sing-box libbox
         run: ./tool/build_android.sh
-      - name: Checksum Android APK
-        run: sha256sum dist/android/GhostBox-Android-universal.apk > dist/android/GhostBox-Android-universal.apk.sha256
+      - name: Verify and checksum Android APK
+        run: |
+          apk=dist/android/GhostBox-Android-universal.apk
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$apk"
+          sha256sum "$apk" > "$apk.sha256"
       - uses: actions/upload-artifact@v4
         with:
           name: GhostBox-Android-universal
