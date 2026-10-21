@@ -76,8 +76,9 @@ android {
     }
 }
 
+val xrayAar = file("libs/libXray.aar")
+
 val prepareXrayRuntimeAsset = tasks.register<Copy>("prepareXrayRuntimeAsset") {
-    val xrayAar = file("libs/libXray.aar")
     if (!xrayAar.isFile) {
         throw GradleException(
             "Android Xray core is missing. Run tool/build_android_xray.sh to build it.",
@@ -89,8 +90,49 @@ val prepareXrayRuntimeAsset = tasks.register<Copy>("prepareXrayRuntimeAsset") {
     into(layout.buildDirectory.dir("generated/xrayRuntimeAssets"))
 }
 
+// The gomobile AAR contains JVM .class files. DexClassLoader cannot load those
+// directly, so dex just Xray's bindings as a standalone jar at build time. Keep
+// this jar separate from libbox's app dex: each core embeds its own go.Seq
+// classes, and the VPN services run in isolated Android processes.
+val xrayBindingsDir = layout.buildDirectory.dir("intermediates/xrayBindings")
+val extractXrayBindings = tasks.register<Copy>("extractXrayBindings") {
+    if (!xrayAar.isFile) {
+        throw GradleException(
+            "Android Xray core is missing. Run tool/build_android_xray.sh to build it.",
+        )
+    }
+    from(zipTree(xrayAar)) {
+        include("classes.jar")
+    }
+    into(xrayBindingsDir)
+}
+
+val d8Jar = file("${android.sdkDirectory}/build-tools/${android.buildToolsVersion}/lib/d8.jar")
+val dexXrayRuntime = tasks.register<JavaExec>("dexXrayRuntime") {
+    dependsOn(extractXrayBindings)
+    val classesJar = xrayBindingsDir.get().file("classes.jar")
+    val dexedJar = layout.buildDirectory.file(
+        "generated/xrayRuntimeAssets/xray-runtime-dex.jar",
+    )
+    inputs.file(classesJar)
+    outputs.file(dexedJar)
+    doFirst {
+        if (!d8Jar.isFile) {
+            throw GradleException("Android D8 compiler not found at $d8Jar")
+        }
+        dexedJar.get().asFile.parentFile.mkdirs()
+    }
+    classpath(files(d8Jar))
+    mainClass.set("com.android.tools.r8.D8")
+    args(
+        "--min-api", "24",
+        "--output", dexedJar.get().asFile.absolutePath,
+        classesJar.asFile.absolutePath,
+    )
+}
+
 tasks.named("preBuild").configure {
-    dependsOn(prepareXrayRuntimeAsset)
+    dependsOn(prepareXrayRuntimeAsset, dexXrayRuntime)
 }
 
 dependencies {

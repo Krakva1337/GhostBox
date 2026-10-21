@@ -4,6 +4,8 @@ import 'dart:io';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'app_version.dart';
+
 /// Stable, random per-install identifier for subscription panels that count
 /// devices. This deliberately does not fingerprint physical hardware.
 class DeviceIdentity {
@@ -14,7 +16,7 @@ class DeviceIdentity {
 
   static String get architecture => Abi.current().toString().split('.').last;
 
-  static String get subscriptionUserAgent => 'GhostBox-Alpha-v1.0';
+  static String get subscriptionUserAgent => AppVersion.userAgent;
 
   static Future<String> get deviceModel async {
     if (Platform.isLinux) {
@@ -57,13 +59,13 @@ class DeviceIdentity {
       'X-HWID': id,
       'X-Device-ID': id,
       'X-Client-Name': 'GhostBox',
-      'X-Client-Version': '0.1',
+      'X-Client-Version': AppVersion.versionAndBuild,
       'X-Device-OS': Platform.operatingSystem,
       'X-Device-OS-Version': Platform.operatingSystemVersion,
       'X-Ver-OS': Platform.operatingSystemVersion,
       'X-Device-Model': model,
       'X-Device-Architecture': architecture,
-      'X-GhostBox-Client': 'GhostBox-Alpha-v1.0',
+      'X-GhostBox-Client': AppVersion.userAgent,
       'X-GhostBox-OS': Platform.operatingSystem,
       'X-GhostBox-OS-Version': Platform.operatingSystemVersion,
       'X-GhostBox-Model': model,

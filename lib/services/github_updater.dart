@@ -3,6 +3,8 @@ import 'dart:io';
 
 import 'package:flutter/services.dart';
 
+import 'app_version.dart';
+
 class GhostBoxRelease {
   const GhostBoxRelease({
     required this.version,
@@ -42,10 +44,7 @@ class GitHubUpdater {
     'GHOSTBOX_UPDATE_BRANCH',
     defaultValue: 'main',
   );
-  static const currentVersion = String.fromEnvironment(
-    'GHOSTBOX_VERSION',
-    defaultValue: '1.4.2-alpha',
-  );
+  static const currentVersion = AppVersion.version;
   static const _androidUpdateChannel =
       MethodChannel('app.ghostbox.ghostbox/app_update');
 
@@ -108,7 +107,7 @@ class GitHubUpdater {
         await _client.getUrl(uri).timeout(const Duration(seconds: 12));
     request.headers
       ..set(HttpHeaders.acceptHeader, 'application/vnd.github+json')
-      ..set(HttpHeaders.userAgentHeader, 'GhostBox/$currentVersion');
+      ..set(HttpHeaders.userAgentHeader, AppVersion.userAgent);
     final response = await request.close().timeout(const Duration(seconds: 12));
     final body = await utf8.decoder
         .bind(response)
@@ -145,7 +144,7 @@ class GitHubUpdater {
         .timeout(const Duration(seconds: 20));
     request.headers
       ..set(HttpHeaders.acceptHeader, 'application/octet-stream')
-      ..set(HttpHeaders.userAgentHeader, 'GhostBox/$currentVersion');
+      ..set(HttpHeaders.userAgentHeader, AppVersion.userAgent);
     final response = await request.close().timeout(const Duration(seconds: 20));
     if (response.statusCode != HttpStatus.ok) {
       throw HttpException(

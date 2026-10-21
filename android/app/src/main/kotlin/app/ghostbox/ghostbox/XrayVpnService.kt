@@ -118,12 +118,18 @@ class XrayVpnService : VpnService() {
                 VpnStateStore.update(this) {
                     it.put("xrayProxyState", "connected").remove("xrayProxyError")
                     if (it.optString("activeCore") == "xray") {
-                        it.put("state", "connected").remove("error")
+                        it.put("state", "connected")
+                            .put("connectedAtMs", System.currentTimeMillis())
+                            .remove("error")
+                        it.remove("startedAtMs")
                     }
                 }
             } else {
                 VpnStateStore.updateForCore(this, "xray") {
-                    it.put("state", "connected").remove("error")
+                    it.put("state", "connected")
+                        .put("connectedAtMs", System.currentTimeMillis())
+                        .remove("error")
+                    it.remove("startedAtMs")
                 }
             }
             VpnStateStore.appendLog(this, "Xray Android VPN started ($profileName)")
@@ -138,12 +144,15 @@ class XrayVpnService : VpnService() {
                     val message = shortFailure(phase, error)
                     it.put("xrayProxyState", "error").put("xrayProxyError", message)
                     if (it.optString("activeCore") == "xray") {
-                        it.put("state", "error").put("error", message)
+                        it.put("state", "error").put("error", message).remove("connectedAtMs")
+                        it.remove("startedAtMs")
                     }
                 }
             } else {
                 VpnStateStore.updateForCore(this, "xray") {
                     it.put("state", "error").put("error", shortFailure(phase, error))
+                        .remove("connectedAtMs")
+                    it.remove("startedAtMs")
                 }
             }
             VpnStateStore.appendLog(this, detail)
@@ -202,18 +211,36 @@ class XrayVpnService : VpnService() {
                     if (!aarFile.isFile) assets.open("libXray.aar").use { input ->
                         aarFile.outputStream().use(input::copyTo)
                     }
-                    val classes = File(runtimeDir, "classes.jar")
+                    val dexClasses = File(runtimeDir, "xray-runtime-dex.jar")
                     val nativeDir = File(runtimeDir, "jni").apply { mkdirs() }
                     val nativeLibrary = File(nativeDir, "libgojni.so")
-                    if (!classes.isFile || !nativeLibrary.isFile) {
-                        classes.setWritable(true, false)
+                    // Android 14+ rejects DEX archives that still have a
+                    // writable bit. Replace old writable caches through a
+                    // temporary file, mark it read-only, then atomically move
+                    // it into place before DexClassLoader sees the path.
+                    val stagedDex = File(
+                        runtimeDir,
+                        "xray-runtime-dex.jar.tmp-${android.os.Process.myPid()}",
+                    )
+                    stagedDex.delete()
+                    assets.open("xray-runtime-dex.jar").use { input ->
+                        stagedDex.outputStream().use(input::copyTo)
+                    }
+                    if (!stagedDex.setReadOnly() || stagedDex.canWrite()) {
+                        stagedDex.delete()
+                        error("Could not make the embedded Xray DEX archive read-only")
+                    }
+                    if (dexClasses.exists() && !dexClasses.delete()) {
+                        stagedDex.delete()
+                        error("Could not replace the previous Xray DEX cache")
+                    }
+                    if (!stagedDex.renameTo(dexClasses)) {
+                        stagedDex.delete()
+                        error("Could not install the Xray DEX archive")
+                    }
+                    if (!nativeLibrary.isFile) {
                         nativeLibrary.setWritable(true, false)
                         ZipFile(aarFile).use { archive ->
-                            val classesEntry = archive.getEntry("classes.jar")
-                                ?: error("libXray AAR has no Java bindings")
-                            archive.getInputStream(classesEntry).use { input ->
-                                classes.outputStream().use(input::copyTo)
-                            }
                             val abi = Build.SUPPORTED_ABIS.firstNotNullOfOrNull { candidate ->
                                 archive.getEntry("jni/$candidate/libgojni.so")?.let { candidate to it }
                             } ?: error("libXray AAR has no native library for ${Build.SUPPORTED_ABIS.joinToString()}")
@@ -222,12 +249,17 @@ class XrayVpnService : VpnService() {
                             }
                         }
                     }
-                    if (!classes.setReadable(true, false) || !classes.setWritable(false, false)) {
-                        error("Could not mark the embedded Xray bindings read-only")
+                    val hasDex = ZipFile(dexClasses).use { archive ->
+                        archive.getEntry("classes.dex")?.size?.let { it > 0 } ?: false
                     }
+                    if (!hasDex) {
+                        dexClasses.delete()
+                        error("The embedded Xray bindings are not DEX-compiled")
+                    }
+                    dexClasses.setReadable(true, false)
                     nativeLibrary.setReadable(true, false)
                     loader = ChildFirstGoClassLoader(
-                        classes.absolutePath,
+                        dexClasses.absolutePath,
                         codeCacheDir.absolutePath,
                         nativeDir.absolutePath,
                         javaClass.classLoader,
@@ -345,7 +377,10 @@ class XrayVpnService : VpnService() {
                 }
             }
         } else if (VpnStateStore.state(this) != "error") {
-            VpnStateStore.updateForCore(this, "xray") { it.put("state", "disconnected") }
+            VpnStateStore.updateForCore(this, "xray") {
+                it.put("state", "disconnected").remove("connectedAtMs")
+                it.remove("startedAtMs")
+            }
         }
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
@@ -354,5 +389,26 @@ class XrayVpnService : VpnService() {
     override fun onDestroy() {
         if (!stopping) stopXray()
         super.onDestroy()
+    }
+
+    override fun onRevoke() {
+        Log.w(TAG, "Android revoked the VPN interface")
+        VpnStateStore.appendLog(this, "Android revoked the Xray VPN interface")
+        if (proxyOnlyMode) {
+            VpnStateStore.update(this) {
+                if (it.optString("activeCore") == "xray" && it.optString("state") != "error") {
+                    it.put("state", "disconnected").remove("connectedAtMs")
+                    it.remove("startedAtMs")
+                }
+            }
+        } else {
+            VpnStateStore.updateForCore(this, "xray") {
+                if (it.optString("state") != "error") {
+                    it.put("state", "disconnected").remove("connectedAtMs")
+                    it.remove("startedAtMs")
+                }
+            }
+        }
+        stopXray()
     }
 }

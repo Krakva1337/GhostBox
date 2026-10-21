@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import '../models/core_settings.dart';
+import 'app_version.dart';
 
 /// Downloads HaGeZi's domain lists and keeps a local copy for offline starts.
 class DnsAdBlocklist {
@@ -32,7 +33,7 @@ class DnsAdBlocklist {
           throw FormatException('Некорректная ссылка DNS-листа: $url');
         }
         final request = await client.getUrl(Uri.parse(url));
-        request.headers.set(HttpHeaders.userAgentHeader, 'GhostBox/1.0');
+        request.headers.set(HttpHeaders.userAgentHeader, AppVersion.userAgent);
         final response =
             await request.close().timeout(const Duration(seconds: 45));
         if (response.statusCode < 200 || response.statusCode >= 300) {

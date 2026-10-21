@@ -40,25 +40,70 @@ class GhostBoxVpnService : VpnService(), CommandServerHandler {
     @Volatile private var currentProfileName = "GhostBox"
     @Volatile private var stopping = false
     @Volatile private var tunEstablished = false
+    private val lifecycleLock = Any()
+    private var startWorkerRunning = false
+    private var pendingStart: StartRequest? = null
+    private var stopCleanupPending = false
+    private var stopCleanupRunning = false
+    private var latestStartId = 0
+
+    private data class StartRequest(val config: String, val profileName: String, val memoryMb: Int)
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         recordAndroidVpnPolicy()
         if (intent?.action == "app.ghostbox.STOP_VPN") {
+            synchronized(lifecycleLock) { latestStartId = startId }
             stopVpn()
             return START_NOT_STICKY
         }
-        stopping = false
         val config = intent?.getStringExtra(EXTRA_CONFIG)
         if (config.isNullOrBlank()) {
-            stopSelf(startId)
+            synchronized(lifecycleLock) { latestStartId = startId }
+            stopSelfResult(startId)
             return START_NOT_STICKY
         }
         val name = intent.getStringExtra(EXTRA_PROFILE) ?: "GhostBox"
         currentProfileName = name
         val memoryMb = intent.getIntExtra(EXTRA_MEMORY, 128).coerceIn(64, 256)
+        val launchWorker = enqueueStart(StartRequest(config, name, memoryMb), startId)
         startForeground(NOTIFICATION_ID, createNotification(name, connected = false))
-        Thread({ startCore(config, memoryMb) }, "GhostBox-sing-box-start").start()
+        if (launchWorker) launchStartWorker()
         return START_NOT_STICKY
+    }
+
+    /** Serialize libbox start/reload calls. Starting a second CommandServer
+     * from a duplicate service intent can race Go's process-global runtime.
+     */
+    private fun enqueueStart(request: StartRequest, startId: Int): Boolean = synchronized(lifecycleLock) {
+        latestStartId = startId
+        pendingStart = request // Keep the newest intent while a start is in flight.
+        if (startWorkerRunning || stopCleanupRunning) false else {
+            stopping = false
+            stopCleanupPending = false
+            startWorkerRunning = true
+            true
+        }
+    }
+
+    private fun launchStartWorker() {
+        Thread({ drainStarts() }, "GhostBox-sing-box-start").start()
+    }
+
+    private fun drainStarts() {
+        while (true) {
+            val request = synchronized(lifecycleLock) {
+                if (stopping) pendingStart = null
+                val next = pendingStart
+                pendingStart = null
+                if (next == null) startWorkerRunning = false
+                next
+            }
+            if (request == null) {
+                runPendingStopCleanup()
+                return
+            }
+            startCore(request.config, request.memoryMb)
+        }
     }
 
     private fun recordAndroidVpnPolicy() {
@@ -82,6 +127,7 @@ class GhostBoxVpnService : VpnService(), CommandServerHandler {
                 logMaxLines = 1000
                 appVersion = BuildConfig.VERSION_NAME
                 appMarketingVersion = BuildConfig.VERSION_NAME
+                crashReportSource = "ghostbox-sing-box"
                 platformMetadata = "Android ${Build.VERSION.RELEASE} (${Build.MODEL})"
                 // Go's Android stack workaround prevents native stack faults on
                 // devices with stricter ART/NDK behavior.
@@ -102,23 +148,33 @@ class GhostBoxVpnService : VpnService(), CommandServerHandler {
             }
             if (stopping) return
             phase = "starting the sing-box command server"
-            val platform = createPlatform()
-            val server = CommandServer(this, platform)
-            server.start()
-            commandServer = server
+            var server = commandServer
+            val createdServer = server == null
+            if (server == null) {
+                val platform = createPlatform()
+                server = CommandServer(this, platform)
+                server.start()
+                commandServer = server
+            }
             if (stopping) {
-                server.close()
-                commandServer = null
+                if (createdServer) {
+                    server.close()
+                    if (commandServer === server) commandServer = null
+                }
                 return
             }
             tunEstablished = false
             phase = "installing the Android TUN interface"
             server.startOrReloadService(config, OverrideOptions())
+            if (stopping) return
             if (!tunEstablished) {
                 error("sing-box returned without asking Android to establish a TUN interface")
             }
             VpnStateStore.updateForCore(this, "sing-box") {
-                it.put("state", "connected").remove("error")
+                it.put("state", "connected")
+                    .put("connectedAtMs", System.currentTimeMillis())
+                    .remove("error")
+                it.remove("startedAtMs")
             }
             updateNotification(connected = true)
             Log.i(TAG, "sing-box VPN service started")
@@ -126,7 +182,8 @@ class GhostBoxVpnService : VpnService(), CommandServerHandler {
             val detail = "sing-box failed while $phase: ${error.message ?: error.javaClass.name}"
             Log.e(TAG, detail, error)
             VpnStateStore.updateForCore(this, "sing-box") {
-                it.put("state", "error").put("error", detail)
+                it.put("state", "error").put("error", detail).remove("connectedAtMs")
+                it.remove("startedAtMs")
             }
             VpnStateStore.appendLog(this, detail)
             VpnStateStore.appendLog(this, Log.getStackTraceString(error))
@@ -404,25 +461,85 @@ class GhostBoxVpnService : VpnService(), CommandServerHandler {
     }
 
     private fun stopVpn() {
-        stopping = true
+        val cleanupNow = synchronized(lifecycleLock) {
+            stopping = true
+            pendingStart = null
+            stopCleanupPending = true
+            if (startWorkerRunning || stopCleanupRunning) false else {
+                stopCleanupRunning = true
+                true
+            }
+        }
+        if (!cleanupNow) return
+        cleanupVpn()
+    }
+
+    private fun runPendingStopCleanup() {
+        val cleanupNow = synchronized(lifecycleLock) {
+            if (!stopCleanupPending || stopCleanupRunning || startWorkerRunning) false else {
+                stopCleanupRunning = true
+                true
+            }
+        }
+        if (cleanupNow) cleanupVpn()
+    }
+
+    /** Called only after any in-flight libbox operation has returned. */
+    private fun cleanupVpn() {
         try {
             commandServer?.closeService()
             commandServer?.close()
         } catch (error: Exception) {
             Log.w(TAG, "Error while stopping sing-box", error)
-        } finally {
-            commandServer = null
-            if (VpnStateStore.state(this) != "error") {
-                VpnStateStore.updateForCore(this, "sing-box") { it.put("state", "disconnected") }
+        }
+
+        commandServer = null
+        val queuedStart = synchronized(lifecycleLock) {
+            val queued = pendingStart
+            if (queued != null) {
+                stopping = false
+                stopCleanupPending = false
+                startWorkerRunning = true
+            } else {
+                if (VpnStateStore.state(this) != "error") {
+                    VpnStateStore.updateForCore(this, "sing-box") {
+                        it.put("state", "disconnected").remove("connectedAtMs")
+                        it.remove("startedAtMs")
+                    }
+                }
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelfResult(latestStartId)
+                stopCleanupPending = false
+                stopCleanupRunning = false
             }
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
+            queued
+        }
+        if (queuedStart != null) {
+            currentProfileName = queuedStart.profileName
+            startForeground(
+                NOTIFICATION_ID,
+                createNotification(queuedStart.profileName, connected = false),
+            )
+            synchronized(lifecycleLock) { stopCleanupRunning = false }
+            launchStartWorker()
         }
     }
 
     override fun onDestroy() {
         if (!stopping) stopVpn()
         super.onDestroy()
+    }
+
+    override fun onRevoke() {
+        Log.w(TAG, "Android revoked the VPN interface")
+        VpnStateStore.appendLog(this, "Android revoked the sing-box VPN interface")
+        VpnStateStore.updateForCore(this, "sing-box") {
+            if (it.optString("state") != "error") {
+                it.put("state", "disconnected").remove("connectedAtMs")
+                it.remove("startedAtMs")
+            }
+        }
+        stopVpn()
     }
 
     override fun serviceStop() = stopVpn()

@@ -59,6 +59,18 @@ else
   git -C "$source_dir" submodule update --init --recursive --depth 1
 fi
 
+# sing-box-lx pins the exact compiler in go.version. Using a newer installed Go
+# version can produce Android libbox crashes that only surface at runtime, so
+# always build its AAR with the source tree's declared toolchain.
+if [[ "$target" == android ]]; then
+  pinned_go_version="$(tr -d '[:space:]' < "$source_dir/go.version")"
+  [[ "$pinned_go_version" =~ ^go[0-9]+\.[0-9]+(\.[0-9]+)?$ ]] || {
+    echo "Invalid Go toolchain pin in $source_dir/go.version: $pinned_go_version" >&2
+    exit 1
+  }
+  export GOTOOLCHAIN="$pinned_go_version"
+fi
+
 go install "github.com/sagernet/gomobile/cmd/gomobile@$gomobile_version"
 go install "github.com/sagernet/gomobile/cmd/gobind@$gomobile_version"
 export PATH="$(go env GOPATH)/bin:$PATH"

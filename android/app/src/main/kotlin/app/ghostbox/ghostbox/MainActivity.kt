@@ -21,6 +21,7 @@ class MainActivity : FlutterActivity() {
         private const val UPDATE_CHANNEL = "app.ghostbox.ghostbox/app_update"
         private const val VPN_PERMISSION_REQUEST = 4137
         private const val NOTIFICATION_PERMISSION_REQUEST = 4138
+        private const val LOG_EXPORT_REQUEST = 4139
     }
 
     private var pendingVpnResult: MethodChannel.Result? = null
@@ -30,6 +31,8 @@ class MainActivity : FlutterActivity() {
     private var pendingCore = "sing-box"
     private var pendingProxyOnly = false
     private var pendingKeepXray = false
+    private var pendingLogExportResult: MethodChannel.Result? = null
+    private var pendingLogExportContent: ByteArray? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -67,7 +70,8 @@ class MainActivity : FlutterActivity() {
                         stopService(Intent(this, XrayVpnService::class.java))
                         result.success(null)
                     }
-                    "vpnState" -> result.success(VpnStateStore.state(this))
+                    "vpnState" -> result.success(currentVpnState())
+                    "vpnConnectedAt" -> result.success(VpnStateStore.connectedAtMs(this))
                     "vpnError" -> result.success(VpnStateStore.error(this))
                     "androidCoreInventory" -> result.success(androidCoreInventory())
                     "androidKillSwitchStatus" -> result.success(androidKillSwitchStatus())
@@ -103,6 +107,33 @@ class MainActivity : FlutterActivity() {
                     "clearVpnLogs" -> {
                         VpnStateStore.update(this) { it.put("logs", org.json.JSONArray()) }
                         result.success(null)
+                    }
+                    "exportLog" -> {
+                        val content = call.argument<ByteArray>("content")
+                        if (content == null) {
+                            result.error("invalid_log", "Missing log content", null)
+                        } else if (pendingLogExportResult != null) {
+                            result.error("busy", "A log export is already open", null)
+                        } else {
+                            pendingLogExportResult = result
+                            pendingLogExportContent = content
+                            val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                                addCategory(Intent.CATEGORY_OPENABLE)
+                                type = "text/plain"
+                                putExtra(
+                                    Intent.EXTRA_TITLE,
+                                    call.argument<String>("fileName")
+                                        ?: "GhostBox-connection-log.txt",
+                                )
+                            }
+                            try {
+                                startActivityForResult(intent, LOG_EXPORT_REQUEST)
+                            } catch (error: Exception) {
+                                pendingLogExportResult = null
+                                pendingLogExportContent = null
+                                result.error("export_failed", error.message, null)
+                            }
+                        }
                     }
                     else -> result.notImplemented()
                 }
@@ -341,6 +372,26 @@ class MainActivity : FlutterActivity() {
     @Deprecated("FlutterActivity permission result bridge")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == LOG_EXPORT_REQUEST) {
+            val exportResult = pendingLogExportResult ?: return
+            val content = pendingLogExportContent
+            pendingLogExportResult = null
+            pendingLogExportContent = null
+            if (resultCode != Activity.RESULT_OK || data?.data == null) {
+                exportResult.success(false)
+                return
+            }
+            try {
+                val uri: Uri = data.data!!
+                val output = contentResolver.openOutputStream(uri, "wt")
+                    ?: error("Android could not open the selected file")
+                output.use { stream -> stream.write(content ?: ByteArray(0)) }
+                exportResult.success(true)
+            } catch (error: Exception) {
+                exportResult.error("export_failed", error.message, null)
+            }
+            return
+        }
         if (requestCode != VPN_PERMISSION_REQUEST) return
         val result = pendingVpnResult
         pendingVpnResult = null
@@ -356,7 +407,10 @@ class MainActivity : FlutterActivity() {
             pendingConfig = null
             pendingProfileName = null
             VpnStateStore.update(this) {
-                it.put("state", "disconnected").put("error", "VPN permission was denied")
+                it.put("state", "disconnected")
+                    .put("error", "VPN permission was denied")
+                it.remove("connectedAtMs")
+                it.remove("startedAtMs")
             }
             result?.error("permission_denied", "VPN permission was denied", null)
         }
@@ -394,7 +448,45 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun saveVpnError(message: String) {
-        VpnStateStore.update(this) { it.put("state", "error").put("error", message) }
+        VpnStateStore.update(this) {
+            it.put("state", "error").put("error", message).remove("connectedAtMs")
+            it.remove("startedAtMs")
+        }
+    }
+
+    /** A native core can die after establish() succeeds, leaving the persisted
+     * state at "connected" while Android has already removed the VPN icon.
+     * Reconcile that stale state with the actual service process and surface
+     * ActivityManager's exit reason instead of reporting a fake connection.
+     */
+    private fun currentVpnState(): String {
+        val state = VpnStateStore.state(this)
+        if (state != "connecting" && state != "connected") return state
+        val processName = "$packageName:${if (VpnStateStore.activeCore(this) == "xray") "xray" else "singboxcore"}"
+        val processes = getSystemService(android.app.ActivityManager::class.java)
+            .runningAppProcesses ?: return state
+        if (processes.any { it.processName == processName }) return state
+
+        val lastTransitionAt = VpnStateStore.read(this).let { value ->
+            maxOf(value.optLong("startedAtMs"), value.optLong("connectedAtMs"))
+        }
+        if (lastTransitionAt <= 0L ||
+            System.currentTimeMillis() - lastTransitionAt < 5_000L
+        ) return state
+
+        val core = VpnStateStore.activeCore(this)
+        val exit = recentVpnServiceExit(core)
+        val message = buildString {
+            append("VPN-процесс ").append(core).append(" завершился во время подключения")
+            if (exit != null) append(" (").append(exit).append(')')
+        }
+        VpnStateStore.update(this) {
+            it.put("state", "error").put("error", message)
+            it.remove("connectedAtMs")
+            it.remove("startedAtMs")
+        }
+        VpnStateStore.appendLog(this, message)
+        return "error"
     }
 
     /**
@@ -430,7 +522,10 @@ class MainActivity : FlutterActivity() {
         val proxyOnly = pendingProxyOnly
         val keepXray = pendingKeepXray
         VpnStateStore.update(this) {
-            it.put("activeCore", core).put("state", "connecting").remove("error")
+            it.put("activeCore", core).put("state", "connecting")
+            it.remove("error")
+            it.remove("connectedAtMs")
+            it.put("startedAtMs", System.currentTimeMillis())
             if (proxyOnly) {
                 it.put("xrayProxyState", "connecting").remove("xrayProxyError")
             }
@@ -450,7 +545,7 @@ class MainActivity : FlutterActivity() {
             val previousExit = recentVpnServiceExit(core)
             val detail = buildString {
                 append(error.message ?: error.toString())
-                if (previousExit != null) append("; предыдущий вылет VPN-процесса: ").append(previousExit)
+                if (previousExit != null) append("; последнее завершение VPN-процесса: ").append(previousExit)
             }
             throw IllegalStateException(detail, error)
         }
@@ -463,10 +558,12 @@ class MainActivity : FlutterActivity() {
     private fun recentVpnServiceExit(core: String): String? {
         if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.R) return null
         return runCatching {
+            val expectedProcess = "$packageName:${if (core == "xray") "xray" else "singboxcore"}"
+            val recentThreshold = System.currentTimeMillis() - 2 * 60 * 1000L
             getSystemService(android.app.ActivityManager::class.java)
                 .getHistoricalProcessExitReasons(packageName, 0, 20)
                 .asSequence()
-                .filter { it.processName.startsWith("$packageName:") }
+                .filter { it.processName == expectedProcess && it.timestamp >= recentThreshold }
                 .sortedByDescending { it.timestamp }
                 .firstOrNull()
                 ?.let { exit ->

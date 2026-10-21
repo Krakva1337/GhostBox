@@ -103,12 +103,14 @@ try {
 
   Invoke-Checked 'flutter' @('pub', 'get')
   $version = (Select-String -Path (Join-Path $ProjectRoot 'pubspec.yaml') -Pattern '^version:\s*(\S+)' | ForEach-Object { $_.Matches[0].Groups[1].Value.Split('+')[0] })
+  $build = (Select-String -Path (Join-Path $ProjectRoot 'pubspec.yaml') -Pattern '^version:\s*(\S+)' | ForEach-Object { $_.Matches[0].Groups[1].Value.Split('+')[1] })
   # Flutter selects the Windows target architecture from the Windows runner.
   # `--target-platform` is not a supported option for `flutter build windows`.
   $updateBranch = if ($env:GHOSTBOX_UPDATE_BRANCH) { $env:GHOSTBOX_UPDATE_BRANCH } else { 'main' }
   Invoke-Checked 'flutter' @(
     'build', 'windows', '--release',
     "--dart-define=GHOSTBOX_VERSION=$version",
+    "--dart-define=GHOSTBOX_BUILD=$build",
     "--dart-define=GHOSTBOX_UPDATE_BRANCH=$updateBranch"
   )
 

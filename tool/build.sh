@@ -47,10 +47,13 @@ build_linux() {
   cd "$project_dir"
   flutter pub get
   local ghostbox_version
+  local ghostbox_build
   local update_branch="${GHOSTBOX_UPDATE_BRANCH:-main}"
   ghostbox_version="$(awk '/^version:/ {split($2,v,"+"); print v[1]}' pubspec.yaml)"
+  ghostbox_build="$(awk '/^version:/ {split($2,v,"+"); print v[2]}' pubspec.yaml)"
   flutter build linux --release \
     --dart-define="GHOSTBOX_VERSION=$ghostbox_version" \
+    --dart-define="GHOSTBOX_BUILD=$ghostbox_build" \
     --dart-define="GHOSTBOX_UPDATE_BRANCH=$update_branch"
 
   local appdir="$project_dir/build/appimage/GhostBox.AppDir"
@@ -178,9 +181,11 @@ case "$target" in
       "$project_dir/macos/Runner/Assets.xcassets/AppIcon.appiconset"
     flutter pub get
     ghostbox_version="$(awk '/^version:/ {split($2,v,"+"); print v[1]}' pubspec.yaml)"
+    ghostbox_build="$(awk '/^version:/ {split($2,v,"+"); print v[2]}' pubspec.yaml)"
     update_branch="${GHOSTBOX_UPDATE_BRANCH:-main}"
     flutter build macos --release \
       --dart-define="GHOSTBOX_VERSION=$ghostbox_version" \
+      --dart-define="GHOSTBOX_BUILD=$ghostbox_build" \
       --dart-define="GHOSTBOX_UPDATE_BRANCH=$update_branch"
     app_dir="$project_dir/build/macos/Build/Products/Release/GhostBox.app"
     if [[ ! -d "$app_dir" ]]; then

@@ -29,6 +29,7 @@ import '../../platform/linux_kill_switch.dart';
 import '../../platform/windows_kill_switch.dart';
 import '../../services/profile_parser.dart';
 import '../../services/device_identity.dart';
+import '../../services/app_version.dart';
 import '../../services/dns_ad_blocklist.dart';
 import '../../services/github_updater.dart';
 import '../../services/log_store.dart';
@@ -38,6 +39,7 @@ import '../../theme/theme_controller.dart';
 import '../../theme/brand_icon.dart';
 import '../../theme/glass_switch.dart';
 import '../../widgets/ghost_notice.dart';
+import '../../widgets/ghost_menu.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -75,7 +77,7 @@ class _HomePageState extends State<HomePage>
   bool english = false;
   double contentTopSpacing = 8;
   String? _draggingProfileId;
-  int _profileOrderRevision = 0;
+  String? _lastReorderedProfileId;
   bool powerHovered = false;
   Map<String, Object?> androidKillSwitchStatus = const <String, Object?>{};
   bool readingAndroidKillSwitchStatus = false;
@@ -138,7 +140,6 @@ class _HomePageState extends State<HomePage>
   bool hideProfiles = false;
   final Set<String> collapsedSubscriptions = <String>{};
   final Set<String> collapsedSubscriptionInfo = <String>{};
-  final Map<String, GlobalKey> _subscriptionMenuKeys = <String, GlobalKey>{};
   bool routeListOpen = false;
   String? routeListMode;
   bool autoRefreshSubscriptions = true;
@@ -1358,7 +1359,15 @@ class _HomePageState extends State<HomePage>
       }
       final attemptProfile = selected!;
       final attemptStarted = DateTime.now();
-      final attemptCore = coreSettings.core;
+      final requestedCore = coreSettings.core;
+      final androidXhttpUsesXray = Platform.isAndroid &&
+          requestedCore == 'sing-box' &&
+          (attemptProfile.network == 'xhttp' ||
+              attemptProfile.network == 'splithttp');
+      // Xray's Android implementation is already verified for XHTTP/REALITY.
+      // Keep sing-box as the Android TUN owner, but route this transport through
+      // Xray to avoid the native sing-box crash seen while starting XHTTP nodes.
+      final attemptCore = androidXhttpUsesXray ? 'xray' : requestedCore;
       final attemptMode =
           Platform.isAndroid ? 'tun' : coreSettings.connectionMode;
       glow
@@ -1381,6 +1390,10 @@ class _HomePageState extends State<HomePage>
         }
         _recordAppLog(
             'Подключение: ${attemptProfile.name} · $attemptCore · $attemptMode');
+        if (androidXhttpUsesXray) {
+          _recordAppLog(
+              'Android: XHTTP обслуживается Xray; sing-box направляет системный TUN-трафик');
+        }
         _recordAppLog(
             'Профиль: ${attemptProfile.protocol}/${attemptProfile.network}${attemptProfile.security == null ? '' : ' · ${attemptProfile.security}'}');
         if (Platform.isAndroid && attemptCore == 'xray') {
@@ -1779,11 +1792,13 @@ class _HomePageState extends State<HomePage>
                                   }());
                                 }
                               },
-                              icon: Icon(
-                                  live
-                                      ? Icons.sensors_rounded
-                                      : Icons.pause_circle_outline_rounded,
-                                  color: live ? _mint : _muted)),
+                              icon: _animatedIconSwap(
+                                live
+                                    ? Icons.sensors_rounded
+                                    : Icons.pause_circle_outline_rounded,
+                                state: live,
+                                color: live ? _mint : _muted,
+                              )),
                           IconButton(
                               tooltip: _localized('Скопировать журнал'),
                               onPressed: () => Clipboard.setData(ClipboardData(
@@ -1871,8 +1886,23 @@ class _HomePageState extends State<HomePage>
       await _logWriteQueue;
       await process?.flushLogs();
       await tunnelBridgeBackend?.flushLogs();
+      await _collectAndroidCoreLogs();
       await GhostBoxLogStore.instance.flush();
       final source = await _resolveLogFile();
+      if (!await source.exists()) {
+        throw const FileSystemException('Журнал пока пуст');
+      }
+      if (Platform.isAndroid) {
+        final saved = await const MethodChannel('app.ghostbox.ghostbox/vpn')
+            .invokeMethod<bool>('exportLog', {
+          'fileName': 'GhostBox-connection-log.txt',
+          'content': await source.readAsBytes(),
+        });
+        if (saved == true && mounted) {
+          _message(_text('Полный журнал сохранён', 'Full log exported'));
+        }
+        return;
+      }
       final location = await getSaveLocation(
         suggestedName: 'ghostbox-full-log.txt',
         acceptedTypeGroups: const [
@@ -1880,9 +1910,6 @@ class _HomePageState extends State<HomePage>
         ],
       );
       if (location == null) return;
-      if (!await source.exists()) {
-        throw const FileSystemException('Журнал пока пуст');
-      }
       await File(location.path)
           .writeAsBytes(await source.readAsBytes(), flush: true);
       if (mounted)
@@ -2912,7 +2939,7 @@ foreach ($route in $routes) {
     final watch = Stopwatch()..start();
     try {
       final request = await client.getUrl(uri).timeout(timeout);
-      request.headers.set(HttpHeaders.userAgentHeader, 'GhostBox-Speed-Test');
+      request.headers.set(HttpHeaders.userAgentHeader, AppVersion.userAgent);
       request.headers.set(HttpHeaders.connectionHeader, 'close');
       final response = await request.close().timeout(timeout);
       if (response.statusCode < 200 || response.statusCode >= 300) {
@@ -3018,7 +3045,7 @@ foreach ($route in $routes) {
       ..findProxy = (_) => 'PROXY 127.0.0.1:$localPort';
     try {
       final request = await client.getUrl(uri).timeout(timeout);
-      request.headers.set(HttpHeaders.userAgentHeader, 'GhostBox-Alpha-v1.0');
+      request.headers.set(HttpHeaders.userAgentHeader, AppVersion.userAgent);
       request.headers.set(HttpHeaders.connectionHeader, 'close');
       // The ping only needs the status line and headers. Draining the body can
       // turn a valid 404/204 into a false timeout if a test endpoint streams or
@@ -3290,37 +3317,26 @@ foreach ($route in $routes) {
   }
 
   Future<void> _showAddMenu() async {
-    final action = await showModalBottomSheet<String>(
-        context: context,
-        backgroundColor: _surface,
-        showDragHandle: true,
-        builder: (context) => SafeArea(
-              child: Column(mainAxisSize: MainAxisSize.min, children: [
-                ListTile(
-                  leading: Icon(Icons.link_rounded, color: _accent),
-                  title: Text(_localized('Добавить по ссылке')),
-                  subtitle: const Text('URL / VLESS / VMess / Trojan'),
-                  onTap: () => Navigator.pop(context, 'link'),
-                ),
-                ListTile(
-                  leading: Icon(Icons.data_object_rounded, color: _accent),
-                  title: Text(_localized('Добавить JSON конфиг')),
-                  subtitle: Text(_localized('Выбрать файл или вставить текст')),
-                  onTap: () => Navigator.pop(context, 'json'),
-                ),
-                ListTile(
-                  leading: Icon(Icons.qr_code_scanner_rounded, color: _accent),
-                  title: Text(_localized('Сканировать QR-код')),
-                  onTap: () => Navigator.pop(context, 'qr'),
-                ),
-                ListTile(
-                  leading: Icon(Icons.content_paste_rounded, color: _accent),
-                  title: Text(_localized('Добавить из буфера')),
-                  onTap: () => Navigator.pop(context, 'clipboard'),
-                ),
-                const SizedBox(height: 10),
-              ]),
-            ));
+    final action = await _showListMenu([
+      GhostMenuEntry(
+          value: 'link',
+          label: _localized('Добавить по ссылке'),
+          icon: Icons.link_rounded,
+          subtitle: 'URL / VLESS / VMess / Trojan'),
+      GhostMenuEntry(
+          value: 'json',
+          label: _localized('Добавить JSON конфиг'),
+          icon: Icons.data_object_rounded,
+          subtitle: _localized('Выбрать файл или вставить текст')),
+      GhostMenuEntry(
+          value: 'qr',
+          label: _localized('Сканировать QR-код'),
+          icon: Icons.qr_code_scanner_rounded),
+      GhostMenuEntry(
+          value: 'clipboard',
+          label: _localized('Добавить из буфера'),
+          icon: Icons.content_paste_rounded),
+    ]);
     switch (action) {
       case 'link':
         await _addProfile();
@@ -3717,193 +3733,23 @@ foreach ($route in $routes) {
     }
   }
 
-  Future<void> _openSubscriptionMenu(
-      BuildContext anchorContext, String url) async {
-    final anchor = anchorContext.findRenderObject() as RenderBox?;
-    final overlay = Overlay.of(context);
-    final overlayBox = overlay.context.findRenderObject() as RenderBox?;
-    if (anchor == null || overlayBox == null || !anchor.hasSize) return;
-
-    final anchorTopLeft =
-        anchor.localToGlobal(Offset.zero, ancestor: overlayBox);
-    final anchorRect = anchorTopLeft & anchor.size;
-    final screen = overlayBox.size;
-    const menuWidth = 270.0;
-    const itemHeight = 44.0;
-    final menuHeight = math.min(8 * itemHeight + 18, screen.height - 24);
-    final left = (anchorRect.right - menuWidth)
-        .clamp(12.0, screen.width - menuWidth - 12);
-    final below = anchorRect.bottom + 6;
-    final top = (below + menuHeight <= screen.height - 12
-            ? below
-            : anchorRect.top - menuHeight - 6)
-        .clamp(12.0, screen.height - menuHeight - 12);
-    final controller = AnimationController(
-        vsync: this, duration: const Duration(milliseconds: 190));
-    var hovered = -1;
-    var closing = false;
-    late final OverlayEntry entry;
-
-    Future<void> close([String? action]) async {
-      if (closing) return;
-      closing = true;
-      await controller.reverse();
-      if (entry.mounted) entry.remove();
-      controller.dispose();
-      if (action != null && mounted) await _subscriptionAction(action, url);
-    }
-
-    const actions = <(String, IconData, String)>[
-      ('ping_all', Icons.speed_rounded, 'Пинговать все'),
-      ('refresh', Icons.sync_rounded, 'Обновить'),
-      ('copy', Icons.copy_rounded, 'Скопировать URL'),
-      ('show_qr', Icons.qr_code_2_rounded, 'Показать QR-код'),
-      ('copy_ghostbox', Icons.link_rounded, 'Короткая GhostBox-ссылка'),
-      ('edit_url', Icons.edit_location_alt_rounded, 'Изменить путь подписки'),
-      ('rename', Icons.edit_rounded, 'Переименовать'),
-      ('remove', Icons.delete_outline_rounded, 'Убрать подписку'),
-    ];
-
-    entry = OverlayEntry(
-        builder: (overlayContext) => Positioned.fill(
-              child: Stack(children: [
-                GestureDetector(
-                  behavior: HitTestBehavior.opaque,
-                  onTap: () => close(),
-                  child: const SizedBox.expand(),
-                ),
-                Positioned(
-                  left: left,
-                  top: top,
-                  width: math.min(menuWidth, screen.width - 24),
-                  child: AnimatedBuilder(
-                    animation: controller,
-                    builder: (context, child) {
-                      final curved =
-                          Curves.easeOutCubic.transform(controller.value);
-                      return Opacity(
-                        opacity: curved,
-                        child: Transform.scale(
-                          scale: .94 + (.06 * curved),
-                          alignment: Alignment.topRight,
-                          child: child,
-                        ),
-                      );
-                    },
-                    child: StatefulBuilder(builder: (context, setMenuState) {
-                      final panelColor = Color.alphaBlend(
-                          _surface.withValues(alpha: .96),
-                          Theme.of(context).scaffoldBackgroundColor);
-                      return ClipRRect(
-                        borderRadius: BorderRadius.circular(18),
-                        child: _backdropBlur(
-                          sigma: 17,
-                          child: Container(
-                            constraints: BoxConstraints(maxHeight: menuHeight),
-                            decoration: BoxDecoration(
-                              color: panelColor,
-                              border: Border.all(
-                                  color: Colors.white.withValues(alpha: .12)),
-                              borderRadius: BorderRadius.circular(18),
-                              boxShadow: [
-                                BoxShadow(
-                                    color: Colors.black.withValues(alpha: .34),
-                                    blurRadius: 28,
-                                    offset: const Offset(0, 12)),
-                              ],
-                            ),
-                            padding: const EdgeInsets.all(7),
-                            child: SingleChildScrollView(
-                              child: Column(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  for (var i = 0; i < actions.length; i++)
-                                    MouseRegion(
-                                      onEnter: (_) =>
-                                          setMenuState(() => hovered = i),
-                                      onExit: (_) => setMenuState(() {
-                                        if (hovered == i) hovered = -1;
-                                      }),
-                                      child: AnimatedContainer(
-                                        duration:
-                                            const Duration(milliseconds: 130),
-                                        curve: Curves.easeOutCubic,
-                                        decoration: BoxDecoration(
-                                          color: hovered == i
-                                              ? _accent.withValues(alpha: .16)
-                                              : Colors.transparent,
-                                          borderRadius:
-                                              BorderRadius.circular(12),
-                                        ),
-                                        child: Material(
-                                          color: Colors.transparent,
-                                          child: InkWell(
-                                            borderRadius:
-                                                BorderRadius.circular(12),
-                                            splashColor:
-                                                _accent.withValues(alpha: .18),
-                                            highlightColor:
-                                                _accent.withValues(alpha: .10),
-                                            onTap: () => close(actions[i].$1),
-                                            child: SizedBox(
-                                              height: itemHeight,
-                                              child: Padding(
-                                                padding:
-                                                    const EdgeInsets.symmetric(
-                                                        horizontal: 11),
-                                                child: Row(children: [
-                                                  Icon(actions[i].$2,
-                                                      size: 18, color: _accent),
-                                                  const SizedBox(width: 11),
-                                                  Expanded(
-                                                    child: Text(
-                                                      _localized(actions[i].$3),
-                                                      maxLines: 1,
-                                                      overflow:
-                                                          TextOverflow.ellipsis,
-                                                      style: TextStyle(
-                                                          color: _foreground,
-                                                          fontSize: 12,
-                                                          fontWeight:
-                                                              FontWeight.w500),
-                                                    ),
-                                                  ),
-                                                ]),
-                                              ),
-                                            ),
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ),
-                      );
-                    }),
-                  ),
-                ),
-              ]),
-            ));
-    overlay.insert(entry);
-    unawaited(controller.forward());
-  }
-
-  Widget _subscriptionMenuButton(String url) {
-    final key = _subscriptionMenuKeys.putIfAbsent(url, GlobalKey.new);
-    return IconButton(
-      key: key,
-      tooltip: _localized('Действия с подпиской'),
-      onPressed: () {
-        final anchorContext = key.currentContext;
-        if (anchorContext != null) {
-          unawaited(_openSubscriptionMenu(anchorContext, url));
-        }
-      },
-      icon: Icon(Icons.more_horiz_rounded, size: 20, color: _muted),
-    );
-  }
+  Widget _subscriptionMenuButton(String url) => GhostMenuButton<String>(
+        tooltip: _localized('Действия с подпиской'),
+        icon: Icon(Icons.more_horiz_rounded, size: 20, color: _muted),
+        onSelected: (action) => unawaited(_subscriptionAction(action, url)),
+        entries: [
+          _menuItem('ping_all', Icons.speed_rounded, 'Пинговать все'),
+          _menuItem('refresh', Icons.sync_rounded, 'Обновить'),
+          _menuItem('copy', Icons.copy_rounded, 'Скопировать URL'),
+          _menuItem('show_qr', Icons.qr_code_2_rounded, 'Показать QR-код'),
+          _menuItem(
+              'copy_ghostbox', Icons.link_rounded, 'Короткая GhostBox-ссылка'),
+          _menuItem('edit_url', Icons.edit_location_alt_rounded,
+              'Изменить путь подписки'),
+          _menuItem('rename', Icons.edit_rounded, 'Переименовать'),
+          _menuItem('remove', Icons.delete_outline_rounded, 'Убрать подписку'),
+        ],
+      );
 
   void _bindCoreRecoveryNotices(CoreProcessBackend core) {
     core.onRecoveryNotice = (message, {bool error = false}) {
@@ -4067,26 +3913,10 @@ foreach ($route in $routes) {
   }
 
   Future<void> _addJsonProfile() async {
-    final action = await showModalBottomSheet<String>(
-      context: context,
-      backgroundColor: _surface,
-      showDragHandle: true,
-      builder: (context) => SafeArea(
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          ListTile(
-            leading: Icon(Icons.file_open_rounded, color: _accent),
-            title: Text(_localized('Выбрать JSON-файл')),
-            onTap: () => Navigator.pop(context, 'file'),
-          ),
-          ListTile(
-            leading: Icon(Icons.edit_note_rounded, color: _accent),
-            title: Text(_localized('Вставить JSON-текст')),
-            onTap: () => Navigator.pop(context, 'text'),
-          ),
-          const SizedBox(height: 8),
-        ]),
-      ),
-    );
+    final action = await _showListMenu([
+      _menuItem('file', Icons.file_open_rounded, 'Выбрать JSON-файл'),
+      _menuItem('text', Icons.edit_note_rounded, 'Вставить JSON-текст'),
+    ]);
     if (action == 'file') {
       try {
         final file = await openFile(acceptedTypeGroups: const [
@@ -4189,7 +4019,14 @@ foreach ($route in $routes) {
   }
 
   @override
-  Widget build(BuildContext context) => AnnotatedRegion<SystemUiOverlayStyle>(
+  Widget build(BuildContext context) => GhostMenuScope(
+        blurEnabled: !optimizedMode,
+        reduceMotion: reduceAnimations,
+        child: _buildMainPage(context),
+      );
+
+  Widget _buildMainPage(BuildContext context) => AnnotatedRegion<
+          SystemUiOverlayStyle>(
       value: SystemUiOverlayStyle(
         statusBarColor: Colors.transparent,
         statusBarIconBrightness: Theme.of(context).brightness == Brightness.dark
@@ -4201,21 +4038,6 @@ foreach ($route in $routes) {
           backgroundColor: Theme.of(context).scaffoldBackgroundColor,
           body: Theme(
               data: Theme.of(context).copyWith(
-                popupMenuTheme: PopupMenuThemeData(
-                  // Keep the route surface translucent so the rounded item
-                  // surfaces below can blur the page behind them. In the
-                  // optimized mode we use a solid fallback instead.
-                  color: _surface.withValues(alpha: optimizedMode ? .96 : .58),
-                  surfaceTintColor: Colors.transparent,
-                  elevation: 18,
-                  shadowColor: Colors.black.withValues(alpha: .32),
-                  menuPadding: const EdgeInsets.all(7),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(20),
-                    side:
-                        BorderSide(color: Colors.white.withValues(alpha: .12)),
-                  ),
-                ),
                 splashColor: _accent.withValues(alpha: .09),
                 highlightColor: Colors.transparent,
                 hoverColor: Colors.transparent,
@@ -4364,29 +4186,14 @@ foreach ($route in $routes) {
                   child: child)));
 
   Future<void> _openActionsMenu(BuildContext anchorContext) async {
-    final anchor = anchorContext.findRenderObject() as RenderBox?;
-    final overlay =
-        Navigator.of(context).overlay?.context.findRenderObject() as RenderBox?;
-    if (anchor == null || overlay == null || !anchor.hasSize) return;
-    final topLeft = anchor.localToGlobal(Offset.zero, ancestor: overlay);
-    final rect = topLeft & anchor.size;
-    final action = await showMenu<String>(
-        context: context,
-        position: RelativeRect.fromRect(rect, Offset.zero & overlay.size),
-        popUpAnimationStyle: AnimationStyle(
-          duration: const Duration(milliseconds: 170),
-          reverseDuration: const Duration(milliseconds: 130),
-          curve: Curves.easeOutCubic,
-          reverseCurve: Curves.easeInCubic,
-        ),
-        items: [
-          _menuItem('ping_all', Icons.speed_rounded, 'Пинговать все'),
-          _menuItem('refresh_all', Icons.sync_rounded, 'Обновить подписки'),
-          _menuItem('logs', Icons.article_outlined, 'Журнал соединения'),
-          _menuItem('history', Icons.history_rounded, 'Последние подключения'),
-          _menuItem('about', Icons.info_outline_rounded,
-              _text('О приложении', 'About GhostBox')),
-        ]);
+    final action = await _showListMenu([
+      _menuItem('ping_all', Icons.speed_rounded, 'Пинговать все'),
+      _menuItem('refresh_all', Icons.sync_rounded, 'Обновить подписки'),
+      _menuItem('logs', Icons.article_outlined, 'Журнал соединения'),
+      _menuItem('history', Icons.history_rounded, 'Последние подключения'),
+      _menuItem('about', Icons.info_outline_rounded,
+          _text('О приложении', 'About GhostBox')),
+    ], anchorContext: anchorContext);
     if (!mounted || action == null) return;
     switch (action) {
       case 'ping_all':
@@ -4783,26 +4590,44 @@ foreach ($route in $routes) {
     );
   }
 
-  Widget _menuFrost(Widget child) => _PopupMenuSurface(
-        accent: _accent,
-        foreground: _foreground,
-        optimizedMode: optimizedMode,
-        child: child,
+  Future<String?> _showListMenu(List<GhostMenuEntry<String>> entries,
+          {BuildContext? anchorContext}) =>
+      showGhostMenu<String>(
+        context: context,
+        entries: entries,
+        anchorContext: anchorContext,
+        blurEnabled: !optimizedMode,
+        reduceMotion: reduceAnimations,
       );
 
-  PopupMenuItem<String> _menuItem(String value, IconData icon, String label) =>
-      PopupMenuItem<String>(
-          value: value,
-          height: 44,
-          child: _menuFrost(Row(children: [
-            Icon(icon, size: 18, color: _accent),
-            const SizedBox(width: 12),
-            Flexible(
-                child:
-                    Text(label, maxLines: 1, overflow: TextOverflow.ellipsis))
-          ])));
+  Widget _animatedIconSwap(
+    IconData icon, {
+    required Object state,
+    Color? color,
+    double size = 24,
+  }) =>
+      AnimatedSwitcher(
+        duration: const Duration(milliseconds: 220),
+        reverseDuration: const Duration(milliseconds: 160),
+        switchInCurve: Curves.easeOutBack,
+        switchOutCurve: Curves.easeInCubic,
+        transitionBuilder: (child, animation) => FadeTransition(
+          opacity: animation,
+          child: ScaleTransition(
+            scale: Tween<double>(begin: .68, end: 1).animate(animation),
+            child: RotationTransition(
+              turns: Tween<double>(begin: -.06, end: 0).animate(animation),
+              child: child,
+            ),
+          ),
+        ),
+        child: Icon(icon, key: ValueKey(state), color: color, size: size),
+      );
 
-  PopupMenuItem<String> _profileMenuItem(
+  GhostMenuEntry<String> _menuItem(String value, IconData icon, String label) =>
+      GhostMenuEntry(value: value, icon: icon, label: _localized(label));
+
+  GhostMenuEntry<String> _profileMenuItem(
     String value,
     IconData icon,
     String label, {
@@ -4810,26 +4635,13 @@ foreach ($route in $routes) {
     bool enabled = true,
     Color? iconColor,
   }) =>
-      PopupMenuItem<String>(
-        value: value,
-        enabled: enabled,
-        height: 50,
-        child: _menuFrost(
-          Row(
-            children: [
-              leading ?? Icon(icon, size: 18, color: iconColor ?? _accent),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Text(
-                  label,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-            ],
-          ),
-        ),
-      );
+      GhostMenuEntry(
+          value: value,
+          icon: icon,
+          label: label,
+          leading: leading,
+          enabled: enabled,
+          iconColor: iconColor);
 
   void _openTab(int index) => setState(() {
         routeListOpen = false;
@@ -4858,7 +4670,7 @@ foreach ($route in $routes) {
               duration: const Duration(milliseconds: 140),
               curve: Curves.easeOutCubic,
               child: _headerActionIsland(
-                circular: true,
+                circular: false,
                 child: IconButton(
                     key: key,
                     onPressed: onTap,
@@ -4880,7 +4692,7 @@ foreach ($route in $routes) {
                         child: Icon(icon, key: ValueKey(icon.codePoint), size: 25, color: _foreground)),
                     padding: EdgeInsets.zero,
                     constraints: const BoxConstraints.tightFor(width: 44, height: 44),
-                    style: IconButton.styleFrom(shape: const CircleBorder())),
+                    style: IconButton.styleFrom(shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)))),
               ),
             ),
           );
@@ -4937,10 +4749,11 @@ foreach ($route in $routes) {
                           height: 15,
                           child: CircularProgressIndicator(
                               strokeWidth: 2, color: _accent))
-                      : Icon(
+                      : _animatedIconSwap(
                           pingMs == null
                               ? Icons.speed_rounded
                               : Icons.signal_cellular_alt_rounded,
+                          state: pingMs == null ? 'idle' : 'ready',
                           size: 17),
                   label: AnimatedSwitcher(
                       duration: Duration(milliseconds: 260),
@@ -5000,22 +4813,14 @@ foreach ($route in $routes) {
                   ]))),
         ),
         AnimatedSize(
-            duration: Duration(milliseconds: 420),
-            curve: Curves.easeOutCubic,
-            alignment: Alignment.topCenter,
-            child: AnimatedSwitcher(
-              duration: const Duration(milliseconds: 250),
-              reverseDuration: const Duration(milliseconds: 190),
-              switchInCurve: Curves.easeOutCubic,
-              switchOutCurve: Curves.easeInCubic,
-              layoutBuilder: _currentChildSwitcherLayout,
-              transitionBuilder: _fadeSlideSwap,
-              child: Column(
-                key: ValueKey(_profileOrderRevision),
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: profiles.isEmpty ? [_empty()] : _profileSections(),
-              ),
-            )),
+          duration: const Duration(milliseconds: 420),
+          curve: Curves.easeOutCubic,
+          alignment: Alignment.topCenter,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: profiles.isEmpty ? [_empty()] : _profileSections(),
+          ),
+        ),
         SizedBox(height: 14),
         SizedBox(
             width: double.infinity,
@@ -5713,7 +5518,9 @@ foreach ($route in $routes) {
                         fontWeight: FontWeight.w600))))
       ]);
   String _uptimeLabel() {
-    final d = process?.uptime ?? Duration.zero;
+    final d = backend is AndroidVpnBackend
+        ? (backend as AndroidVpnBackend).uptime
+        : process?.uptime ?? Duration.zero;
     return '${d.inHours.toString().padLeft(2, '0')}:${(d.inMinutes % 60).toString().padLeft(2, '0')}:${(d.inSeconds % 60).toString().padLeft(2, '0')}';
   }
 
@@ -5914,19 +5721,16 @@ foreach ($route in $routes) {
   Widget _tinyStat(String label, String value,
           {required List<(String, String)> choices,
           required ValueChanged<String> onSelected}) =>
-      PopupMenuButton<String>(
-          popUpAnimationStyle: const AnimationStyle(
-              duration: Duration(milliseconds: 230),
-              reverseDuration: Duration(milliseconds: 160),
-              curve: Curves.easeOutCubic,
-              reverseCurve: Curves.easeInCubic),
+      GhostMenuButton<String>(
           tooltip: _text('Изменить $label', 'Edit $label'),
           onSelected: onSelected,
-          itemBuilder: (_) => [
-                for (final choice in choices)
-                  PopupMenuItem<String>(
-                      value: choice.$1, child: _menuFrost(Text(choice.$2))),
-              ],
+          entries: [
+            for (final choice in choices)
+              GhostMenuEntry(
+                  value: choice.$1,
+                  label: choice.$2,
+                  selected: choice.$2 == value || choice.$1 == value)
+          ],
           child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 8),
               decoration: BoxDecoration(
@@ -5973,7 +5777,12 @@ foreach ($route in $routes) {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               _section('МОИ ПРОФИЛИ'),
-              ...local.map(_profileTile),
+              _AnimatedProfileList(
+                key: const ValueKey('local-profile-order'),
+                profiles: local,
+                preferredMoveId: _lastReorderedProfileId,
+                itemBuilder: (profile, index) => _profileTile(profile),
+              ),
             ],
           )));
     }
@@ -6083,10 +5892,16 @@ foreach ($route in $routes) {
                         visible: !hideProfiles && !collapsed,
                         child: Column(
                           children: [
-                            for (var i = 0; i < entries.length; i++)
-                              _profileTile(entries[i],
-                                  grouped: true,
-                                  divider: i != entries.length - 1),
+                            _AnimatedProfileList(
+                              key: ValueKey('subscription-profile-order:$url'),
+                              profiles: entries,
+                              preferredMoveId: _lastReorderedProfileId,
+                              itemBuilder: (profile, index) => _profileTile(
+                                profile,
+                                grouped: true,
+                                divider: index != entries.length - 1,
+                              ),
+                            ),
                           ],
                         )),
                   ])))));
@@ -6565,22 +6380,33 @@ foreach ($route in $routes) {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      DropdownButton<String>(
-                        value: selectedConfig,
-                        isExpanded: true,
-                        items: configs.keys
-                            .map((key) => DropdownMenuItem(
+                      GhostMenuButton<String>(
+                        blurEnabled: !optimizedMode,
+                        reduceMotion: reduceAnimations,
+                        tooltip: _localized('Выбрать'),
+                        entries: [
+                          for (final key in configs.keys)
+                            GhostMenuEntry(
                                 value: key,
-                                child:
-                                    Text(key, overflow: TextOverflow.ellipsis)))
-                            .toList(),
-                        onChanged: (value) {
-                          if (value == null) return;
-                          setDialogState(() {
-                            selectedConfig = value;
-                            json = configText();
-                          });
-                        },
+                                label: key,
+                                selected: key == selectedConfig)
+                        ],
+                        onSelected: (value) => setDialogState(() {
+                          selectedConfig = value;
+                          json = configText();
+                        }),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 12, vertical: 12),
+                          child: Row(children: [
+                            Expanded(
+                                child: Text(selectedConfig,
+                                    overflow: TextOverflow.ellipsis)),
+                            const SizedBox(width: 10),
+                            Icon(Icons.expand_more_rounded,
+                                color: _accent, size: 20),
+                          ]),
+                        ),
                       ),
                       if (selectedConfig == 'Профиль')
                         Text(
@@ -6767,16 +6593,7 @@ foreach ($route in $routes) {
                               fontFeatures: const [
                                 ui.FontFeature.tabularFigures()
                               ]))),
-                PopupMenuButton<String>(
-                    constraints: BoxConstraints(
-                      maxWidth: 310,
-                      maxHeight: MediaQuery.sizeOf(context).height * .68,
-                    ),
-                    popUpAnimationStyle: const AnimationStyle(
-                        duration: Duration(milliseconds: 230),
-                        reverseDuration: Duration(milliseconds: 160),
-                        curve: Curves.easeOutCubic,
-                        reverseCurve: Curves.easeInCubic),
+                GhostMenuButton<String>(
                     tooltip: _localized('Действия с сервером'),
                     icon: Icon(Icons.more_horiz_rounded, color: _muted),
                     onSelected: (value) async {
@@ -6824,55 +6641,55 @@ foreach ($route in $routes) {
                         await _persist();
                       }
                     },
-                    itemBuilder: (_) => [
-                          _profileMenuItem(
-                            'ping',
-                            Icons.speed_rounded,
-                            _localized('Проверить задержку'),
-                          ),
-                          _profileMenuItem(
-                            'speed',
-                            Icons.network_check_rounded,
-                            _speedTestMenuLabel(profile.id),
-                            enabled: !_speedTestProfiles.contains(profile.id),
-                            leading: _speedTestProfiles.contains(profile.id)
-                                ? SizedBox(
-                                    width: 18,
-                                    height: 18,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                      color: _accent,
-                                    ),
-                                  )
-                                : null,
-                          ),
-                          _profileMenuItem(
-                            'json',
-                            Icons.data_object_rounded,
-                            _localized('Посмотреть JSON'),
-                          ),
-                          _profileMenuItem(
-                            'share',
-                            Icons.link_rounded,
-                            _localized('Скопировать GhostBox-ссылку'),
-                          ),
-                          _profileMenuItem(
-                            'copy_host',
-                            Icons.dns_outlined,
-                            _localized('Скопировать IP/домен'),
-                          ),
-                          _profileMenuItem(
-                            'copy_endpoint',
-                            Icons.content_copy_rounded,
-                            _localized('Скопировать адрес и порт'),
-                          ),
-                          _profileMenuItem(
-                            'delete',
-                            Icons.delete_outline_rounded,
-                            _localized('Удалить сервер'),
-                            iconColor: _muted,
-                          ),
-                        ]),
+                    entries: [
+                      _profileMenuItem(
+                        'ping',
+                        Icons.speed_rounded,
+                        _localized('Проверить задержку'),
+                      ),
+                      _profileMenuItem(
+                        'speed',
+                        Icons.network_check_rounded,
+                        _speedTestMenuLabel(profile.id),
+                        enabled: !_speedTestProfiles.contains(profile.id),
+                        leading: _speedTestProfiles.contains(profile.id)
+                            ? SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: _accent,
+                                ),
+                              )
+                            : null,
+                      ),
+                      _profileMenuItem(
+                        'json',
+                        Icons.data_object_rounded,
+                        _localized('Посмотреть JSON'),
+                      ),
+                      _profileMenuItem(
+                        'share',
+                        Icons.link_rounded,
+                        _localized('Скопировать GhostBox-ссылку'),
+                      ),
+                      _profileMenuItem(
+                        'copy_host',
+                        Icons.dns_outlined,
+                        _localized('Скопировать IP/домен'),
+                      ),
+                      _profileMenuItem(
+                        'copy_endpoint',
+                        Icons.content_copy_rounded,
+                        _localized('Скопировать адрес и порт'),
+                      ),
+                      _profileMenuItem(
+                        'delete',
+                        Icons.delete_outline_rounded,
+                        _localized('Удалить сервер'),
+                        iconColor: _muted,
+                      ),
+                    ]),
               ]),
             )));
     final card = grouped
@@ -6930,10 +6747,10 @@ foreach ($route in $routes) {
     final to = profiles.indexWhere((profile) => profile.id == targetId);
     if (from < 0 || to < 0) return;
     setState(() {
+      _lastReorderedProfileId = sourceId;
       final moved = profiles.removeAt(from);
       final insertAt = from < to ? to - 1 : to;
       profiles.insert(insertAt.clamp(0, profiles.length), moved);
-      _profileOrderRevision++;
     });
     unawaited(_persist());
   }
@@ -7769,6 +7586,8 @@ foreach ($route in $routes) {
                   fontWeight: FontWeight.w700,
                   letterSpacing: -.7),
               maxLines: 1),
+          const SizedBox(height: 12),
+          _settingsAppInfoCard(),
           const SizedBox(height: 5),
           _settingLabel(
               _text('Выбери раздел — связанные параметры собраны вместе',
@@ -7801,6 +7620,48 @@ foreach ($route in $routes) {
               'group_ghostbox'),
           const SizedBox(height: 12),
         ],
+      );
+
+  Widget _settingsAppInfoCard() => Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: _openReleaseDetails,
+          borderRadius: BorderRadius.circular(20),
+          child: Ink(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 13),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [_accent.withValues(alpha: .18), _surface],
+              ),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: _accent.withValues(alpha: .2)),
+            ),
+            child: Row(children: [
+              _brandMark(42),
+              const SizedBox(width: 13),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text('GhostBox',
+                        style: TextStyle(
+                            fontSize: 17, fontWeight: FontWeight.w700)),
+                    const SizedBox(height: 3),
+                    Text(
+                      'v${AppVersion.version} · ${_text('сборка', 'build')} ${AppVersion.build}',
+                      style: TextStyle(color: _muted, fontSize: 12),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ),
+              ),
+              Icon(Icons.chevron_right_rounded, color: _muted),
+            ]),
+          ),
+        ),
       );
 
   Widget _settingsCategoryTile(
@@ -8731,8 +8592,8 @@ foreach ($route in $routes) {
         ),
         const SizedBox(height: 14),
         Wrap(
-          alignment: WrapAlignment.center,
-          runAlignment: WrapAlignment.center,
+          alignment: WrapAlignment.start,
+          runAlignment: WrapAlignment.start,
           spacing: 10,
           runSpacing: 10,
           children: [
@@ -8755,9 +8616,14 @@ foreach ($route in $routes) {
                     : release.version == GitHubUpdater.currentVersion
                         ? _openReleasePage
                         : _installAppUpdate,
-                icon: Icon(release.version == GitHubUpdater.currentVersion
-                    ? Icons.open_in_new_rounded
-                    : Icons.download_rounded),
+                icon: _animatedIconSwap(
+                  release.version == GitHubUpdater.currentVersion
+                      ? Icons.open_in_new_rounded
+                      : Icons.download_rounded,
+                  state: release.version == GitHubUpdater.currentVersion
+                      ? 'open-release'
+                      : 'install-release',
+                ),
                 label: Text(release.version == GitHubUpdater.currentVersion
                     ? _text('Открыть релиз', 'View release')
                     : _text('Установить обновление', 'Install update')),
@@ -9134,7 +9000,7 @@ foreach ($route in $routes) {
   Future<List<(String, String)>> _loadAboutDetails() async {
     final appVersion =
         GitHubUpdater.displayVersion(GitHubUpdater.currentVersion);
-    const buildNumber = '1';
+    const buildNumber = AppVersion.build;
     final buildMode = kReleaseMode
         ? 'Release'
         : kProfileMode
@@ -10274,19 +10140,18 @@ foreach ($route in $routes) {
       };
   Widget _menu(String value, Map<String, String> choices,
           ValueChanged<String> onChanged) =>
-      PopupMenuButton<String>(
-          popUpAnimationStyle: const AnimationStyle(
-              duration: Duration(milliseconds: 230),
-              reverseDuration: Duration(milliseconds: 160),
-              curve: Curves.easeOutCubic,
-              reverseCurve: Curves.easeInCubic),
-          tooltip: _localized('Выбрать'),
-          onSelected: onChanged,
-          icon: Icon(Icons.unfold_more_rounded, size: 20, color: _accent),
-          itemBuilder: (_) => choices.entries
-              .map((e) => PopupMenuItem(
-                  value: e.key, child: _menuFrost(Text(_localized(e.value)))))
-              .toList());
+      GhostMenuButton<String>(
+        tooltip: _localized('Выбрать'),
+        onSelected: onChanged,
+        icon: Icon(Icons.unfold_more_rounded, size: 20, color: _accent),
+        entries: [
+          for (final entry in choices.entries)
+            GhostMenuEntry(
+                value: entry.key,
+                label: _localized(entry.value),
+                selected: entry.key == value)
+        ],
+      );
 
   Future<void> _editPort() async {
     final controller = TextEditingController(text: '${coreSettings.localPort}');
@@ -10944,80 +10809,199 @@ class _SettingsCategoryCardState extends State<_SettingsCategoryCard> {
       );
 }
 
-class _PopupMenuSurface extends StatefulWidget {
-  const _PopupMenuSurface({
-    required this.accent,
-    required this.foreground,
-    required this.optimizedMode,
-    required this.child,
+class _AnimatedProfileList extends StatefulWidget {
+  const _AnimatedProfileList({
+    super.key,
+    required this.profiles,
+    this.preferredMoveId,
+    required this.itemBuilder,
   });
 
-  final Color accent;
-  final Color foreground;
-  final bool optimizedMode;
-  final Widget child;
+  final List<ServerProfile> profiles;
+  final String? preferredMoveId;
+  final Widget Function(ServerProfile profile, int index) itemBuilder;
 
   @override
-  State<_PopupMenuSurface> createState() => _PopupMenuSurfaceState();
+  State<_AnimatedProfileList> createState() => _AnimatedProfileListState();
 }
 
-class _PopupMenuSurfaceState extends State<_PopupMenuSurface> {
-  bool hovered = false;
-  bool pressed = false;
+class _AnimatedProfileListState extends State<_AnimatedProfileList> {
+  final GlobalKey<AnimatedListState> _listKey = GlobalKey<AnimatedListState>();
+  late List<ServerProfile> _items;
 
   @override
-  Widget build(BuildContext context) => MouseRegion(
-        onEnter: (_) => setState(() => hovered = true),
-        onExit: (_) => setState(() {
-          hovered = false;
-          pressed = false;
-        }),
-        child: Listener(
-          onPointerDown: (_) => setState(() => pressed = true),
-          onPointerUp: (_) => setState(() => pressed = false),
-          onPointerCancel: (_) => setState(() => pressed = false),
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(13),
-            child: widget.optimizedMode
-                ? surface
-                : BackdropFilter(
-                    filter: ui.ImageFilter.blur(sigmaX: 13, sigmaY: 13),
-                    child: surface),
-          ),
-        ),
-      );
+  void initState() {
+    super.initState();
+    _items = List<ServerProfile>.of(widget.profiles);
+  }
 
-  Widget get surface => AnimatedContainer(
-        duration: const Duration(milliseconds: 150),
-        curve: Curves.easeOutCubic,
-        width: double.infinity,
-        margin: const EdgeInsets.symmetric(vertical: 1),
-        padding: const EdgeInsets.symmetric(
-          horizontal: 10,
-          vertical: 7,
-        ),
-        decoration: BoxDecoration(
-          color: widget.accent.withValues(
-            alpha: pressed
-                ? .2
-                : hovered
-                    ? .135
-                    : .075,
-          ),
-          borderRadius: BorderRadius.circular(13),
-          border: Border.all(
-            color: Colors.white.withValues(
-              alpha: hovered || pressed ? .12 : .055,
+  @override
+  void didUpdateWidget(covariant _AnimatedProfileList oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final oldIds = _items.map((profile) => profile.id).toList();
+    final nextIds = widget.profiles.map((profile) => profile.id).toList();
+    if (listEquals(oldIds, nextIds)) {
+      _items = List<ServerProfile>.of(widget.profiles);
+      return;
+    }
+
+    // AnimatedList's index mutations must happen after its current build.
+    // This lets the dropped card travel to its destination while keeping the
+    // row's own tap and menu widgets intact.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        _syncItems(
+          List<ServerProfile>.of(widget.profiles),
+          preferredMoveId: widget.preferredMoveId,
+        );
+      }
+    });
+  }
+
+  void _syncItems(
+    List<ServerProfile> next, {
+    String? preferredMoveId,
+  }) {
+    final list = _listKey.currentState;
+    if (list == null) {
+      setState(() => _items = next);
+      return;
+    }
+
+    final oldIds = _items.map((profile) => profile.id).toList();
+    final nextIds = next.map((profile) => profile.id).toList();
+    if (oldIds.length == nextIds.length &&
+        oldIds.toSet().length == oldIds.length &&
+        oldIds.toSet().containsAll(nextIds)) {
+      final from =
+          preferredMoveId == null ? -1 : oldIds.indexOf(preferredMoveId);
+      final to =
+          preferredMoveId == null ? -1 : nextIds.indexOf(preferredMoveId);
+      if (from >= 0 && to >= 0 && from != to) {
+        final reordered = List<String>.of(oldIds);
+        final movedId = reordered.removeAt(from);
+        reordered.insert(to, movedId);
+        if (listEquals(reordered, nextIds)) {
+          final moving = _items.removeAt(from);
+          list.removeItem(
+            from,
+            (context, animation) => _animatedEntry(
+              moving,
+              from,
+              animation,
+              removing: true,
             ),
+            duration: const Duration(milliseconds: 300),
+          );
+          _items.insert(to, next[to]);
+          list.insertItem(to, duration: const Duration(milliseconds: 360));
+          for (var index = 0; index < _items.length; index++) {
+            _items[index] = next[index];
+          }
+          return;
+        }
+      }
+    }
+
+    final targetIds = next.map((profile) => profile.id).toSet();
+    for (var index = _items.length - 1; index >= 0; index--) {
+      if (targetIds.contains(_items[index].id)) continue;
+      final removed = _items[index];
+      list.removeItem(
+        index,
+        (context, animation) =>
+            _animatedEntry(removed, index, animation, removing: true),
+        duration: const Duration(milliseconds: 240),
+      );
+      _items.removeAt(index);
+    }
+
+    for (var targetIndex = 0; targetIndex < next.length; targetIndex++) {
+      final target = next[targetIndex];
+      if (targetIndex < _items.length && _items[targetIndex].id == target.id) {
+        _items[targetIndex] = target;
+        continue;
+      }
+
+      final existingIndex =
+          _items.indexWhere((profile) => profile.id == target.id);
+      if (existingIndex >= 0) {
+        final moving = _items.removeAt(existingIndex);
+        list.removeItem(
+          existingIndex,
+          (context, animation) =>
+              _animatedEntry(moving, existingIndex, animation, removing: true),
+          duration: const Duration(milliseconds: 250),
+        );
+        final insertionIndex = targetIndex.clamp(0, _items.length);
+        _items.insert(insertionIndex, target);
+        list.insertItem(
+          insertionIndex,
+          duration: const Duration(milliseconds: 340),
+        );
+      } else {
+        final insertionIndex = targetIndex.clamp(0, _items.length);
+        _items.insert(insertionIndex, target);
+        list.insertItem(
+          insertionIndex,
+          duration: const Duration(milliseconds: 260),
+        );
+      }
+    }
+
+    while (_items.length > next.length) {
+      final index = _items.length - 1;
+      final removed = _items.removeLast();
+      list.removeItem(
+        index,
+        (context, animation) =>
+            _animatedEntry(removed, index, animation, removing: true),
+        duration: const Duration(milliseconds: 220),
+      );
+    }
+    for (var index = 0; index < next.length; index++) {
+      _items[index] = next[index];
+    }
+  }
+
+  Widget _animatedEntry(
+    ServerProfile profile,
+    int index,
+    Animation<double> animation, {
+    bool removing = false,
+  }) {
+    final slide = Tween<Offset>(
+      begin: removing ? const Offset(0, -.045) : const Offset(0, .08),
+      end: Offset.zero,
+    ).animate(CurvedAnimation(
+      parent: animation,
+      curve: Curves.easeOutCubic,
+      reverseCurve: Curves.easeInCubic,
+    ));
+    return ClipRect(
+      child: SizeTransition(
+        sizeFactor: animation,
+        axisAlignment: -1,
+        child: FadeTransition(
+          opacity: animation,
+          child: SlideTransition(
+            position: slide,
+            child: widget.itemBuilder(profile, index),
           ),
         ),
-        child: IconTheme(
-          data: IconThemeData(color: widget.accent),
-          child: DefaultTextStyle.merge(
-            style: TextStyle(color: widget.foreground),
-            child: widget.child,
-          ),
-        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) => AnimatedList(
+        key: _listKey,
+        initialItemCount: _items.length,
+        shrinkWrap: true,
+        physics: const NeverScrollableScrollPhysics(),
+        primary: false,
+        itemBuilder: (context, index, animation) =>
+            _animatedEntry(_items[index], index, animation),
       );
 }
 

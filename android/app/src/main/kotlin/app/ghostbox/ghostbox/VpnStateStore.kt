@@ -64,10 +64,50 @@ internal object VpnStateStore {
         read(context).optString("xrayProxyState", "disconnected")
     fun xrayProxyError(context: Context): String? =
         read(context).optString("xrayProxyError", null)
+    fun connectedAtMs(context: Context): Long? = read(context)
+        .takeIf { it.optString("state") == "connected" }
+        ?.optLong("connectedAtMs")
+        ?.takeIf { it > 0L }
+
     fun logs(context: Context): List<String> {
         val values = read(context).optJSONArray("logs") ?: JSONArray()
-        return (0 until values.length()).map { values.optString(it) }
+        val result = (0 until values.length()).map { values.optString(it) }.toMutableList()
+        latestSingBoxCrashReport(context)?.let { (path, content) ->
+            result.add("[sing-box crash report: ${path.name}]")
+            result.addAll(content.lineSequence().toList())
+        }
+        return result
     }
+
+    /**
+     * sing-box-lx redirects Go's crash output to filesDir/CrashReport-*.log,
+     * then archives it under filesDir/crash_reports on its next setup. Surface
+     * either form through the existing connection log so Android crashes can
+     * be diagnosed without adb.
+     */
+    private fun latestSingBoxCrashReport(context: Context): Pair<File, String>? {
+        val workingDir = context.filesDir
+        val liveReport = File(workingDir, "CrashReport-ghostbox-sing-box.log")
+        val liveContent = readReport(liveReport)
+        if (liveContent != null) return liveReport to liveContent
+
+        val reportsDir = File(workingDir, "crash_reports")
+        val archived = reportsDir.listFiles()
+            ?.asSequence()
+            ?.filter(File::isDirectory)
+            ?.map { directory -> File(directory, "go.log") }
+            ?.filter(File::isFile)
+            ?.sortedByDescending(File::lastModified)
+            ?.firstOrNull()
+            ?: return null
+        return readReport(archived)?.let { archived to it }
+    }
+
+    private fun readReport(file: File): String? = runCatching {
+        if (!file.isFile || file.length() <= 0L) return null
+        val content = file.readText()
+        content.takeLast(64 * 1024).takeIf(String::isNotBlank)
+    }.getOrNull()
 
     fun appendLog(context: Context, line: String) = update(context) { value ->
         val old = value.optJSONArray("logs") ?: JSONArray()

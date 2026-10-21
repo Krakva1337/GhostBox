@@ -36,6 +36,13 @@ class AndroidVpnBackend implements VpnBackend {
   String? lastError;
   CoreSettings settings = const CoreSettings();
   int _readLogCount = 0;
+  DateTime? _connectedAt;
+
+  Duration get uptime {
+    final startedAt = _connectedAt;
+    if (state != VpnState.connected || startedAt == null) return Duration.zero;
+    return DateTime.now().difference(startedAt);
+  }
 
   /// Describes the native cores embedded in this Android APK. Android does
   /// not ship vendor/bin CLI files, so checking coreExecutable() is invalid.
@@ -70,6 +77,14 @@ class AndroidVpnBackend implements VpnBackend {
       'error' => VpnState.error,
       _ => VpnState.disconnected,
     };
+    if (state == VpnState.connected) {
+      final timestamp = await _channel.invokeMethod<int>('vpnConnectedAt');
+      _connectedAt = timestamp == null
+          ? (_connectedAt ?? DateTime.now())
+          : DateTime.fromMillisecondsSinceEpoch(timestamp);
+    } else {
+      _connectedAt = null;
+    }
     if (state == VpnState.error) {
       lastError = await _channel.invokeMethod<String>('vpnError');
     }
@@ -155,6 +170,10 @@ class AndroidVpnBackend implements VpnBackend {
         final nativeState = await _channel.invokeMethod<String>('vpnState');
         if (nativeState == 'connected') {
           state = VpnState.connected;
+          final timestamp = await _channel.invokeMethod<int>('vpnConnectedAt');
+          _connectedAt = timestamp == null
+              ? DateTime.now()
+              : DateTime.fromMillisecondsSinceEpoch(timestamp);
           return;
         }
         if (nativeState == 'error') {
@@ -173,10 +192,12 @@ class AndroidVpnBackend implements VpnBackend {
     } on PlatformException catch (error) {
       lastError = error.message ?? error.code;
       state = VpnState.error;
+      _connectedAt = null;
       rethrow;
     } on Object catch (error) {
       lastError = error.toString();
       state = VpnState.error;
+      _connectedAt = null;
       rethrow;
     }
   }
@@ -322,6 +343,10 @@ class AndroidVpnBackend implements VpnBackend {
       final nativeState = await _channel.invokeMethod<String>('vpnState');
       if (nativeState == 'connected') {
         state = VpnState.connected;
+        final timestamp = await _channel.invokeMethod<int>('vpnConnectedAt');
+        _connectedAt = timestamp == null
+            ? DateTime.now()
+            : DateTime.fromMillisecondsSinceEpoch(timestamp);
         return;
       }
       if (nativeState == 'error') {
@@ -343,6 +368,7 @@ class AndroidVpnBackend implements VpnBackend {
   Future<void> disconnect() async {
     await _channel.invokeMethod<void>('stopVpn');
     state = VpnState.disconnected;
+    _connectedAt = null;
     _readLogCount = 0;
   }
 }
