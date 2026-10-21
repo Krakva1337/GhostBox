@@ -1421,7 +1421,11 @@ class _HomePageState extends State<HomePage>
           _recordAppLog(
               'Android TUN: Xray обслуживает профиль, sing-box направляет системный VPN-трафик');
         }
-        final runtimeRouting = await _expandSplitRouteIps(coreSettings);
+        // Domain rules are matched by the tunnel router using protocol
+        // sniffing and its own DNS reverse map. Resolving every rule here
+        // through the system resolver delayed startup and produced stale CDN
+        // addresses, so keep the saved rules as domains.
+        final runtimeRouting = coreSettings;
         if (backend is AndroidVpnBackend) {
           (backend as AndroidVpnBackend).settings = runtimeRouting.copyWith(
             core: attemptCore,
@@ -2308,90 +2312,6 @@ exit 1
       security: profile.security,
       raw: {...profile.raw, '_tunExcludeAddresses': exclusions},
     );
-  }
-
-  Future<CoreSettings> _expandSplitRouteIps(CoreSettings settings) async {
-    if (settings.routing != 'rules' && settings.routing != 'exclude') {
-      return settings;
-    }
-    final entries = settings.routing == 'exclude'
-        ? settings.directDomains
-        : settings.proxyDomains;
-    final hostnames = entries
-        .where((entry) =>
-            !CoreSettings.isIpRoute(entry) && !entry.startsWith('*.'))
-        .toSet()
-        .take(64)
-        .toList();
-    if (hostnames.isEmpty) return settings;
-
-    // Exact domain -> IP expansion is only a fallback for destinations that
-    // arrive as an IP before SNI/Host sniffing can classify them. Keep recent
-    // results across app launches and bound cold DNS lookups so a large rules
-    // list does not hold up VPN startup for several seconds.
-    const cacheKey = 'splitRouteDnsCache';
-    const cacheTtl = Duration(seconds: 60);
-    const lookupDeadline = Duration(milliseconds: 900);
-    final now = DateTime.now().millisecondsSinceEpoch;
-    final savedCache = <String, dynamic>{};
-    try {
-      final rawCache = prefs?.getString(cacheKey);
-      if (rawCache != null) {
-        savedCache.addAll(jsonDecode(rawCache) as Map<String, dynamic>);
-      }
-    } on Object {
-      savedCache.clear();
-    }
-
-    final addresses = <String>{};
-    final toResolve = <String>[];
-    for (final hostname in hostnames) {
-      final item = savedCache[hostname];
-      if (item is Map && (item['expires'] as int? ?? 0) > now) {
-        addresses.addAll((item['ips'] as List? ?? const [])
-            .map((value) => value.toString().toLowerCase()));
-      } else {
-        toResolve.add(hostname);
-      }
-    }
-
-    final refreshed = <String, dynamic>{};
-    await Future.wait(toResolve.map((hostname) async {
-      try {
-        final result =
-            await InternetAddress.lookup(hostname).timeout(lookupDeadline);
-        final ips =
-            result.map((address) => address.address.toLowerCase()).toSet();
-        addresses.addAll(ips);
-        refreshed[hostname] = {
-          'expires': now + cacheTtl.inMilliseconds,
-          'ips': ips.toList(),
-        };
-      } on Object {
-        refreshed[hostname] = {
-          'expires': now + const Duration(seconds: 15).inMilliseconds,
-          'ips': const <String>[],
-        };
-      }
-    }));
-    if (refreshed.isNotEmpty) {
-      final nextCache = <String, dynamic>{
-        for (final entry in savedCache.entries)
-          if (entry.value is Map &&
-              ((entry.value as Map)['expires'] as int? ?? 0) > now)
-            entry.key: entry.value,
-        ...refreshed,
-      };
-      await prefs?.setString(cacheKey, jsonEncode(nextCache));
-    }
-    _recordAppLog(
-        'Split routing: доменов ${hostnames.length}, DNS из кэша ${hostnames.length - toResolve.length}, новых запросов ${toResolve.length}, IP ${addresses.length}');
-    if (addresses.isEmpty) return settings;
-
-    final merged = {...entries, ...addresses}.toList();
-    return settings.routing == 'exclude'
-        ? settings.copyWith(directDomains: merged)
-        : settings.copyWith(proxyDomains: merged);
   }
 
   Future<void> _startXrayTunnelBridge(

@@ -40,6 +40,7 @@ class MainActivity : FlutterActivity() {
     private var pendingDownloadsResult: MethodChannel.Result? = null
     private var pendingDownloadsSource: String? = null
     private var pendingDownloadsName: String? = null
+    @Volatile private var staleVpnCleanupScheduled = false
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -598,17 +599,23 @@ class MainActivity : FlutterActivity() {
         // service survives. If persisted state says disconnected, it is an
         // orphaned core: stop it before the next user connection can start a
         // second Xray runtime and report the stale state to Flutter.
-        if (state != "connecting" && state != "connected") {
+        if (state == "stopping") return state
+        val startedAt = VpnStateStore.read(this).optLong("startedAtMs")
+        val staleConnecting = state == "connecting" && startedAt > 0L &&
+            System.currentTimeMillis() - startedAt >= 60_000L && (coreAlive || xrayAlive)
+        if ((state != "connecting" && state != "connected") || staleConnecting) {
             if (!coreAlive && !xrayAlive) return state
-            val message = "При запуске обнаружен оставшийся VPN-процесс; выполняется очистка"
+            val message = if (staleConnecting) {
+                "VPN-процесс завис на подключении; выполняется очистка"
+            } else {
+                "При запуске обнаружен оставшийся VPN-процесс; выполняется очистка"
+            }
             VpnStateStore.update(this) {
                 it.put("state", "error").put("error", message)
                 if (xrayAlive) it.put("xrayProxyState", "error").put("xrayProxyError", message)
                 it.remove("connectedAtMs")
             }
-            val stopIntent = Intent("app.ghostbox.STOP_VPN")
-            startService(Intent(stopIntent).setClass(this, GhostBoxVpnService::class.java))
-            startService(Intent(stopIntent).setClass(this, XrayVpnService::class.java))
+            cleanupOrphanedVpnProcesses()
             VpnStateStore.appendLog(this, message)
             return "error"
         }
@@ -657,6 +664,44 @@ class MainActivity : FlutterActivity() {
         }
         VpnStateStore.appendLog(this, message)
         return "error"
+    }
+
+    /**
+     * A crashed libXray runtime can leave its isolated :xray process registered
+     * with Android. Signal graceful service shutdown first, then kill only the
+     * app-owned VPN child processes if they are still present. This path is
+     * reached only when the persisted session is not connecting or connected.
+     */
+    private fun cleanupOrphanedVpnProcesses() {
+        if (staleVpnCleanupScheduled) return
+        staleVpnCleanupScheduled = true
+        val stopIntent = Intent("app.ghostbox.STOP_VPN")
+        runCatching {
+            startService(Intent(stopIntent).setClass(this, GhostBoxVpnService::class.java))
+        }
+        runCatching {
+            startService(Intent(stopIntent).setClass(this, XrayVpnService::class.java))
+        }
+        android.os.Handler(mainLooper).postDelayed({
+            if (VpnStateStore.state(this) == "connecting" ||
+                VpnStateStore.state(this) == "connected"
+            ) {
+                staleVpnCleanupScheduled = false
+                return@postDelayed
+            }
+            val activityManager = getSystemService(android.app.ActivityManager::class.java)
+            val staleNames = setOf("$packageName:xray", "$packageName:singboxcore")
+            activityManager.runningAppProcesses
+                ?.filter { it.processName in staleNames && it.pid != android.os.Process.myPid() }
+                ?.forEach { process ->
+                    VpnStateStore.appendLog(
+                        this,
+                        "Останавливаю оставшийся VPN-процесс ${process.processName} (pid ${process.pid})",
+                    )
+                    android.os.Process.killProcess(process.pid)
+                }
+            staleVpnCleanupScheduled = false
+        }, 700L)
     }
 
     /**

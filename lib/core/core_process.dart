@@ -137,7 +137,7 @@ class CoreProcessBackend implements VpnBackend {
           splitEntries.where((value) => !CoreSettings.isIpRoute(value)).length;
       final networkCount = splitEntries.where(CoreSettings.isIpRoute).length;
       _logs.add(
-          'Split routing: ${settings.routing}, $domainCount domain rules, $networkCount IP/CIDR rules. Domain rules use HTTP/TLS/QUIC sniffing; CIDRs match destination addresses directly.');
+          'Split routing: ${settings.routing}, $domainCount domain rules, $networkCount IP/CIDR rules. Domain rules use HTTP/TLS/QUIC sniffing${name == 'sing-box' ? ' and DNS reverse mapping' : ''}; CIDRs match destination addresses directly.');
     }
     await _cleanupConfig();
     _runtimeDirectory = await Directory.systemTemp.createTemp('ghostbox-core-');
@@ -941,9 +941,7 @@ class CoreProcessBackend implements VpnBackend {
             if (settings.connectionMode == 'tun' ||
                 settings.connectionMode == 'mixed')
               {'protocol': 'dns', 'action': 'hijack-dns'},
-            if (settings.sniffingEnabled &&
-                ((settings.routing == 'rules' && routeDomains.isNotEmpty) ||
-                    (settings.routing == 'exclude' && routeDomains.isNotEmpty)))
+            if (settings.sniffingEnabled || routeDomains.isNotEmpty)
               {'action': 'sniff'},
             ...rules,
           ],
@@ -1163,7 +1161,9 @@ class CoreProcessBackend implements VpnBackend {
               if (!Platform.isAndroid) 'autoOutboundsInterface': 'auto',
             },
             'sniffing': {
-              'enabled': settings.sniffingEnabled,
+              // Domain-based split routing depends on the original host name
+              // even when the user disabled optional general sniffing.
+              'enabled': settings.sniffingEnabled || routeDomains.isNotEmpty,
               'destOverride': ['http', 'tls', 'quic'],
               // Use the sniffed SNI/Host for routing only. Replacing the
               // original destination can break TLS on CDN/virtual-host sites.
@@ -1177,7 +1177,7 @@ class CoreProcessBackend implements VpnBackend {
           'protocol': 'socks',
           'settings': {'auth': 'noauth', 'udp': true},
           'sniffing': {
-            'enabled': settings.sniffingEnabled,
+            'enabled': settings.sniffingEnabled || routeDomains.isNotEmpty,
             'destOverride': ['http', 'tls', 'quic'],
             'routeOnly': true,
           }
@@ -1313,6 +1313,9 @@ class CoreProcessBackend implements VpnBackend {
     ];
     return {
       'servers': servers,
+      // Remember DNS answers so connections addressed directly by IP can
+      // still match a domain-based split rule.
+      'reverse_mapping': true,
       'final': settings.dns == 'combined'
           ? tag('cloudflare', defaultDetour)
           : tag('resolver', defaultDetour),
