@@ -13,6 +13,7 @@ import dalvik.system.DexClassLoader
 import org.json.JSONObject
 import java.io.File
 import java.lang.reflect.Proxy
+import java.lang.reflect.InvocationTargetException
 import java.util.zip.ZipFile
 
 /** Xray owns its Go runtime in :xray, separate from sing-box's :singbox process. */
@@ -67,12 +68,15 @@ class XrayVpnService : VpnService() {
     }
 
     private fun startCore(rawConfig: String, profileName: String) {
+        var phase = "checking Android VPN permission"
         try {
             if (!proxyOnlyMode && VpnService.prepare(this) != null) {
                 error("Android VPN permission is missing")
             }
+            phase = "loading the embedded libXray runtime"
             val api = loadXrayApi()
             val controller = requireNotNull(dialerController)
+            phase = "registering Android socket protection callbacks"
             api.getMethod("registerDialerController", loadXrayApi("libXray.DialerController"))
                 .invoke(null, controller)
             api.getMethod("registerListenerController", loadXrayApi("libXray.DialerController"))
@@ -80,6 +84,7 @@ class XrayVpnService : VpnService() {
             api.getMethod("setDNS", loadXrayApi("libXray.DialerController"), String::class.java)
                 .invoke(null, controller, "1.1.1.1:53")
 
+            phase = "preparing the Xray configuration"
             val config = JSONObject(rawConfig)
             if (!proxyOnlyMode) {
                 val builder = Builder()
@@ -97,6 +102,7 @@ class XrayVpnService : VpnService() {
                     ?: JSONObject().also { config.put("env", it) }
                 env.put("xray.tun.fd", tun!!.fd.toString())
             }
+            phase = "starting Xray core"
             val response = invoke("runXray", JSONObject().put("xrayJson", config.toString()))
             if (stopping) return
             if (!response.optBoolean("success")) {
@@ -125,10 +131,11 @@ class XrayVpnService : VpnService() {
                 .notify(notificationId(), createNotification(profileName, true))
             Log.i(TAG, "Xray VPN service started")
         } catch (error: Throwable) {
-            Log.e(TAG, "Xray failed to start", error)
+            val detail = describeFailure(phase, error)
+            Log.e(TAG, detail, error)
             if (proxyOnlyMode) {
                 VpnStateStore.update(this) {
-                    val message = error.message ?: error.toString()
+                    val message = shortFailure(phase, error)
                     it.put("xrayProxyState", "error").put("xrayProxyError", message)
                     if (it.optString("activeCore") == "xray") {
                         it.put("state", "error").put("error", message)
@@ -136,21 +143,51 @@ class XrayVpnService : VpnService() {
                 }
             } else {
                 VpnStateStore.updateForCore(this, "xray") {
-                    it.put("state", "error").put("error", error.message ?: error.toString())
+                    it.put("state", "error").put("error", shortFailure(phase, error))
                 }
             }
-            VpnStateStore.appendLog(this, "Xray startup failed: ${error.message ?: error}")
+            VpnStateStore.appendLog(this, detail)
+            VpnStateStore.appendLog(this, Log.getStackTraceString(error))
             stopXray()
         }
     }
+
+    private fun unwrapped(error: Throwable): Throwable {
+        var current = error
+        val seen = HashSet<Throwable>()
+        while (seen.add(current)) {
+            val next = when (current) {
+                is InvocationTargetException -> current.targetException
+                is ExceptionInInitializerError -> current.exception
+                else -> current.cause
+            } ?: break
+            if (next === current) break
+            current = next
+        }
+        return current
+    }
+
+    private fun shortFailure(phase: String, error: Throwable): String {
+        val cause = unwrapped(error)
+        val message = cause.message?.takeIf(String::isNotBlank)
+        return "Xray failed while $phase (${cause.javaClass.simpleName})" +
+            if (message == null) ". Check the connection log for the full cause." else ": $message"
+    }
+
+    private fun describeFailure(phase: String, error: Throwable): String =
+        "Xray failed while $phase: ${shortFailure(phase, error)}"
 
     private fun invoke(method: String, payload: JSONObject): JSONObject {
         val request = JSONObject()
             .put("apiVersion", 3)
             .put("method", method)
             .put("payload", payload)
-        val result = loadXrayApi().getMethod("invoke", String::class.java)
-            .invoke(null, request.toString()) as String
+        val result = try {
+            loadXrayApi().getMethod("invoke", String::class.java)
+                .invoke(null, request.toString()) as String
+        } catch (error: InvocationTargetException) {
+            throw (error.targetException ?: error)
+        }
         return JSONObject(result)
     }
 

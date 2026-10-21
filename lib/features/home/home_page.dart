@@ -70,8 +70,12 @@ class _HomePageState extends State<HomePage>
   late final AnimationController glow;
   late final AnimationController ambientMotion;
   bool animatedBackground = true;
+  bool optimizedMode = false;
+  bool reduceAnimations = false;
   bool english = false;
-  double mobileTopSpacing = 8;
+  double contentTopSpacing = 8;
+  String? _draggingProfileId;
+  int _profileOrderRevision = 0;
   bool powerHovered = false;
   Map<String, Object?> androidKillSwitchStatus = const <String, Object?>{};
   bool readingAndroidKillSwitchStatus = false;
@@ -168,9 +172,24 @@ class _HomePageState extends State<HomePage>
   String _text(String ru, String en) => english ? en : ru;
   String _localized(String value) => _messageText(value);
 
+  Duration _motion(Duration normal) => reduceAnimations
+      ? Duration(milliseconds: math.min(90, normal.inMilliseconds))
+      : normal;
+
+  Widget _backdropBlur({required double sigma, required Widget child}) {
+    if (optimizedMode || sigma <= 0) return child;
+    return BackdropFilter(
+      filter: ui.ImageFilter.blur(sigmaX: sigma, sigmaY: sigma),
+      child: child,
+    );
+  }
+
   static const _englishLabels = <String, String>{
     'Подключение': 'Connection',
     'Настройки': 'Settings',
+    'Соединение': 'Connection',
+    'Дебаг и диагностика': 'Debug and diagnostics',
+    'GhostBox': 'GhostBox',
     'Маршрут': 'Routing',
     'Маршрут и DNS': 'Routing and DNS',
     'Диагностика': 'Diagnostics',
@@ -188,7 +207,6 @@ class _HomePageState extends State<HomePage>
         'Build, core and device information',
     'Открыть': 'Open',
     'Управление локальным прокси и ядром': 'Manage the local proxy and core',
-    'Соединение': 'Connection',
     'ЯДРО': 'CORE',
     'Движок подключения': 'Core engine',
     'Xray · рекомендуется': 'Xray · recommended',
@@ -208,12 +226,18 @@ class _HomePageState extends State<HomePage>
     'Анимированный фон': 'Animated background',
     'Мягкое движение цветового свечения': 'Subtle ambient color animation',
     'Выключен · меньше графической нагрузки': 'Off · lower graphics usage',
+    'Оптимизированный режим': 'Optimized mode',
+    'Отключает blur-слои, сохраняя цвета и форму интерфейса':
+        'Disables blur layers while keeping the interface colors and shapes',
+    'Ограничить анимации': 'Limit animations',
+    'Короткие переходы и меньше одновременных эффектов':
+        'Short transitions and fewer simultaneous effects',
     'Язык интерфейса': 'Language',
     'Сканировать QR-код': 'Scan QR code',
     'Сканировать QR': 'Scan QR',
     'QR-код подписки': 'Subscription QR code',
     'Показать QR-код': 'Show QR code',
-    'Отступ острова сверху': 'Top island spacing',
+    'Отступ контента сверху': 'Top content spacing',
     'Отключать VPN во время пинга': 'Disconnect VPN while pinging',
     'Проверка TCP/ICMP идёт напрямую, после неё сервер включится снова':
         'TCP/ICMP checks run directly, then the VPN reconnects automatically',
@@ -394,6 +418,14 @@ class _HomePageState extends State<HomePage>
     'Один или несколько URL': 'One or more URLs',
     'Импортировать профиль': 'Import profile',
     'Ссылка · JSON-файл · буфер обмена': 'Link · JSON file · clipboard',
+    'Добавить по ссылке': 'Add by link',
+    'Добавить JSON конфиг': 'Add JSON config',
+    'Добавить из буфера': 'Add from clipboard',
+    'Выбрать JSON-файл': 'Choose JSON file',
+    'Вставить JSON-текст': 'Paste JSON text',
+    'Вставьте JSON-конфиг сервера или подписки.':
+        'Paste a server or subscription JSON config.',
+    'Не удалось открыть JSON:': 'Could not open JSON:',
     'Из буфера': 'From clipboard',
     'JSON-файл': 'JSON file',
     'Добавить': 'Add',
@@ -946,8 +978,13 @@ class _HomePageState extends State<HomePage>
       logMaxSizeMb = p.getInt('logMaxSizeMb') ?? 5;
       logCoreOutput = p.getBool('logCoreOutput') ?? true;
       animatedBackground = p.getBool('animatedBackground') ?? true;
-      mobileTopSpacing =
-          (p.getDouble('mobileTopSpacing') ?? 8).clamp(0, 48).toDouble();
+      optimizedMode = p.getBool('optimizedMode') ?? false;
+      reduceAnimations = p.getBool('reduceAnimations') ?? false;
+      contentTopSpacing = (p.getDouble('contentTopSpacing') ??
+              p.getDouble('mobileTopSpacing') ??
+              8)
+          .clamp(0, 120)
+          .toDouble();
       customDnsBlocklistUrls =
           p.getStringList('customDnsBlocklistUrls') ?? <String>[];
       english = p.getBool('appEnglish') ?? false;
@@ -1024,7 +1061,7 @@ class _HomePageState extends State<HomePage>
       }
     });
     await trafficStats.load(p);
-    if (!animatedBackground) {
+    if (!animatedBackground || reduceAnimations) {
       ambientMotion.stop();
       ambientMotion.value = .12;
     }
@@ -2772,6 +2809,32 @@ foreach ($route in $routes) {
     CoreProcessBackend? probeBackend;
     var httpPort = 0;
     try {
+      if (Platform.isAndroid) {
+        // Android cores live in the VPN service/AAR. Reuse the active service's
+        // loopback HTTP inbound instead of trying to launch a desktop binary.
+        final localPort = activeLocalPort;
+        if (backend.state != VpnState.connected ||
+            activeProfileId != profile.id ||
+            localPort == null ||
+            localPort < 1) {
+          throw StateError(_text(
+            'Подключитесь к этому серверу перед проверкой скорости на Android.',
+            'Connect to this server before testing its speed on Android.',
+          ));
+        }
+        const timeout = Duration(seconds: 35);
+        final bytes = await _downloadThroughHttpProxy(localPort, timeout);
+        if (bytes == 0) throw const HttpException('Сервер не передал данные');
+        final speed = bytes / 1024 / 1024;
+        if (mounted) {
+          setState(() => _profileDownloadSpeeds[profile.id] = speed);
+          _message(_text(
+            'Скорость ${profile.name}: ${speed.toStringAsFixed(2)} МБ/с',
+            '${profile.name} speed: ${speed.toStringAsFixed(2)} MB/s',
+          ));
+        }
+        return;
+      }
       final proxyReservation =
           await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
       final proxyPort = proxyReservation.port;
@@ -3232,22 +3295,56 @@ foreach ($route in $routes) {
         backgroundColor: _surface,
         showDragHandle: true,
         builder: (context) => SafeArea(
-                child: Column(mainAxisSize: MainAxisSize.min, children: [
-              ListTile(
-                  leading: Icon(Icons.rss_feed_rounded, color: _accent),
-                  title: Text(_localized('Добавить подписку')),
-                  subtitle: Text(_localized('Один или несколько URL')),
-                  onTap: () => Navigator.pop(context, 'subscription')),
-              ListTile(
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                ListTile(
                   leading: Icon(Icons.link_rounded, color: _accent),
-                  title: Text(_localized('Импортировать профиль')),
-                  subtitle:
-                      Text(_localized('Ссылка · JSON-файл · буфер обмена')),
-                  onTap: () => Navigator.pop(context, 'profile')),
-              SizedBox(height: 10),
-            ])));
-    if (action == 'subscription') await _addSubscription();
-    if (action == 'profile') await _addProfile();
+                  title: Text(_localized('Добавить по ссылке')),
+                  subtitle: const Text('URL / VLESS / VMess / Trojan'),
+                  onTap: () => Navigator.pop(context, 'link'),
+                ),
+                ListTile(
+                  leading: Icon(Icons.data_object_rounded, color: _accent),
+                  title: Text(_localized('Добавить JSON конфиг')),
+                  subtitle: Text(_localized('Выбрать файл или вставить текст')),
+                  onTap: () => Navigator.pop(context, 'json'),
+                ),
+                ListTile(
+                  leading: Icon(Icons.qr_code_scanner_rounded, color: _accent),
+                  title: Text(_localized('Сканировать QR-код')),
+                  onTap: () => Navigator.pop(context, 'qr'),
+                ),
+                ListTile(
+                  leading: Icon(Icons.content_paste_rounded, color: _accent),
+                  title: Text(_localized('Добавить из буфера')),
+                  onTap: () => Navigator.pop(context, 'clipboard'),
+                ),
+                const SizedBox(height: 10),
+              ]),
+            ));
+    switch (action) {
+      case 'link':
+        await _addProfile();
+      case 'json':
+        await _addJsonProfile();
+      case 'qr':
+        if (Platform.isAndroid || Platform.isIOS) {
+          final scanned = await _scanQrCode(context);
+          if (scanned != null) await _importProfileSource(scanned);
+        } else {
+          _message(_text('Сканирование QR доступно на Android и iOS',
+              'QR scanning is available on Android and iOS'));
+        }
+      case 'clipboard':
+        final data = await Clipboard.getData(Clipboard.kTextPlain);
+        final input = data?.text?.trim() ?? '';
+        if (input.isEmpty) {
+          _message(_text('Буфер обмена пуст', 'Clipboard is empty'));
+        } else {
+          await _importProfileSource(input);
+        }
+      default:
+        return;
+    }
   }
 
   Future<String?> _scanQrCode(BuildContext parentContext) => showDialog<String>(
@@ -3475,125 +3572,6 @@ foreach ($route in $routes) {
                             ),
                           ])))));
 
-  Future<void> _addSubscription() async {
-    final urls = TextEditingController();
-    final label = TextEditingController();
-    final result = await showDialog<(String, String)>(
-        context: context,
-        builder: (context) => AlertDialog(
-              backgroundColor: _surface,
-              title: Text(_localized('Новая подписка')),
-              content: SizedBox(
-                  width: 460,
-                  child: Column(mainAxisSize: MainAxisSize.min, children: [
-                    TextField(
-                        controller: label,
-                        decoration: InputDecoration(
-                            labelText: _localized('Название (необязательно)'),
-                            hintText: _localized('Например, Личная подписка'))),
-                    SizedBox(height: 12),
-                    TextField(
-                        controller: urls,
-                        autofocus: true,
-                        minLines: 4,
-                        maxLines: 8,
-                        decoration: InputDecoration(
-                            labelText: _localized('URL подписки'),
-                            hintText:
-                                'https://…\n${_localized('Можно добавить несколько URL, по одному на строку')}')),
-                    TextButton.icon(
-                        onPressed: () async {
-                          final data =
-                              await Clipboard.getData(Clipboard.kTextPlain);
-                          if (data?.text?.isNotEmpty == true)
-                            urls.text = data!.text!;
-                        },
-                        icon: Icon(Icons.content_paste_rounded),
-                        label: Text(_localized('Вставить из буфера'))),
-                    if (Platform.isAndroid || Platform.isIOS)
-                      TextButton.icon(
-                        onPressed: () async {
-                          final scanned = await _scanQrCode(context);
-                          if (scanned != null && context.mounted) {
-                            Navigator.pop(context, (scanned, label.text));
-                          }
-                        },
-                        icon: const Icon(Icons.qr_code_scanner_rounded),
-                        label: Text(_localized('Сканировать QR-код')),
-                      ),
-                  ])),
-              actions: [
-                TextButton(
-                    onPressed: () => Navigator.pop(context),
-                    child: Text(_localized('Отмена'))),
-                FilledButton(
-                    onPressed: () =>
-                        Navigator.pop(context, (urls.text, label.text)),
-                    child: Text(_localized('Добавить')))
-              ],
-            ));
-    urls.dispose();
-    label.dispose();
-    if (result == null) return;
-    final sources = result.$1
-        .split(RegExp(r'[\r\n]+'))
-        .map((s) => s.trim())
-        .where((s) => s.startsWith('https://') || s.startsWith('http://'))
-        .toList();
-    if (sources.isEmpty) {
-      _message('Добавь один или несколько URL подписки');
-      return;
-    }
-    var imported = 0;
-    for (var i = 0; i < sources.length; i++) {
-      final url = sources[i];
-      try {
-        final parsed = await ProfileParser().parseSourceDetailed(url);
-        final fresh = parsed.profiles;
-        if (fresh.isEmpty) continue;
-        final name = result.$2.trim().isEmpty
-            ? (parsed.metadata.title ?? Uri.tryParse(url)?.host ?? 'Подписка')
-            : (sources.length == 1
-                ? result.$2.trim()
-                : '${result.$2.trim()} ${i + 1}');
-        setState(() {
-          final old = subscriptions.where((s) => s['url'] == url).firstOrNull;
-          final oldIds = (old?['ids'] as List? ?? []).cast<String>().toSet();
-          profiles = [
-            ...profiles.where((p) => !oldIds.contains(p.id)),
-            ...fresh
-          ];
-          subscriptions.removeWhere((s) => s['url'] == url);
-          subscriptions.add({
-            'url': url,
-            'name': name,
-            'customName': result.$2.trim().isNotEmpty,
-            'metadata': parsed.metadata.toJson(),
-            'updatedAt': DateTime.now().toIso8601String(),
-            'ids': fresh.map((p) => p.id).toList()
-          });
-          if (selectedId == null ||
-              (oldIds.contains(selectedId) &&
-                  !fresh.any((p) => p.id == selectedId)))
-            selectedId = fresh.first.id;
-        });
-        imported += fresh.length;
-      } catch (error) {
-        _message('Не удалось загрузить $url: $error');
-      }
-    }
-    await _persist();
-    await _saveSubscriptions();
-    _scheduleSubscriptionRefresh();
-    for (final url in sources) {
-      unawaited(_checkSubscriptionEndpoint(url));
-    }
-    if (mounted)
-      _message(imported > 0
-          ? 'Добавлено серверов: $imported'
-          : 'Не удалось загрузить серверы из подписок');
-  }
-
   Future<void> _saveSubscriptions() async {
     final p = prefs ??= await SharedPreferences.getInstance();
     await p.setString('subscriptions', jsonEncode(subscriptions));
@@ -3818,8 +3796,8 @@ foreach ($route in $routes) {
                           Theme.of(context).scaffoldBackgroundColor);
                       return ClipRRect(
                         borderRadius: BorderRadius.circular(18),
-                        child: BackdropFilter(
-                          filter: ui.ImageFilter.blur(sigmaX: 17, sigmaY: 17),
+                        child: _backdropBlur(
+                          sigma: 17,
                           child: Container(
                             constraints: BoxConstraints(maxHeight: menuHeight),
                             decoration: BoxDecoration(
@@ -4085,6 +4063,61 @@ foreach ($route in $routes) {
     );
     controller.dispose();
     if (input == null || input.trim().isEmpty) return;
+    await _importProfileSource(input);
+  }
+
+  Future<void> _addJsonProfile() async {
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: _surface,
+      showDragHandle: true,
+      builder: (context) => SafeArea(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          ListTile(
+            leading: Icon(Icons.file_open_rounded, color: _accent),
+            title: Text(_localized('Выбрать JSON-файл')),
+            onTap: () => Navigator.pop(context, 'file'),
+          ),
+          ListTile(
+            leading: Icon(Icons.edit_note_rounded, color: _accent),
+            title: Text(_localized('Вставить JSON-текст')),
+            onTap: () => Navigator.pop(context, 'text'),
+          ),
+          const SizedBox(height: 8),
+        ]),
+      ),
+    );
+    if (action == 'file') {
+      try {
+        final file = await openFile(acceptedTypeGroups: const [
+          XTypeGroup(label: 'JSON', extensions: ['json']),
+        ]);
+        if (file == null) return;
+        final source = utf8.decode(await file.readAsBytes());
+        await _importProfileSource(source);
+      } on Object catch (error) {
+        if (mounted)
+          _message(_text('Не удалось открыть JSON: $error',
+              'Could not open JSON: $error'));
+      }
+    } else if (action == 'text') {
+      final controller = TextEditingController();
+      final source = await _showPasteDialog(
+        title: _localized('Добавить JSON конфиг'),
+        description: _localized('Вставьте JSON-конфиг сервера или подписки.'),
+        hint: '{\n  "outbounds": […]\n}',
+        controller: controller,
+      );
+      controller.dispose();
+      if (source != null && source.trim().isNotEmpty) {
+        await _importProfileSource(source);
+      }
+    }
+  }
+
+  Future<void> _importProfileSource(String input) async {
+    input = input.trim();
+    if (input.isEmpty) return;
     if (Uri.tryParse(input)?.scheme.toLowerCase() == 'ghostbox') {
       _receiveAppLink(Uri.parse(input));
       return;
@@ -4166,41 +4199,134 @@ foreach ($route in $routes) {
       ),
       child: Scaffold(
           backgroundColor: Theme.of(context).scaffoldBackgroundColor,
-          body: Container(
-              decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                      begin: Alignment.topCenter,
-                      end: Alignment.bottomCenter,
-                      colors: [
-                    _surface,
-                    Theme.of(context).scaffoldBackgroundColor,
-                    Theme.of(context).scaffoldBackgroundColor
-                  ])),
-              child: SafeArea(
-                top: false,
-                child: Stack(children: [
-                  Positioned.fill(
-                      child: IgnorePointer(
-                          child: RepaintBoundary(
-                              child: CustomPaint(
-                                  painter: _AmbientBackgroundPainter(
-                                      animation: ambientMotion,
-                                      color: _accent,
-                                      enabled: animatedBackground))))),
-                  Padding(
-                      padding: EdgeInsets.fromLTRB(
-                          5,
-                          Platform.isAndroid || Platform.isIOS
-                              ? MediaQuery.paddingOf(context).top +
-                                  mobileTopSpacing
-                              : 16,
-                          5,
-                          12),
-                      child: LayoutBuilder(builder: (context, bounds) {
-                        final wideLayout = bounds.maxWidth >= 800;
-                        final page = ClipRRect(
-                            borderRadius: BorderRadius.circular(24),
-                            child: AnimatedSwitcher(
+          body: Theme(
+              data: Theme.of(context).copyWith(
+                popupMenuTheme: PopupMenuThemeData(
+                  // Keep the route surface translucent so the rounded item
+                  // surfaces below can blur the page behind them. In the
+                  // optimized mode we use a solid fallback instead.
+                  color: _surface.withValues(alpha: optimizedMode ? .96 : .58),
+                  surfaceTintColor: Colors.transparent,
+                  elevation: 18,
+                  shadowColor: Colors.black.withValues(alpha: .32),
+                  menuPadding: const EdgeInsets.all(7),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(20),
+                    side:
+                        BorderSide(color: Colors.white.withValues(alpha: .12)),
+                  ),
+                ),
+                splashColor: _accent.withValues(alpha: .09),
+                highlightColor: Colors.transparent,
+                hoverColor: Colors.transparent,
+              ),
+              child: Container(
+                  decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                          begin: Alignment.topCenter,
+                          end: Alignment.bottomCenter,
+                          colors: [
+                        _surface,
+                        Theme.of(context).scaffoldBackgroundColor,
+                        Theme.of(context).scaffoldBackgroundColor
+                      ])),
+                  child: SafeArea(
+                    top: false,
+                    child: Stack(children: [
+                      Positioned.fill(
+                          child: IgnorePointer(
+                              child: RepaintBoundary(
+                                  child: CustomPaint(
+                                      painter: _AmbientBackgroundPainter(
+                                          animation: ambientMotion,
+                                          color: _accent,
+                                          enabled: animatedBackground))))),
+                      Padding(
+                          padding: EdgeInsets.fromLTRB(
+                              5,
+                              Platform.isAndroid || Platform.isIOS
+                                  ? MediaQuery.paddingOf(context).top + 4
+                                  : 16,
+                              5,
+                              12),
+                          child: LayoutBuilder(builder: (context, bounds) {
+                            final wideLayout = bounds.maxWidth >= 800;
+                            final page = ClipRRect(
+                                borderRadius: BorderRadius.circular(24),
+                                child: AnimatedSwitcher(
+                                    duration: _motion(
+                                        const Duration(milliseconds: 300)),
+                                    reverseDuration: _motion(
+                                        const Duration(milliseconds: 220)),
+                                    switchInCurve: Curves.easeOutCubic,
+                                    switchOutCurve: Curves.easeInCubic,
+                                    layoutBuilder: _pageSwitcherLayout,
+                                    transitionBuilder: _fadeSlideSwap,
+                                    child: KeyedSubtree(
+                                        key: ValueKey(_tabIndex),
+                                        child: settings
+                                            ? _scrollFrame(
+                                                _settings(), settingsScroll)
+                                            : routingTab
+                                                ? _scrollFrame(_routingPage(),
+                                                    routingScroll)
+                                                : _scrollFrame(
+                                                    _home(), homeScroll))));
+                            final responsiveLayout = wideLayout
+                                ? Row(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.stretch,
+                                    children: [
+                                      SizedBox(
+                                        width: 120,
+                                        child: Padding(
+                                          padding: const EdgeInsets.fromLTRB(
+                                              0, 4, 0, 12),
+                                          child: _sideNav(),
+                                        ),
+                                      ),
+                                      const SizedBox(width: 10),
+                                      Expanded(
+                                        child: Stack(
+                                          children: [
+                                            Positioned.fill(
+                                                child: RepaintBoundary(
+                                                    child: page)),
+                                            Positioned(
+                                              top: 0,
+                                              left: 0,
+                                              right: 0,
+                                              child: RepaintBoundary(
+                                                  child: _header(
+                                                      wideLayout: true)),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ],
+                                  )
+                                : Stack(children: [
+                                    Positioned.fill(
+                                        child: RepaintBoundary(child: page)),
+                                    Positioned(
+                                      top: 0,
+                                      left: 0,
+                                      right: 0,
+                                      child: RepaintBoundary(
+                                          child: _header(wideLayout: false)),
+                                    ),
+                                    Positioned(
+                                      left: 10,
+                                      right: 10,
+                                      bottom: 8,
+                                      child: RepaintBoundary(child: _nav()),
+                                    ),
+                                  ]);
+                            return AnimatedSize(
+                              duration: const Duration(milliseconds: 320),
+                              curve: Curves.easeInOutCubicEmphasized,
+                              alignment: Alignment.topCenter,
+                              child: AnimatedSwitcher(
                                 duration: const Duration(milliseconds: 300),
                                 reverseDuration:
                                     const Duration(milliseconds: 220),
@@ -4209,85 +4335,16 @@ foreach ($route in $routes) {
                                 layoutBuilder: _currentChildSwitcherLayout,
                                 transitionBuilder: _fadeSlideSwap,
                                 child: KeyedSubtree(
-                                    key: ValueKey(_tabIndex),
-                                    child: settings
-                                        ? _scrollFrame(
-                                            _settings(), settingsScroll)
-                                        : routingTab
-                                            ? _scrollFrame(
-                                                _routingPage(), routingScroll)
-                                            : _scrollFrame(
-                                                _home(), homeScroll))));
-                        final responsiveLayout = wideLayout
-                            ? Row(
-                                crossAxisAlignment: CrossAxisAlignment.stretch,
-                                children: [
-                                  SizedBox(
-                                    width: 120,
-                                    child: Padding(
-                                      padding: const EdgeInsets.fromLTRB(
-                                          0, 4, 0, 12),
-                                      child: _sideNav(),
-                                    ),
-                                  ),
-                                  const SizedBox(width: 10),
-                                  Expanded(
-                                    child: Stack(
-                                      children: [
-                                        Positioned.fill(
-                                            child:
-                                                RepaintBoundary(child: page)),
-                                        Positioned(
-                                          top: 0,
-                                          left: 0,
-                                          right: 0,
-                                          child: RepaintBoundary(
-                                              child: _header(wideLayout: true)),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                ],
-                              )
-                            : Stack(children: [
-                                Positioned.fill(
-                                    child: RepaintBoundary(child: page)),
-                                Positioned(
-                                  top: 0,
-                                  left: 0,
-                                  right: 0,
-                                  child: RepaintBoundary(
-                                      child: _header(wideLayout: false)),
+                                  key: ValueKey(wideLayout
+                                      ? 'wide-layout'
+                                      : 'compact-layout'),
+                                  child: responsiveLayout,
                                 ),
-                                Positioned(
-                                  left: 10,
-                                  right: 10,
-                                  bottom: 8,
-                                  child: RepaintBoundary(child: _nav()),
-                                ),
-                              ]);
-                        return AnimatedSize(
-                          duration: const Duration(milliseconds: 320),
-                          curve: Curves.easeInOutCubicEmphasized,
-                          alignment: Alignment.topCenter,
-                          child: AnimatedSwitcher(
-                            duration: const Duration(milliseconds: 300),
-                            reverseDuration: const Duration(milliseconds: 220),
-                            switchInCurve: Curves.easeOutCubic,
-                            switchOutCurve: Curves.easeInCubic,
-                            layoutBuilder: _currentChildSwitcherLayout,
-                            transitionBuilder: _fadeSlideSwap,
-                            child: KeyedSubtree(
-                              key: ValueKey(wideLayout
-                                  ? 'wide-layout'
-                                  : 'compact-layout'),
-                              child: responsiveLayout,
-                            ),
-                          ),
-                        );
-                      }))
-                ]),
-              ))));
+                              ),
+                            );
+                          }))
+                    ]),
+                  )))));
 
   Widget _scrollFrame(Widget child, ScrollController controller) =>
       ScrollConfiguration(
@@ -4301,10 +4358,9 @@ foreach ($route in $routes) {
               thickness: 3,
               radius: Radius.circular(8),
               child: Padding(
-                  // The header controls float over page content. Keep a small
-                  // breathing gap at the top while allowing content to pass
-                  // behind the islands as it scrolls.
-                  padding: const EdgeInsets.fromLTRB(5, 18, 9, 0),
+                  // Horizontal inset only: each page owns its leading scroll spacer,
+                  // so content can pass beneath the floating islands.
+                  padding: const EdgeInsets.fromLTRB(5, 0, 9, 0),
                   child: child)));
 
   Future<void> _openActionsMenu(BuildContext anchorContext) async {
@@ -4545,7 +4601,7 @@ foreach ($route in $routes) {
                                             'appearance' =>
                                               _localized('Персонализация'),
                                             'group_connection' =>
-                                              _localized('Подключение'),
+                                              _localized('Соединение'),
                                             'group_routing' =>
                                               _localized('Маршрут и DNS'),
                                             'group_protection' =>
@@ -4556,6 +4612,8 @@ foreach ($route in $routes) {
                                               _localized('Для профи'),
                                             'group_app' =>
                                               _localized('Приложение'),
+                                            'group_ghostbox' =>
+                                              _localized('GhostBox'),
                                             'group_all' =>
                                               _localized('Все настройки'),
                                             _ => _localized('Настройки'),
@@ -4626,8 +4684,8 @@ foreach ($route in $routes) {
   }) =>
       ClipRRect(
         borderRadius: BorderRadius.circular(20),
-        child: BackdropFilter(
-          filter: ui.ImageFilter.blur(sigmaX: 9, sigmaY: 9),
+        child: _backdropBlur(
+          sigma: 9,
           child: AnimatedScale(
             scale: expanded ? 1.045 : 1,
             duration: const Duration(milliseconds: 320),
@@ -4681,8 +4739,8 @@ foreach ($route in $routes) {
   Widget _headerActionIsland({required Widget child, bool circular = false}) =>
       ClipRRect(
         borderRadius: BorderRadius.circular(circular ? 22 : 16),
-        child: BackdropFilter(
-          filter: ui.ImageFilter.blur(sigmaX: 8, sigmaY: 8),
+        child: _backdropBlur(
+          sigma: 8,
           child: AnimatedContainer(
             duration: const Duration(milliseconds: 260),
             curve: Curves.easeOutCubic,
@@ -4725,17 +4783,11 @@ foreach ($route in $routes) {
     );
   }
 
-  Widget _menuFrost(Widget child) => ClipRRect(
-        borderRadius: BorderRadius.circular(10),
-        child: BackdropFilter(
-          filter: ui.ImageFilter.blur(sigmaX: 8, sigmaY: 8),
-          child: Container(
-            width: double.infinity,
-            padding: const EdgeInsets.symmetric(vertical: 5),
-            color: Colors.white.withValues(alpha: .015),
-            child: child,
-          ),
-        ),
+  Widget _menuFrost(Widget child) => _PopupMenuSurface(
+        accent: _accent,
+        foreground: _foreground,
+        optimizedMode: optimizedMode,
+        child: child,
       );
 
   PopupMenuItem<String> _menuItem(String value, IconData icon, String label) =>
@@ -4749,6 +4801,35 @@ foreach ($route in $routes) {
                 child:
                     Text(label, maxLines: 1, overflow: TextOverflow.ellipsis))
           ])));
+
+  PopupMenuItem<String> _profileMenuItem(
+    String value,
+    IconData icon,
+    String label, {
+    Widget? leading,
+    bool enabled = true,
+    Color? iconColor,
+  }) =>
+      PopupMenuItem<String>(
+        value: value,
+        enabled: enabled,
+        height: 50,
+        child: _menuFrost(
+          Row(
+            children: [
+              leading ?? Icon(icon, size: 18, color: iconColor ?? _accent),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  label,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
 
   void _openTab(int index) => setState(() {
         routeListOpen = false;
@@ -4807,11 +4888,12 @@ foreach ($route in $routes) {
   Widget _home() => SingleChildScrollView(
       controller: homeScroll,
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        SizedBox(height: contentTopSpacing),
         RepaintBoundary(
           child: ClipRRect(
               borderRadius: BorderRadius.circular(30),
-              child: BackdropFilter(
-                  filter: ui.ImageFilter.blur(sigmaX: 7, sigmaY: 7),
+              child: _backdropBlur(
+                  sigma: 7,
                   child: Container(
                       width: double.infinity,
                       padding: EdgeInsets.fromLTRB(18, 12, 18, 16),
@@ -4921,9 +5003,19 @@ foreach ($route in $routes) {
             duration: Duration(milliseconds: 420),
             curve: Curves.easeOutCubic,
             alignment: Alignment.topCenter,
-            child: Column(
+            child: AnimatedSwitcher(
+              duration: const Duration(milliseconds: 250),
+              reverseDuration: const Duration(milliseconds: 190),
+              switchInCurve: Curves.easeOutCubic,
+              switchOutCurve: Curves.easeInCubic,
+              layoutBuilder: _currentChildSwitcherLayout,
+              transitionBuilder: _fadeSlideSwap,
+              child: Column(
+                key: ValueKey(_profileOrderRevision),
                 crossAxisAlignment: CrossAxisAlignment.start,
-                children: profiles.isEmpty ? [_empty()] : _profileSections())),
+                children: profiles.isEmpty ? [_empty()] : _profileSections(),
+              ),
+            )),
         SizedBox(height: 14),
         SizedBox(
             width: double.infinity,
@@ -4946,7 +5038,7 @@ foreach ($route in $routes) {
       : ListView(
           controller: routingScroll,
           key: const PageStorageKey('routing'),
-          padding: const EdgeInsets.only(top: 14, bottom: 120),
+          padding: EdgeInsets.only(top: contentTopSpacing + 14, bottom: 120),
           children: [
             Text(_text('Как пускать трафик', 'Traffic routing'),
                 textAlign: TextAlign.center,
@@ -5128,7 +5220,7 @@ foreach ($route in $routes) {
   Widget _routeListEditor() => ListView(
         controller: routingScroll,
         key: const PageStorageKey('routing-domains'),
-        padding: const EdgeInsets.only(top: 14, bottom: 120),
+        padding: EdgeInsets.only(top: contentTopSpacing + 14, bottom: 120),
         children: [
           Text(
               routeListMode == 'rules'
@@ -5636,10 +5728,13 @@ foreach ($route in $routes) {
   }
 
   Widget _fadeSlideSwap(Widget child, Animation<double> animation) {
+    if (reduceAnimations) {
+      return FadeTransition(opacity: animation, child: child);
+    }
     final motion = CurvedAnimation(
       parent: animation,
-      curve: Curves.easeOutCubic,
-      reverseCurve: Curves.easeInCubic,
+      curve: Curves.easeInOutCubic,
+      reverseCurve: Curves.easeInOutCubic,
     );
     return AnimatedBuilder(
       animation: motion,
@@ -5650,9 +5745,9 @@ foreach ($route in $routes) {
         return Opacity(
           opacity: motion.value,
           child: Transform.translate(
-            offset: Offset(0, (exiting ? -1 : 1) * 8 * progress),
+            offset: Offset(0, (exiting ? -1 : 1) * 20 * progress),
             child: Transform.scale(
-              scale: .99 + (.01 * motion.value),
+              scale: .965 + (.035 * motion.value),
               child: stableChild,
             ),
           ),
@@ -5661,17 +5756,29 @@ foreach ($route in $routes) {
     );
   }
 
+  Widget _pageSwitcherLayout(
+      Widget? currentChild, List<Widget> previousChildren) {
+    // A full-page crossfade keeps both large scroll trees visible together,
+    // causing the outgoing content to bleed through during navigation. Keep
+    // only the incoming page; its fade/vertical ease transition remains active.
+    if (currentChild != null) return ClipRect(child: currentChild);
+    if (previousChildren.isNotEmpty) {
+      return ClipRect(child: previousChildren.last);
+    }
+    return const SizedBox.shrink();
+  }
+
   Widget _currentChildSwitcherLayout(
           Widget? currentChild, List<Widget> previousChildren) =>
       ClipRect(
-        child: Stack(
-          alignment: Alignment.topCenter,
-          children: [
-            for (final previousChild in previousChildren)
-              Positioned.fill(child: IgnorePointer(child: previousChild)),
-            if (currentChild != null) currentChild,
-          ],
-        ),
+        // Page bodies contain translucent cards and ambient effects. Keeping
+        // the outgoing scroll tree underneath the incoming page makes its
+        // content show through during the crossfade. Retire it at the switch
+        // and animate only the incoming page instead.
+        child: currentChild ??
+            (previousChildren.isNotEmpty
+                ? previousChildren.last
+                : const SizedBox.shrink()),
       );
 
   Widget _settingsModeTransition(Widget child, Animation<double> animation) {
@@ -5878,8 +5985,8 @@ foreach ($route in $routes) {
       final collapsed = collapsedSubscriptions.contains(url);
       widgets.add(ClipRRect(
           borderRadius: BorderRadius.circular(22),
-          child: BackdropFilter(
-              filter: ui.ImageFilter.blur(sigmaX: 8, sigmaY: 8),
+          child: _backdropBlur(
+              sigma: 8,
               child: Container(
                   margin: EdgeInsets.only(bottom: 12),
                   decoration: BoxDecoration(
@@ -6661,6 +6768,10 @@ foreach ($route in $routes) {
                                 ui.FontFeature.tabularFigures()
                               ]))),
                 PopupMenuButton<String>(
+                    constraints: BoxConstraints(
+                      maxWidth: 310,
+                      maxHeight: MediaQuery.sizeOf(context).height * .68,
+                    ),
                     popUpAnimationStyle: const AnimationStyle(
                         duration: Duration(milliseconds: 230),
                         reverseDuration: Duration(milliseconds: 160),
@@ -6714,111 +6825,204 @@ foreach ($route in $routes) {
                       }
                     },
                     itemBuilder: (_) => [
-                          PopupMenuItem(
-                              value: 'ping',
-                              child: Row(children: [
-                                Icon(Icons.speed_rounded,
-                                    size: 18, color: _accent),
-                                const SizedBox(width: 12),
-                                Text(_localized('Проверить задержку'))
-                              ])),
-                          PopupMenuItem(
-                              value: 'speed',
-                              enabled: !_speedTestProfiles.contains(profile.id),
-                              child: Row(children: [
-                                if (_speedTestProfiles.contains(profile.id))
-                                  SizedBox(
+                          _profileMenuItem(
+                            'ping',
+                            Icons.speed_rounded,
+                            _localized('Проверить задержку'),
+                          ),
+                          _profileMenuItem(
+                            'speed',
+                            Icons.network_check_rounded,
+                            _speedTestMenuLabel(profile.id),
+                            enabled: !_speedTestProfiles.contains(profile.id),
+                            leading: _speedTestProfiles.contains(profile.id)
+                                ? SizedBox(
                                     width: 18,
                                     height: 18,
                                     child: CircularProgressIndicator(
-                                        strokeWidth: 2, color: _accent),
+                                      strokeWidth: 2,
+                                      color: _accent,
+                                    ),
                                   )
-                                else
-                                  Icon(Icons.network_check_rounded,
-                                      size: 18, color: _accent),
-                                const SizedBox(width: 12),
-                                Expanded(
-                                  child: Text(_speedTestMenuLabel(profile.id)),
-                                ),
-                              ])),
-                          PopupMenuItem(
-                              value: 'json',
-                              child: Row(children: [
-                                Icon(Icons.data_object_rounded,
-                                    size: 18, color: _accent),
-                                const SizedBox(width: 12),
-                                Text(_localized('Посмотреть JSON'))
-                              ])),
-                          PopupMenuItem(
-                              value: 'share',
-                              child: Row(children: [
-                                Icon(Icons.link_rounded,
-                                    size: 18, color: _accent),
-                                const SizedBox(width: 12),
-                                Text(_localized('Скопировать GhostBox-ссылку'))
-                              ])),
-                          PopupMenuItem(
-                              value: 'copy_host',
-                              child: Row(children: [
-                                Icon(Icons.dns_outlined,
-                                    size: 18, color: _accent),
-                                const SizedBox(width: 12),
-                                Text(_localized('Скопировать IP/домен'))
-                              ])),
-                          PopupMenuItem(
-                              value: 'copy_endpoint',
-                              child: Row(children: [
-                                Icon(Icons.content_copy_rounded,
-                                    size: 18, color: _accent),
-                                const SizedBox(width: 12),
-                                Text(_localized('Скопировать адрес и порт'))
-                              ])),
-                          PopupMenuItem(
-                              value: 'delete',
-                              child: Row(children: [
-                                Icon(Icons.delete_outline_rounded,
-                                    size: 18, color: _muted),
-                                const SizedBox(width: 12),
-                                Text(_localized('Удалить сервер'))
-                              ]))
+                                : null,
+                          ),
+                          _profileMenuItem(
+                            'json',
+                            Icons.data_object_rounded,
+                            _localized('Посмотреть JSON'),
+                          ),
+                          _profileMenuItem(
+                            'share',
+                            Icons.link_rounded,
+                            _localized('Скопировать GhostBox-ссылку'),
+                          ),
+                          _profileMenuItem(
+                            'copy_host',
+                            Icons.dns_outlined,
+                            _localized('Скопировать IP/домен'),
+                          ),
+                          _profileMenuItem(
+                            'copy_endpoint',
+                            Icons.content_copy_rounded,
+                            _localized('Скопировать адрес и порт'),
+                          ),
+                          _profileMenuItem(
+                            'delete',
+                            Icons.delete_outline_rounded,
+                            _localized('Удалить сервер'),
+                            iconColor: _muted,
+                          ),
                         ]),
               ]),
             )));
-    if (grouped)
-      return ClipRRect(
-          borderRadius: BorderRadius.circular(15),
-          child: Column(mainAxisSize: MainAxisSize.min, children: [
-            tile,
-            if (divider)
-              Padding(
-                  padding: EdgeInsets.only(left: 56),
-                  child:
-                      Divider(height: 1, color: Colors.white.withOpacity(.07)))
-          ]));
-    return ClipRRect(
-        borderRadius: BorderRadius.circular(18),
-        child: BackdropFilter(
-            filter: ui.ImageFilter.blur(sigmaX: 8, sigmaY: 8),
-            child: AnimatedContainer(
-                duration: Duration(milliseconds: 320),
-                curve: Curves.easeOutCubic,
-                margin: EdgeInsets.only(bottom: 7),
-                decoration: BoxDecoration(
-                    color: selectedServer
-                        ? _accent.withValues(alpha: .15)
-                        : _surface,
-                    borderRadius: BorderRadius.circular(18),
-                    border: Border.all(
+    final card = grouped
+        ? ClipRRect(
+            borderRadius: BorderRadius.circular(15),
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              tile,
+              if (divider)
+                Padding(
+                    padding: EdgeInsets.only(left: 56),
+                    child: Divider(
+                        height: 1, color: Colors.white.withOpacity(.07)))
+            ]))
+        : ClipRRect(
+            borderRadius: BorderRadius.circular(18),
+            child: _backdropBlur(
+                sigma: 8,
+                child: AnimatedContainer(
+                    duration: Duration(milliseconds: 320),
+                    curve: Curves.easeOutCubic,
+                    margin: EdgeInsets.only(bottom: 7),
+                    decoration: BoxDecoration(
                         color: selectedServer
-                            ? Color(0xAA8BCBFF)
-                            : Colors.white.withOpacity(.12)),
-                    boxShadow: [
-                      BoxShadow(
-                          color: Colors.black.withOpacity(.1),
-                          blurRadius: 18,
-                          offset: Offset(0, 8))
-                    ]),
-                child: tile)));
+                            ? _accent.withValues(alpha: .15)
+                            : _surface,
+                        borderRadius: BorderRadius.circular(18),
+                        border: Border.all(
+                            color: selectedServer
+                                ? Color(0xAA8BCBFF)
+                                : Colors.white.withOpacity(.12)),
+                        boxShadow: [
+                          BoxShadow(
+                              color: Colors.black.withOpacity(.1),
+                              blurRadius: 18,
+                              offset: Offset(0, 8))
+                        ]),
+                    child: tile)));
+    return _profileDragSurface(profile, card, selectedServer);
+  }
+
+  String _profileGroupKey(String profileId) {
+    for (final subscription in subscriptions) {
+      final ids = (subscription['ids'] as List? ?? []).cast<String>();
+      if (ids.contains(profileId)) return subscription['url'] as String;
+    }
+    return 'local';
+  }
+
+  void _reorderProfile(String sourceId, String targetId) {
+    if (sourceId == targetId ||
+        _profileGroupKey(sourceId) != _profileGroupKey(targetId)) {
+      return;
+    }
+    final from = profiles.indexWhere((profile) => profile.id == sourceId);
+    final to = profiles.indexWhere((profile) => profile.id == targetId);
+    if (from < 0 || to < 0) return;
+    setState(() {
+      final moved = profiles.removeAt(from);
+      final insertAt = from < to ? to - 1 : to;
+      profiles.insert(insertAt.clamp(0, profiles.length), moved);
+      _profileOrderRevision++;
+    });
+    unawaited(_persist());
+  }
+
+  Widget _profileDragSurface(
+      ServerProfile profile, Widget child, bool selectedServer) {
+    final draggable = selectedServer;
+    final feedback = Material(
+      color: Colors.transparent,
+      child: Transform.scale(
+        scale: 1.025,
+        child: Container(
+          constraints: BoxConstraints(
+            maxWidth: MediaQuery.sizeOf(context).width * .86,
+          ),
+          decoration: BoxDecoration(
+            color: _surface.withValues(alpha: .98),
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(color: _accent.withValues(alpha: .65)),
+            boxShadow: [
+              BoxShadow(
+                color: _accent.withValues(alpha: .2),
+                blurRadius: 24,
+                offset: const Offset(0, 12),
+              ),
+            ],
+          ),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 13),
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              _countryBadge(profile),
+              const SizedBox(width: 11),
+              Flexible(
+                child: Text(
+                  profile.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: _foreground,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            ]),
+          ),
+        ),
+      ),
+    );
+    final dragChild = AnimatedScale(
+      scale: _draggingProfileId == profile.id ? 1.015 : 1,
+      duration: const Duration(milliseconds: 190),
+      curve: Curves.easeOutCubic,
+      child: child,
+    );
+    final mobile = Platform.isAndroid || Platform.isIOS;
+    final drag = mobile
+        ? LongPressDraggable<String>(
+            data: profile.id,
+            delay: const Duration(milliseconds: 380),
+            hapticFeedbackOnStart: true,
+            feedback: feedback,
+            childWhenDragging: Opacity(opacity: .28, child: dragChild),
+            onDragStarted: () =>
+                setState(() => _draggingProfileId = profile.id),
+            onDragEnd: (_) => setState(() => _draggingProfileId = null),
+            child: dragChild,
+          )
+        : Draggable<String>(
+            data: profile.id,
+            feedback: feedback,
+            childWhenDragging: Opacity(opacity: .28, child: dragChild),
+            onDragStarted: () =>
+                setState(() => _draggingProfileId = profile.id),
+            onDragEnd: (_) => setState(() => _draggingProfileId = null),
+            child: dragChild,
+          );
+    return DragTarget<String>(
+      onWillAcceptWithDetails: (details) =>
+          details.data != profile.id &&
+          _profileGroupKey(details.data) == _profileGroupKey(profile.id),
+      onAcceptWithDetails: (details) =>
+          _reorderProfile(details.data, profile.id),
+      builder: (context, candidates, rejected) => AnimatedScale(
+        scale: candidates.isEmpty ? 1 : 1.018,
+        duration: const Duration(milliseconds: 160),
+        curve: Curves.easeOutBack,
+        child: draggable ? drag : child,
+      ),
+    );
   }
 
   Widget _countryBadge(ServerProfile profile) {
@@ -7532,16 +7736,15 @@ foreach ($route in $routes) {
   Widget _settings() => ListView(
         controller: settingsScroll,
         key: const PageStorageKey('settings'),
-        padding: const EdgeInsets.only(bottom: 120),
+        padding: EdgeInsets.only(top: contentTopSpacing, bottom: 120),
         children: [
-          const SizedBox(height: 8),
           AnimatedSize(
-            duration: const Duration(milliseconds: 320),
+            duration: _motion(const Duration(milliseconds: 320)),
             curve: Curves.easeInOutCubicEmphasized,
             alignment: Alignment.topCenter,
             child: AnimatedSwitcher(
-              duration: const Duration(milliseconds: 300),
-              reverseDuration: const Duration(milliseconds: 220),
+              duration: _motion(const Duration(milliseconds: 300)),
+              reverseDuration: _motion(const Duration(milliseconds: 220)),
               switchInCurve: Curves.easeOutCubic,
               switchOutCurve: Curves.easeInCubic,
               transitionBuilder: _fadeSlideSwap,
@@ -7574,27 +7777,15 @@ foreach ($route in $routes) {
           const SizedBox(height: 18),
           _settingsCategoryTile(
               Icons.power_settings_new_rounded,
-              _text('Подключение и ядро', 'Connection and core'),
-              _text('Движок, режим и локальный порт',
-                  'Engine, mode and local port'),
+              _text('Соединение', 'Connection'),
+              _text('Ядро, режим, маршрут, DNS и защита',
+                  'Core, mode, routing, DNS and protection'),
               'group_connection'),
           _settingsCategoryTile(
-              Icons.alt_route_rounded,
-              _text('Маршрут и DNS', 'Routing and DNS'),
-              _text('Правила маршрутизации, резолвер и фильтры',
-                  'Routing rules, resolver and filters'),
-              'group_routing'),
-          _settingsCategoryTile(
-              Icons.shield_moon_outlined,
-              _text('Защита', 'Protection'),
-              _text('Kill Switch и защита трафика',
-                  'Kill Switch and traffic protection'),
-              'group_protection'),
-          _settingsCategoryTile(
               Icons.monitor_heart_outlined,
-              _text('Диагностика и статистика', 'Diagnostics and statistics'),
-              _text(
-                  'Скорость, задержка и журнал', 'Speed, latency and journal'),
+              _text('Дебаг и диагностика', 'Debug and diagnostics'),
+              _text('Пинг, статистика трафика и логи',
+                  'Ping, traffic statistics and logs'),
               'group_diagnostics'),
           _settingsCategoryTile(
               Icons.tune_rounded,
@@ -7603,35 +7794,12 @@ foreach ($route in $routes) {
                   'Fragmentation and advanced core settings'),
               'group_advanced'),
           _settingsCategoryTile(
-              Icons.palette_outlined,
-              _text('Персонализация', 'Personalization'),
-              _text('Тема, цвета, иконка, язык и фон',
-                  'Theme, colors, icon, language and background'),
-              'appearance'),
-          _settingsCategoryTile(
               Icons.apps_rounded,
-              _text('Приложение и обновления', 'App and updates'),
-              _text('Подписки, обновления и локальные данные',
-                  'Subscriptions, updates and local data'),
-              'group_app'),
-          _settingsCategoryTile(
-              Icons.view_agenda_outlined,
-              _text('Полный список настроек', 'All settings'),
-              _text('Открыть все параметры в одном списке',
-                  'Browse every setting in one list'),
-              'group_all'),
+              _text('GhostBox', 'GhostBox'),
+              _text('Внешний вид, приложение и ссылки',
+                  'Appearance, app options and links'),
+              'group_ghostbox'),
           const SizedBox(height: 12),
-          InkWell(
-            borderRadius: BorderRadius.circular(16),
-            onTap: () => _openSettingsPage('contacts'),
-            child: _row(
-              Icons.alternate_email_rounded,
-              _text('Контакты', 'Contacts'),
-              _text('Репозиторий, релизы и сайты',
-                  'Repository, releases and websites'),
-              const Icon(Icons.chevron_right_rounded),
-            ),
-          ),
         ],
       );
 
@@ -7639,38 +7807,104 @@ foreach ($route in $routes) {
           IconData icon, String title, String subtitle, String page) =>
       Padding(
         padding: const EdgeInsets.only(bottom: 8),
-        child: Material(
-          color: Colors.transparent,
-          borderRadius: BorderRadius.circular(17),
-          child: InkWell(
-            borderRadius: BorderRadius.circular(17),
-            onTap: () => _openSettingsPage(page),
-            child: _row(icon, title, subtitle,
-                Icon(Icons.chevron_right_rounded, color: _muted)),
-          ),
+        child: _SettingsCategoryCard(
+          icon: icon,
+          title: title,
+          subtitle: subtitle,
+          accent: _accent,
+          foreground: _foreground,
+          muted: _muted,
+          surface: _surface,
+          onTap: () => _openSettingsPage(page),
         ),
       );
 
   Widget _settingsGroupPage() => switch (settingsSubpage) {
-        'group_connection' => _connectionSettingsPage(),
+        'group_connection' => _connectionGroupSettingsPage(),
         'group_routing' => _routingSettingsPage(),
         'group_protection' => _protectionSettingsPage(),
         'group_diagnostics' => _diagnosticsSettingsPage(),
         'group_advanced' => _advancedSettings(),
         'group_app' => _appSettingsPage(),
+        'group_ghostbox' => _ghostBoxSettingsPage(),
         'group_all' => _legacySettingsHomeContent(),
         _ => _settingsHomeContent(),
       };
 
-  Widget _connectionSettingsPage() => Column(
+  Widget _connectionGroupSettingsPage() => Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           _settingsPageIntro(
-              Icons.power_settings_new_rounded,
-              _text('Подключение и ядро', 'Connection and core'),
-              _text('Основные параметры локального подключения',
-                  'Core settings for the local connection')),
-          const SizedBox(height: 16),
+            Icons.power_settings_new_rounded,
+            _text('Соединение', 'Connection'),
+            _text('Ядро, режим, маршрут, DNS и защита',
+                'Core, mode, routing, DNS and protection'),
+          ),
+          const SizedBox(height: 12),
+          _connectionSettingsPage(includeIntro: false),
+          _routingSettingsPage(includeIntro: false),
+          _protectionSettingsPage(includeIntro: false),
+        ],
+      );
+
+  Widget _ghostBoxSettingsPage() => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _settingsPageIntro(
+            Icons.apps_rounded,
+            _text('GhostBox', 'GhostBox'),
+            _text('Внешний вид, приложение и ссылки проекта',
+                'Appearance, app options and project links'),
+          ),
+          const SizedBox(height: 14),
+          _settingsCategoryTile(
+            Icons.palette_outlined,
+            _text('Персонализация', 'Personalization'),
+            _text('Тема, цвета, иконка, язык и фон',
+                'Theme, colors, icon, language and background'),
+            'appearance',
+          ),
+          _settingsCategoryTile(
+            Icons.apps_rounded,
+            _text('Приложение и обновления', 'App and updates'),
+            _text('Подписки, обновления и локальные данные',
+                'Subscriptions, updates and local data'),
+            'group_app',
+          ),
+          _settingsCategoryTile(
+            Icons.alternate_email_rounded,
+            _text('Контакты', 'Contacts'),
+            _text('Репозиторий, релизы и сайты',
+                'Repository, releases and websites'),
+            'contacts',
+          ),
+          _settingsCategoryTile(
+            Icons.new_releases_outlined,
+            _text('О релизе', 'Release information'),
+            _text('Версия и последние изменения', 'Version and latest changes'),
+            'release',
+          ),
+          _settingsCategoryTile(
+            Icons.view_agenda_outlined,
+            _text('Все настройки списком', 'All settings in one list'),
+            _text('Показать полный перечень параметров',
+                'Browse every setting in one list'),
+            'group_all',
+          ),
+        ],
+      );
+
+  Widget _connectionSettingsPage({bool includeIntro = true}) => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (includeIntro) ...[
+            _settingsPageIntro(
+                Icons.power_settings_new_rounded,
+                _text('Подключение и ядро', 'Connection and core'),
+                _text('Основные параметры локального подключения',
+                    'Core settings for the local connection')),
+            const SizedBox(height: 16),
+          ],
           _section(_text('ДВИЖОК И РЕЖИМ', 'ENGINE AND MODE')),
           _row(
               Icons.settings_rounded,
@@ -7740,15 +7974,17 @@ foreach ($route in $routes) {
         ],
       );
 
-  Widget _routingSettingsPage() => Column(
+  Widget _routingSettingsPage({bool includeIntro = true}) => Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _settingsPageIntro(
-              Icons.alt_route_rounded,
-              _text('Маршрут и DNS', 'Routing and DNS'),
-              _text('Правила выхода, DNS и фильтрация доменов',
-                  'Traffic rules, DNS and domain filtering')),
-          const SizedBox(height: 16),
+          if (includeIntro) ...[
+            _settingsPageIntro(
+                Icons.alt_route_rounded,
+                _text('Маршрут и DNS', 'Routing and DNS'),
+                _text('Правила выхода, DNS и фильтрация доменов',
+                    'Traffic rules, DNS and domain filtering')),
+            const SizedBox(height: 16),
+          ],
           _section(_text('МАРШРУТИЗАЦИЯ', 'ROUTING')),
           _row(
               Icons.alt_route_rounded,
@@ -7844,15 +8080,17 @@ foreach ($route in $routes) {
         ],
       );
 
-  Widget _protectionSettingsPage() => Column(
+  Widget _protectionSettingsPage({bool includeIntro = true}) => Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _settingsPageIntro(
-              Icons.shield_moon_outlined,
-              _text('Защита трафика', 'Traffic protection'),
-              _text('Kill Switch и параметры защиты сети',
-                  'Kill Switch and network protection')),
-          const SizedBox(height: 16),
+          if (includeIntro) ...[
+            _settingsPageIntro(
+                Icons.shield_moon_outlined,
+                _text('Защита трафика', 'Traffic protection'),
+                _text('Kill Switch и параметры защиты сети',
+                    'Kill Switch and network protection')),
+            const SizedBox(height: 16),
+          ],
           _section('KILL SWITCH'),
           _row(
               Icons.shield_moon_outlined,
@@ -8307,7 +8545,8 @@ foreach ($route in $routes) {
         'group_protection' ||
         'group_diagnostics' ||
         'group_advanced' ||
-        'group_app' =>
+        'group_app' ||
+        'group_ghostbox' =>
           _settingsGroupPage(),
         'group_all' => _legacySettingsHomeContent(),
         _ => _settingsHomeContent(),
@@ -8335,22 +8574,22 @@ foreach ($route in $routes) {
                 setState(() => english = next);
                 await prefs?.setBool('appEnglish', next);
               })),
-          if (Platform.isAndroid || Platform.isIOS)
-            _row(
-                Icons.vertical_align_top_rounded,
-                _text('Отступ острова сверху', 'Top island spacing'),
-                '${mobileTopSpacing.round()} px',
-                SizedBox(
-                    width: 180,
-                    child: _compactSlider(
-                        value: mobileTopSpacing,
-                        min: 0,
-                        max: 48,
-                        divisions: 12,
-                        onChanged: (value) {
-                          setState(() => mobileTopSpacing = value);
-                          prefs?.setDouble('mobileTopSpacing', value);
-                        }))),
+          _row(
+              Icons.vertical_align_top_rounded,
+              _text('Отступ контента сверху', 'Top content spacing'),
+              '${contentTopSpacing.round()} px',
+              SizedBox(
+                  width: 180,
+                  child: _compactSlider(
+                      value: contentTopSpacing,
+                      min: 0,
+                      max: 120,
+                      divisions: 24,
+                      onChanged: (value) {
+                        setState(() => contentTopSpacing = value);
+                        prefs?.setDouble('contentTopSpacing', value);
+                        prefs?.setDouble('mobileTopSpacing', value);
+                      }))),
           _row(
               Icons.auto_awesome_rounded,
               _text('Анимированный фон', 'Animated background'),
@@ -8364,13 +8603,42 @@ foreach ($route in $routes) {
                   onChanged: (value) async {
                     if (value == animatedBackground) return;
                     setState(() => animatedBackground = value);
-                    if (value) {
+                    if (value && !reduceAnimations) {
                       ambientMotion.repeat();
                     } else {
                       ambientMotion.stop();
                       ambientMotion.value = .12;
                     }
                     await prefs?.setBool('animatedBackground', value);
+                  })),
+          _row(
+              Icons.speed_rounded,
+              _localized('Оптимизированный режим'),
+              _localized(
+                  'Отключает blur-слои, сохраняя цвета и форму интерфейса'),
+              _compactSwitch(
+                  value: optimizedMode,
+                  onChanged: (value) async {
+                    if (value == optimizedMode) return;
+                    setState(() => optimizedMode = value);
+                    await prefs?.setBool('optimizedMode', value);
+                  })),
+          _row(
+              Icons.motion_photos_off_rounded,
+              _localized('Ограничить анимации'),
+              _localized('Короткие переходы и меньше одновременных эффектов'),
+              _compactSwitch(
+                  value: reduceAnimations,
+                  onChanged: (value) async {
+                    if (value == reduceAnimations) return;
+                    setState(() => reduceAnimations = value);
+                    if (value || !animatedBackground) {
+                      ambientMotion.stop();
+                      ambientMotion.value = .12;
+                    } else {
+                      ambientMotion.repeat();
+                    }
+                    await prefs?.setBool('reduceAnimations', value);
                   })),
           const SizedBox(height: 10),
           AnimatedSize(
@@ -8877,8 +9145,49 @@ foreach ($route in $routes) {
             _text('Неизвестно', 'Unknown');
     final model = await DeviceIdentity.deviceModel;
     final installId = await DeviceIdentity.installationId;
-    final xray = await _coreVersion('xray');
-    final singBox = await _coreVersion('sing-box');
+    late final String xray;
+    late final String singBox;
+    String? androidAbis;
+    if (Platform.isAndroid) {
+      try {
+        final inventory =
+            await (backend as AndroidVpnBackend).readEmbeddedCoreInventory();
+        String describe(String name) {
+          final core = inventory[name] ?? const <String, Object?>{};
+          if (core['available'] != true) {
+            final error = core['error'];
+            return error is String && error.isNotEmpty
+                ? 'Не найдено · $error'
+                : 'Не найдено в APK';
+          }
+          if (name == 'xray') {
+            final bytes = core['assetBytes'];
+            final size = bytes is num && bytes > 0
+                ? ' · ${(bytes / (1024 * 1024)).toStringAsFixed(1)} MiB'
+                : '';
+            return 'Встроен · ${core['kind'] ?? 'AAR'}$size';
+          }
+          final abis = (core['abis'] as List? ?? const [])
+              .map((abi) => abi.toString())
+              .toList();
+          return abis.isEmpty
+              ? 'Встроен · ABI не определены'
+              : 'Встроен · ${abis.join(', ')}';
+        }
+
+        xray = describe('xray');
+        singBox = describe('sing-box');
+        androidAbis = ((inventory['_device']?['abis'] as List? ?? const [])
+            .map((abi) => abi.toString())
+            .join(', '));
+      } on Object catch (error) {
+        xray = 'Не удалось проверить APK · $error';
+        singBox = 'Не удалось проверить APK · $error';
+      }
+    } else {
+      xray = await _coreVersion('xray');
+      singBox = await _coreVersion('sing-box');
+    }
     return <(String, String)>[
       ('GhostBox', appVersion),
       ('Номер сборки', buildNumber),
@@ -8890,6 +9199,8 @@ foreach ($route in $routes) {
       ('Dart', dartVersion),
       ('Xray-core', xray),
       ('sing-box', singBox),
+      if (androidAbis != null && androidAbis.isNotEmpty)
+        ('ABI устройства', androidAbis),
       ('Устройство', model),
       ('Операционная система', Platform.operatingSystem),
       ('Версия ОС', Platform.operatingSystemVersion),
@@ -9115,22 +9426,6 @@ foreach ($route in $routes) {
             _dnsBlocklistSourcesRow(),
             SizedBox(height: 14),
             _section('ПРИЛОЖЕНИЕ'),
-            if (Platform.isAndroid || Platform.isIOS)
-              _row(
-                  Icons.vertical_align_top_rounded,
-                  'Отступ острова сверху',
-                  '${mobileTopSpacing.round()} px',
-                  SizedBox(
-                      width: 180,
-                      child: _compactSlider(
-                          value: mobileTopSpacing,
-                          min: 0,
-                          max: 48,
-                          divisions: 12,
-                          onChanged: (value) {
-                            setState(() => mobileTopSpacing = value);
-                            prefs?.setDouble('mobileTopSpacing', value);
-                          }))),
             _row(
                 Icons.power_rounded,
                 'Автоподключение',
@@ -10265,9 +10560,8 @@ foreach ($route in $routes) {
       vertical: false,
       child: ClipRRect(
         borderRadius: BorderRadius.circular(29),
-        child: BackdropFilter(
-          // Keep the tab dock glassy even when the app-wide preview is off.
-          filter: ui.ImageFilter.blur(sigmaX: 3, sigmaY: 3),
+        child: _backdropBlur(
+          sigma: 3,
           child: Container(
               key: _bottomNavKey,
               height: 84,
@@ -10538,6 +10832,193 @@ foreach ($route in $routes) {
                       color: active ? _foreground : _muted,
                       fontWeight: active ? FontWeight.w600 : FontWeight.normal),
                   child: Text(label)))));
+}
+
+class _SettingsCategoryCard extends StatefulWidget {
+  const _SettingsCategoryCard({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.accent,
+    required this.foreground,
+    required this.muted,
+    required this.surface,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final Color accent;
+  final Color foreground;
+  final Color muted;
+  final Color surface;
+  final VoidCallback onTap;
+
+  @override
+  State<_SettingsCategoryCard> createState() => _SettingsCategoryCardState();
+}
+
+class _SettingsCategoryCardState extends State<_SettingsCategoryCard> {
+  bool hovered = false;
+
+  @override
+  Widget build(BuildContext context) => MouseRegion(
+        onEnter: (_) => setState(() => hovered = true),
+        onExit: (_) => setState(() => hovered = false),
+        child: Material(
+          color: Colors.transparent,
+          borderRadius: BorderRadius.circular(17),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(17),
+            onTap: widget.onTap,
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 220),
+              curve: Curves.easeOutCubic,
+              padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 12),
+              decoration: BoxDecoration(
+                color: Color.alphaBlend(
+                  widget.accent.withValues(alpha: hovered ? .09 : 0),
+                  widget.surface,
+                ),
+                borderRadius: BorderRadius.circular(17),
+                border: Border.all(
+                  color: hovered
+                      ? widget.accent.withValues(alpha: .52)
+                      : Colors.white.withValues(alpha: .08),
+                ),
+              ),
+              child: Row(children: [
+                TweenAnimationBuilder<Color?>(
+                  tween: ColorTween(
+                    begin: widget.muted,
+                    end: hovered ? widget.accent : widget.muted,
+                  ),
+                  duration: const Duration(milliseconds: 220),
+                  curve: Curves.easeOutCubic,
+                  builder: (context, color, child) => Icon(
+                    widget.icon,
+                    color: color,
+                  ),
+                ),
+                const SizedBox(width: 13),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        widget.title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: widget.foreground,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        widget.subtitle,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(color: widget.muted, fontSize: 11),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                TweenAnimationBuilder<Color?>(
+                  tween: ColorTween(
+                    begin: widget.muted,
+                    end: hovered ? widget.accent : widget.muted,
+                  ),
+                  duration: const Duration(milliseconds: 220),
+                  builder: (context, color, child) => Icon(
+                    Icons.chevron_right_rounded,
+                    color: color,
+                  ),
+                ),
+              ]),
+            ),
+          ),
+        ),
+      );
+}
+
+class _PopupMenuSurface extends StatefulWidget {
+  const _PopupMenuSurface({
+    required this.accent,
+    required this.foreground,
+    required this.optimizedMode,
+    required this.child,
+  });
+
+  final Color accent;
+  final Color foreground;
+  final bool optimizedMode;
+  final Widget child;
+
+  @override
+  State<_PopupMenuSurface> createState() => _PopupMenuSurfaceState();
+}
+
+class _PopupMenuSurfaceState extends State<_PopupMenuSurface> {
+  bool hovered = false;
+  bool pressed = false;
+
+  @override
+  Widget build(BuildContext context) => MouseRegion(
+        onEnter: (_) => setState(() => hovered = true),
+        onExit: (_) => setState(() {
+          hovered = false;
+          pressed = false;
+        }),
+        child: Listener(
+          onPointerDown: (_) => setState(() => pressed = true),
+          onPointerUp: (_) => setState(() => pressed = false),
+          onPointerCancel: (_) => setState(() => pressed = false),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(13),
+            child: widget.optimizedMode
+                ? surface
+                : BackdropFilter(
+                    filter: ui.ImageFilter.blur(sigmaX: 13, sigmaY: 13),
+                    child: surface),
+          ),
+        ),
+      );
+
+  Widget get surface => AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        curve: Curves.easeOutCubic,
+        width: double.infinity,
+        margin: const EdgeInsets.symmetric(vertical: 1),
+        padding: const EdgeInsets.symmetric(
+          horizontal: 10,
+          vertical: 7,
+        ),
+        decoration: BoxDecoration(
+          color: widget.accent.withValues(
+            alpha: pressed
+                ? .2
+                : hovered
+                    ? .135
+                    : .075,
+          ),
+          borderRadius: BorderRadius.circular(13),
+          border: Border.all(
+            color: Colors.white.withValues(
+              alpha: hovered || pressed ? .12 : .055,
+            ),
+          ),
+        ),
+        child: IconTheme(
+          data: IconThemeData(color: widget.accent),
+          child: DefaultTextStyle.merge(
+            style: TextStyle(color: widget.foreground),
+            child: widget.child,
+          ),
+        ),
+      );
 }
 
 class _AmbientBackgroundPainter extends CustomPainter {

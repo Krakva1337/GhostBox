@@ -37,6 +37,31 @@ class AndroidVpnBackend implements VpnBackend {
   CoreSettings settings = const CoreSettings();
   int _readLogCount = 0;
 
+  /// Describes the native cores embedded in this Android APK. Android does
+  /// not ship vendor/bin CLI files, so checking coreExecutable() is invalid.
+  Future<Map<String, Map<String, Object?>>> readEmbeddedCoreInventory() async {
+    final inventory = await _channel.invokeMethod<Map<dynamic, dynamic>>(
+      'androidCoreInventory',
+    );
+    if (inventory == null) return const <String, Map<String, Object?>>{};
+    final result = <String, Map<String, Object?>>{};
+    for (final core in const ['xray', 'sing-box']) {
+      final value = inventory[core];
+      if (value is Map) {
+        result[core] = value.map<String, Object?>(
+          (key, item) => MapEntry(key.toString(), item),
+        );
+      }
+    }
+    final deviceAbis = inventory['deviceAbis'];
+    if (deviceAbis is List) {
+      result['_device'] = <String, Object?>{
+        'abis': deviceAbis.map((abi) => abi.toString()).toList(),
+      };
+    }
+    return result;
+  }
+
   Future<void> refreshState() async {
     final nativeState = await _channel.invokeMethod<String>('vpnState');
     state = switch (nativeState) {

@@ -44,7 +44,7 @@ class GitHubUpdater {
   );
   static const currentVersion = String.fromEnvironment(
     'GHOSTBOX_VERSION',
-    defaultValue: '1.4.1-alpha',
+    defaultValue: '1.4.2-alpha',
   );
   static const _androidUpdateChannel =
       MethodChannel('app.ghostbox.ghostbox/app_update');

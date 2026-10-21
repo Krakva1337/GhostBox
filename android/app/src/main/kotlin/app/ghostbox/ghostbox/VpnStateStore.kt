@@ -4,30 +4,47 @@ import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.io.RandomAccessFile
+import java.nio.channels.FileChannel
 
 /** Small cross-process state bridge for the isolated native core services. */
 internal object VpnStateStore {
     private const val FILE_NAME = "ghostbox-vpn-state.json"
+    private const val LOCK_FILE_NAME = "ghostbox-vpn-state.lock"
     private const val MAX_LOG_LINES = 1000
 
     private fun file(context: Context) = File(context.filesDir, FILE_NAME)
+    private fun lockFile(context: Context) = File(context.filesDir, LOCK_FILE_NAME)
 
-    private fun read(context: Context): JSONObject = runCatching {
+    private fun readUnlocked(context: Context): JSONObject = runCatching {
         JSONObject(file(context).takeIf { it.isFile }?.readText() ?: "{}")
     }.getOrElse { JSONObject() }
 
     @Synchronized
+    fun read(context: Context): JSONObject = withLock(context) {
+        readUnlocked(context)
+    }
+
+    @Synchronized
     fun update(context: Context, block: (JSONObject) -> Unit) {
-        val target = file(context)
-        val temporary = File(context.filesDir, "$FILE_NAME.tmp")
-        val value = read(context)
-        block(value)
-        temporary.writeText(value.toString())
-        if (!temporary.renameTo(target)) {
-            target.writeText(value.toString())
-            temporary.delete()
+        withLock(context) {
+            val target = file(context)
+            val temporary = File(context.filesDir, "$FILE_NAME.tmp")
+            val value = readUnlocked(context)
+            block(value)
+            temporary.writeText(value.toString())
+            if (!temporary.renameTo(target)) {
+                target.writeText(value.toString())
+                temporary.delete()
+            }
         }
     }
+
+    private inline fun <T> withLock(context: Context, action: () -> T): T =
+        RandomAccessFile(lockFile(context), "rw").use { lockHandle ->
+            val channel: FileChannel = lockHandle.channel
+            channel.lock().use { action() }
+        }
 
     fun updateForCore(context: Context, core: String, block: (JSONObject) -> Unit) {
         update(context) { value ->

@@ -12,6 +12,7 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import androidx.core.content.FileProvider
 import java.io.File
+import java.util.zip.ZipFile
 
 class MainActivity : FlutterActivity() {
     companion object {
@@ -68,6 +69,7 @@ class MainActivity : FlutterActivity() {
                     }
                     "vpnState" -> result.success(VpnStateStore.state(this))
                     "vpnError" -> result.success(VpnStateStore.error(this))
+                    "androidCoreInventory" -> result.success(androidCoreInventory())
                     "androidKillSwitchStatus" -> result.success(androidKillSwitchStatus())
                     "openAndroidVpnSettings" -> {
                         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
@@ -213,6 +215,47 @@ class MainActivity : FlutterActivity() {
                     result.error("install_failed", error.message, null)
                 }
             }
+    }
+
+    /**
+     * Mobile builds embed native cores instead of shipping desktop CLI binaries
+     * under vendor/bin. Inspect this installed APK so diagnostics don't report
+     * the Android cores as missing just because Process.run() cannot find them.
+     */
+    private fun androidCoreInventory(): Map<String, Any> {
+        val installedAbis = Build.SUPPORTED_ABIS.toList()
+        return try {
+            ZipFile(applicationInfo.sourceDir).use { apk ->
+                val xrayAsset = apk.getEntry("assets/libXray.aar")
+                // libXray is packaged as an AAR asset and extracted by
+                // XrayVpnService's child class loader when Xray is selected.
+                // The service validates classes.jar and selected libgojni.so
+                // without copying/examining the 50+ MB AAR just to open About.
+                val singBoxAbis = installedAbis.filter { abi ->
+                    val entry = apk.getEntry("lib/$abi/libbox.so")
+                    entry != null && entry.size > 0
+                }
+                mapOf(
+                    "xray" to mapOf(
+                        "available" to (xrayAsset != null && xrayAsset.size > 0),
+                        "kind" to "embedded AAR",
+                        "assetBytes" to (xrayAsset?.size ?: 0L),
+                    ),
+                    "sing-box" to mapOf(
+                        "available" to singBoxAbis.isNotEmpty(),
+                        "kind" to "embedded JNI library",
+                        "abis" to singBoxAbis,
+                    ),
+                    "deviceAbis" to installedAbis,
+                )
+            }
+        } catch (error: Exception) {
+            mapOf(
+                "xray" to mapOf("available" to false, "kind" to "embedded AAR", "error" to error.message),
+                "sing-box" to mapOf("available" to false, "kind" to "embedded JNI library", "error" to error.message),
+                "deviceAbis" to installedAbis,
+            )
+        }
     }
 
     @Suppress("DEPRECATION")

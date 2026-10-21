@@ -39,6 +39,7 @@ class GhostBoxVpnService : VpnService(), CommandServerHandler {
     private var commandServer: CommandServer? = null
     @Volatile private var currentProfileName = "GhostBox"
     @Volatile private var stopping = false
+    @Volatile private var tunEstablished = false
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         recordAndroidVpnPolicy()
@@ -72,6 +73,7 @@ class GhostBoxVpnService : VpnService(), CommandServerHandler {
     }
 
     private fun startCore(config: String, memoryMb: Int) {
+        var phase = "initializing libbox"
         try {
             val setup = SetupOptions().apply {
                 basePath = filesDir.absolutePath
@@ -99,6 +101,7 @@ class GhostBoxVpnService : VpnService(), CommandServerHandler {
                 }
             }
             if (stopping) return
+            phase = "starting the sing-box command server"
             val platform = createPlatform()
             val server = CommandServer(this, platform)
             server.start()
@@ -108,17 +111,25 @@ class GhostBoxVpnService : VpnService(), CommandServerHandler {
                 commandServer = null
                 return
             }
+            tunEstablished = false
+            phase = "installing the Android TUN interface"
             server.startOrReloadService(config, OverrideOptions())
+            if (!tunEstablished) {
+                error("sing-box returned without asking Android to establish a TUN interface")
+            }
             VpnStateStore.updateForCore(this, "sing-box") {
                 it.put("state", "connected").remove("error")
             }
             updateNotification(connected = true)
             Log.i(TAG, "sing-box VPN service started")
         } catch (error: Throwable) {
-            Log.e(TAG, "sing-box failed to start", error)
+            val detail = "sing-box failed while $phase: ${error.message ?: error.javaClass.name}"
+            Log.e(TAG, detail, error)
             VpnStateStore.updateForCore(this, "sing-box") {
-                it.put("state", "error").put("error", error.message ?: error.toString())
+                it.put("state", "error").put("error", detail)
             }
+            VpnStateStore.appendLog(this, detail)
+            VpnStateStore.appendLog(this, Log.getStackTraceString(error))
             stopVpn()
         }
     }
@@ -222,7 +233,11 @@ class GhostBoxVpnService : VpnService(), CommandServerHandler {
             }
         }
         val descriptor = builder.establish() ?: error("Could not establish Android VPN interface")
-        return descriptor.detachFd()
+        val fd = descriptor.detachFd()
+        tunEstablished = true
+        Log.i(TAG, "Android TUN established (fd=$fd, mtu=${options.mtu})")
+        VpnStateStore.appendLog(this, "Android sing-box TUN established (MTU ${options.mtu})")
+        return fd
     }
 
     private inline fun <T> RoutePrefixIterator.forEach(action: (RoutePrefix) -> T) {
