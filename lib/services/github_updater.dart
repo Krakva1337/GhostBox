@@ -249,10 +249,13 @@ class GitHubUpdater {
       }
       if (Platform.isAndroid) {
         final result = await _androidUpdateChannel
-            .invokeMethod<String>('installApk', {'path': package.path});
-        if (result == 'permission_required') {
+            .invokeMethod<String>('saveApkToDownloads', {
+          'path': package.path,
+          'fileName': 'GhostBox-${release.version}.apk',
+        });
+        if (result != 'downloads_opened') {
           throw const FileSystemException(
-              'Разреши GhostBox устанавливать приложения в системных настройках и нажми «Проверить обновления» ещё раз.');
+              'Android не смог открыть папку «Загрузки». APK сохранён в памяти приложения.');
         }
         if (package.existsSync()) await package.delete();
         return;

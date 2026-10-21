@@ -1,16 +1,19 @@
 package app.ghostbox.ghostbox
 
 import android.app.Activity
+import android.app.DownloadManager
 import android.Manifest
+import android.content.ContentValues
 import android.content.pm.PackageManager
 import android.content.Intent
 import android.net.VpnService
 import android.net.Uri
 import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
-import androidx.core.content.FileProvider
 import java.io.File
 import java.util.zip.ZipFile
 
@@ -22,6 +25,7 @@ class MainActivity : FlutterActivity() {
         private const val VPN_PERMISSION_REQUEST = 4137
         private const val NOTIFICATION_PERMISSION_REQUEST = 4138
         private const val LOG_EXPORT_REQUEST = 4139
+        private const val DOWNLOADS_PERMISSION_REQUEST = 4140
     }
 
     private var pendingVpnResult: MethodChannel.Result? = null
@@ -33,6 +37,9 @@ class MainActivity : FlutterActivity() {
     private var pendingKeepXray = false
     private var pendingLogExportResult: MethodChannel.Result? = null
     private var pendingLogExportContent: ByteArray? = null
+    private var pendingDownloadsResult: MethodChannel.Result? = null
+    private var pendingDownloadsSource: String? = null
+    private var pendingDownloadsName: String? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -71,6 +78,13 @@ class MainActivity : FlutterActivity() {
                             // descriptors before stopping. stopService() can
                             // destroy the service before asynchronous libbox
                             // cleanup releases Android's TUN route.
+                            VpnStateStore.update(this) {
+                                it.put("state", "stopping")
+                                    .put("xrayProxyState", "stopping")
+                                    .put("singBoxStopComplete", false)
+                                    .put("xrayStopComplete", false)
+                                    .remove("connectedAtMs")
+                            }
                             val stopIntent = Intent("app.ghostbox.STOP_VPN")
                             startService(Intent(stopIntent).setClass(this, GhostBoxVpnService::class.java))
                             startService(Intent(stopIntent).setClass(this, XrayVpnService::class.java))
@@ -80,6 +94,13 @@ class MainActivity : FlutterActivity() {
                         }
                     }
                     "vpnState" -> result.success(currentVpnState())
+                    "vpnStopComplete" -> {
+                        val state = VpnStateStore.read(this)
+                        result.success(
+                            state.optBoolean("singBoxStopComplete") &&
+                                state.optBoolean("xrayStopComplete"),
+                        )
+                    }
                     "vpnConnectedAt" -> result.success(VpnStateStore.connectedAtMs(this))
                     "vpnError" -> result.success(VpnStateStore.error(this))
                     "androidCoreInventory" -> result.success(androidCoreInventory())
@@ -193,7 +214,7 @@ class MainActivity : FlutterActivity() {
             }
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, UPDATE_CHANNEL)
             .setMethodCallHandler { call, result ->
-                if (call.method != "installApk") {
+                if (call.method != "saveApkToDownloads") {
                     result.notImplemented()
                     return@setMethodCallHandler
                 }
@@ -202,57 +223,27 @@ class MainActivity : FlutterActivity() {
                     result.error("missing_apk", "APK path was not provided", null)
                     return@setMethodCallHandler
                 }
+                val fileName = call.argument<String>("fileName")
+                    ?.substringAfterLast('/')
+                    ?.takeIf { it.endsWith(".apk", ignoreCase = true) }
+                    ?: "GhostBox-update.apk"
                 try {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
-                        !packageManager.canRequestPackageInstalls()
+                    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q &&
+                        checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) !=
+                        PackageManager.PERMISSION_GRANTED
                     ) {
-                        startActivity(
-                            Intent(
-                                android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
-                                Uri.parse("package:$packageName"),
-                            ),
+                        pendingDownloadsResult = result
+                        pendingDownloadsSource = sourcePath
+                        pendingDownloadsName = fileName
+                        requestPermissions(
+                            arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE),
+                            DOWNLOADS_PERMISSION_REQUEST,
                         )
-                        result.success("permission_required")
                         return@setMethodCallHandler
                     }
-                    val source = File(sourcePath)
-                    if (!source.isFile) {
-                        result.error("missing_apk", "Downloaded APK was not found", null)
-                        return@setMethodCallHandler
-                    }
-                    val updateDirectory = File(cacheDir, "updates").apply { mkdirs() }
-                    updateDirectory.listFiles()
-                        ?.filter { it.name.startsWith("GhostBox-update-") }
-                        ?.forEach { it.delete() }
-                    val stagedApk = File(
-                        updateDirectory,
-                        "GhostBox-update-${System.nanoTime()}.apk",
-                    )
-                    source.copyTo(stagedApk, overwrite = true)
-                    if (stagedApk.length() != source.length()) {
-                        stagedApk.delete()
-                        throw IllegalStateException("Downloaded APK copy is incomplete.")
-                    }
-                    validateUpdateApk(stagedApk)
-                    val apk = File(updateDirectory, "GhostBox-update.apk")
-                    apk.delete()
-                    if (!stagedApk.renameTo(apk)) {
-                        stagedApk.copyTo(apk, overwrite = true)
-                        stagedApk.delete()
-                    }
-                    val apkUri = FileProvider.getUriForFile(
-                        this,
-                        "$packageName.fileprovider",
-                        apk,
-                    )
-                    val installIntent = Intent(Intent.ACTION_INSTALL_PACKAGE).apply {
-                        setDataAndType(apkUri, "application/vnd.android.package-archive")
-                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    }
-                    startActivity(installIntent)
-                    result.success("installer_opened")
+                    result.success(saveApkAndOpenDownloads(sourcePath, fileName))
                 } catch (error: Exception) {
-                    result.error("install_failed", error.message, null)
+                    result.error("downloads_failed", error.message, null)
                 }
             }
     }
@@ -432,12 +423,109 @@ class MainActivity : FlutterActivity() {
         grantResults: IntArray,
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == DOWNLOADS_PERMISSION_REQUEST) {
+            val result = pendingDownloadsResult
+            val sourcePath = pendingDownloadsSource
+            val fileName = pendingDownloadsName
+            pendingDownloadsResult = null
+            pendingDownloadsSource = null
+            pendingDownloadsName = null
+            if (result == null) return
+            if (grantResults.firstOrNull() != PackageManager.PERMISSION_GRANTED) {
+                result.error(
+                    "downloads_permission_denied",
+                    "Разреши доступ к Загрузкам, чтобы сохранить APK.",
+                    null,
+                )
+                return
+            }
+            try {
+                result.success(
+                    saveApkAndOpenDownloads(
+                        sourcePath ?: error("Downloaded APK path was lost"),
+                        fileName ?: "GhostBox-update.apk",
+                    ),
+                )
+            } catch (error: Exception) {
+                result.error("downloads_failed", error.message, null)
+            }
+            return
+        }
         if (requestCode != NOTIFICATION_PERMISSION_REQUEST) return
         val result = pendingVpnResult ?: return
         pendingVpnResult = null
         // Notifications are optional for connectivity. Continue to the VPN
         // consent screen even when the user declines this permission.
         requestVpnPermission(result)
+    }
+
+    private fun saveApkAndOpenDownloads(sourcePath: String, fileName: String): String {
+        val source = File(sourcePath)
+        if (!source.isFile || source.length() <= 0L) {
+            error("Downloaded APK was not found or is empty")
+        }
+        validateUpdateApk(source)
+        val mimeType = "application/vnd.android.package-archive"
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val relativePath = "${Environment.DIRECTORY_DOWNLOADS}/GhostBox/"
+            val values = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+                put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
+                put(MediaStore.MediaColumns.RELATIVE_PATH, relativePath)
+                put(MediaStore.MediaColumns.IS_PENDING, 1)
+            }
+            val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                ?: error("Android could not create a file in Downloads")
+            try {
+                val output = contentResolver.openOutputStream(uri, "w")
+                    ?: error("Android could not open the Downloads file")
+                output.use { stream -> source.inputStream().use { it.copyTo(stream) } }
+                val completed = ContentValues().apply {
+                    put(MediaStore.MediaColumns.IS_PENDING, 0)
+                }
+                if (contentResolver.update(uri, completed, null, null) <= 0) {
+                    error("Android could not finish saving the APK")
+                }
+            } catch (error: Exception) {
+                contentResolver.delete(uri, null, null)
+                throw error
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            val downloads = Environment.getExternalStoragePublicDirectory(
+                Environment.DIRECTORY_DOWNLOADS,
+            )
+            val directory = File(downloads, "GhostBox").apply { mkdirs() }
+            val destination = File(directory, fileName)
+            source.copyTo(destination, overwrite = true)
+            if (destination.length() != source.length()) {
+                destination.delete()
+                error("Downloaded APK copy is incomplete")
+            }
+            @Suppress("DEPRECATION")
+            getSystemService(DownloadManager::class.java).addCompletedDownload(
+                destination.name,
+                "GhostBox Android update",
+                true,
+                mimeType,
+                destination.absolutePath,
+                destination.length(),
+                true,
+            )
+        }
+
+        val downloadsIntent = Intent("android.intent.action.VIEW_DOWNLOADS")
+        if (downloadsIntent.resolveActivity(packageManager) != null) {
+            startActivity(downloadsIntent)
+        } else {
+            startActivity(
+                Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                    type = mimeType
+                },
+            )
+        }
+        return "downloads_opened"
     }
 
     private fun requestVpnPermission(result: MethodChannel.Result) {
@@ -470,11 +558,65 @@ class MainActivity : FlutterActivity() {
      */
     private fun currentVpnState(): String {
         val state = VpnStateStore.state(this)
-        if (state != "connecting" && state != "connected") return state
-        val processName = "$packageName:${if (VpnStateStore.activeCore(this) == "xray") "xray" else "singboxcore"}"
+        val core = VpnStateStore.activeCore(this)
         val processes = getSystemService(android.app.ActivityManager::class.java)
-            .runningAppProcesses ?: return state
-        if (processes.any { it.processName == processName }) return state
+        fun serviceAlive(processName: String, serviceSuffix: String): Boolean =
+            processes.runningAppProcesses?.any { it.processName == processName } == true ||
+                processes.getRunningServices(1000).any { service ->
+                    service.process == processName &&
+                        service.service.className.endsWith(serviceSuffix)
+                }
+
+        val processName = "$packageName:${if (core == "xray") "xray" else "singboxcore"}"
+        val coreAlive = serviceAlive(
+            processName,
+            if (core == "xray") "XrayVpnService" else "GhostBoxVpnService",
+        )
+        val xrayAlive = serviceAlive("$packageName:xray", "XrayVpnService")
+
+        // A launcher Activity can be recreated while either foreground VPN
+        // service survives. If persisted state says disconnected, it is an
+        // orphaned core: stop it before the next user connection can start a
+        // second Xray runtime and report the stale state to Flutter.
+        if (state != "connecting" && state != "connected") {
+            if (!coreAlive && !xrayAlive) return state
+            val message = "При запуске обнаружен оставшийся VPN-процесс; выполняется очистка"
+            VpnStateStore.update(this) {
+                it.put("state", "error").put("error", message)
+                if (xrayAlive) it.put("xrayProxyState", "error").put("xrayProxyError", message)
+                it.remove("connectedAtMs")
+            }
+            val stopIntent = Intent("app.ghostbox.STOP_VPN")
+            startService(Intent(stopIntent).setClass(this, GhostBoxVpnService::class.java))
+            startService(Intent(stopIntent).setClass(this, XrayVpnService::class.java))
+            VpnStateStore.appendLog(this, message)
+            return "error"
+        }
+
+        // XHTTP/REALITY uses Xray as an upstream proxy process while
+        // sing-box owns the system TUN. Checking only activeCore therefore
+        // made a dead Xray process look like a healthy connection after the
+        // Activity was recreated.
+        val saved = VpnStateStore.read(this)
+        val xrayState = saved.optString("xrayProxyState", "disconnected")
+        val xrayStartedAt = saved.optLong("xrayProxyStartedAtMs")
+        if (core == "sing-box" && xrayState in setOf("connecting", "connected") &&
+            !xrayAlive && xrayStartedAt > 0L &&
+            System.currentTimeMillis() - xrayStartedAt >= 5_000L
+        ) {
+            val message = "VPN-процесс Xray завершился; Android TUN больше не может передавать трафик"
+            VpnStateStore.update(this) {
+                it.put("state", "error")
+                    .put("xrayProxyState", "error")
+                    .put("xrayProxyError", message)
+                    .put("error", message)
+                it.remove("connectedAtMs")
+                it.remove("startedAtMs")
+            }
+            VpnStateStore.appendLog(this, message)
+            return "error"
+        }
+        if (coreAlive) return state
 
         val lastTransitionAt = VpnStateStore.read(this).let { value ->
             maxOf(value.optLong("startedAtMs"), value.optLong("connectedAtMs"))
@@ -483,7 +625,6 @@ class MainActivity : FlutterActivity() {
             System.currentTimeMillis() - lastTransitionAt < 5_000L
         ) return state
 
-        val core = VpnStateStore.activeCore(this)
         val exit = recentVpnServiceExit(core)
         val message = buildString {
             append("VPN-процесс ").append(core).append(" завершился во время подключения")
@@ -536,7 +677,9 @@ class MainActivity : FlutterActivity() {
             it.remove("connectedAtMs")
             it.put("startedAtMs", System.currentTimeMillis())
             if (proxyOnly) {
-                it.put("xrayProxyState", "connecting").remove("xrayProxyError")
+                it.put("xrayProxyState", "connecting")
+                    .put("xrayProxyStartedAtMs", System.currentTimeMillis())
+                    .remove("xrayProxyError")
             }
         }
         if (core == "xray") {

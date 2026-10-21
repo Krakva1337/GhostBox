@@ -403,7 +403,31 @@ class AndroidVpnBackend implements VpnBackend {
     try {
       await _channel
           .invokeMethod<void>('stopVpn')
-          .timeout(const Duration(seconds: 8));
+          .timeout(const Duration(seconds: 3));
+      final stopwatch = Stopwatch()..start();
+      while (stopwatch.elapsed < const Duration(seconds: 12)) {
+        try {
+          final nativeState = await _channel
+              .invokeMethod<String>('vpnState')
+              .timeout(const Duration(milliseconds: 750));
+          final xrayState = await _channel
+              .invokeMethod<String>('xrayProxyState')
+              .timeout(const Duration(milliseconds: 750));
+          final stopComplete = await _channel
+                  .invokeMethod<bool>('vpnStopComplete')
+                  .timeout(const Duration(milliseconds: 750)) ??
+              false;
+          if (stopComplete &&
+              nativeState == 'disconnected' &&
+              xrayState == 'disconnected') {
+            break;
+          }
+        } on Object {
+          // Keep polling while the Android services finish asynchronous core
+          // and TUN cleanup.
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+      }
     } on Object {
       // Always clear the local spinner even if Android does not acknowledge
       // service shutdown; the native service has its own stop cleanup path.

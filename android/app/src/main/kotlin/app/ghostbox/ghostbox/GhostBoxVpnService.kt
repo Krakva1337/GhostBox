@@ -44,6 +44,7 @@ class GhostBoxVpnService : VpnService(), CommandServerHandler {
     @Volatile private var currentProfileName = "GhostBox"
     @Volatile private var stopping = false
     @Volatile private var tunEstablished = false
+    @Volatile private var explicitStopRequested = false
     private val lifecycleLock = Any()
     private var startWorkerRunning = false
     private var pendingStart: StartRequest? = null
@@ -56,6 +57,7 @@ class GhostBoxVpnService : VpnService(), CommandServerHandler {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         recordAndroidVpnPolicy()
         if (intent?.action == "app.ghostbox.STOP_VPN") {
+            explicitStopRequested = true
             synchronized(lifecycleLock) { latestStartId = startId }
             stopVpn()
             return START_NOT_STICKY
@@ -80,6 +82,7 @@ class GhostBoxVpnService : VpnService(), CommandServerHandler {
      */
     private fun enqueueStart(request: StartRequest, startId: Int): Boolean = synchronized(lifecycleLock) {
         latestStartId = startId
+        explicitStopRequested = false
         pendingStart = request // Keep the newest intent while a start is in flight.
         if (startWorkerRunning || stopCleanupRunning) false else {
             stopping = false
@@ -572,10 +575,18 @@ class GhostBoxVpnService : VpnService(), CommandServerHandler {
                 stopCleanupPending = false
                 startWorkerRunning = true
             } else {
-                if (VpnStateStore.state(this) != "error") {
+                if (VpnStateStore.state(this) != "error" || explicitStopRequested) {
                     VpnStateStore.updateForCore(this, "sing-box") {
                         it.put("state", "disconnected").remove("connectedAtMs")
                         it.remove("startedAtMs")
+                    }
+                    VpnStateStore.update(this) {
+                        if (it.optString("state") == "stopping") {
+                            it.put("state", "disconnected").remove("connectedAtMs")
+                            it.remove("startedAtMs")
+                        }
+                        if (explicitStopRequested) it.put("xrayProxyState", "disconnected")
+                        if (explicitStopRequested) it.put("singBoxStopComplete", true)
                     }
                 }
                 stopForeground(STOP_FOREGROUND_REMOVE)

@@ -1210,6 +1210,9 @@ class _HomePageState extends State<HomePage>
     if (mounted && autoUpdateApp) {
       await _checkAppUpdate(silent: true);
     }
+    if (Platform.isAndroid) {
+      await _restoreAndroidVpnSession(p);
+    }
     if (mounted &&
         (coreSettings.autoConnect || resumeAfterElevation) &&
         selected != null &&
@@ -1326,7 +1329,7 @@ class _HomePageState extends State<HomePage>
     uptimeTicker?.cancel();
     glow.dispose();
     ambientMotion.dispose();
-    unawaited(_disconnectActive());
+    if (!Platform.isAndroid) unawaited(_disconnectActive());
     super.dispose();
   }
 
@@ -1345,6 +1348,7 @@ class _HomePageState extends State<HomePage>
       glow.stop();
       await _disconnectActive();
       activeProfileId = null;
+      await prefs?.remove('activeProfileId');
       pendingReconnect = false;
     } else if (selected != null) {
       if (Platform.isWindows &&
@@ -1519,6 +1523,7 @@ class _HomePageState extends State<HomePage>
           await systemProxy.enable(runtimeLocalPort);
         }
         activeProfileId = attemptProfile.id;
+        await prefs?.setString('activeProfileId', attemptProfile.id);
         pendingReconnect = false;
         _recordAppLog(
             'Подключено к ${attemptProfile.name} · $attemptCore · $attemptMode');
@@ -1536,6 +1541,7 @@ class _HomePageState extends State<HomePage>
         _recordAppLog('Ошибка подключения: $message');
         await _disconnectActive();
         activeProfileId = null;
+        await prefs?.remove('activeProfileId');
         connectionIssue = message;
         await _saveConnectionAttempt(
             profile: attemptProfile.name,
@@ -1553,10 +1559,48 @@ class _HomePageState extends State<HomePage>
       _message('Сначала добавьте и выберите сервер');
     }
     if (mounted) setState(() {});
+    _startConnectedMonitoring();
+  }
+
+  Future<void> _restoreAndroidVpnSession(SharedPreferences storage) async {
+    final mobileBackend = backend;
+    if (mobileBackend is! AndroidVpnBackend) return;
+    try {
+      await mobileBackend.refreshState().timeout(const Duration(seconds: 5));
+      if (mobileBackend.state == VpnState.connected ||
+          mobileBackend.state == VpnState.connecting) {
+        final restoredProfile = storage.getString('activeProfileId') ??
+            storage.getString('selectedProfile');
+        if (restoredProfile != null &&
+            profiles.any((p) => p.id == restoredProfile)) {
+          activeProfileId = restoredProfile;
+          await storage.setString('activeProfileId', restoredProfile);
+        }
+        _recordAppLog(mobileBackend.state == VpnState.connected
+            ? 'Обнаружено активное Android VPN-подключение; состояние восстановлено'
+            : 'Обнаружен запускающийся Android VPN-процесс; состояние восстановлено');
+        if (mounted) setState(() {});
+        _startConnectedMonitoring();
+        return;
+      }
+      if (mobileBackend.state == VpnState.error) {
+        connectionIssue = mobileBackend.lastError;
+        _recordAppLog(
+            'Android VPN-процесс завершился: ${connectionIssue ?? 'ошибка ядра'}');
+        await mobileBackend.disconnect();
+      }
+    } on Object catch (error) {
+      _recordAppLog('Не удалось восстановить состояние Android VPN: $error');
+    }
+  }
+
+  void _startConnectedMonitoring() {
     uptimeTicker?.cancel();
-    if (backend.state == VpnState.connected) {
-      if (!glow.isAnimating) glow.forward(from: 0);
-      uptimeTicker = Timer.periodic(Duration(seconds: 1), (_) {
+    final connected = backend.state == VpnState.connected;
+    if (connected || backend.state == VpnState.connecting) {
+      if (connected && !glow.isAnimating) glow.forward(from: 0);
+      if (!connected) glow.stop();
+      uptimeTicker = Timer.periodic(const Duration(seconds: 1), (_) {
         if (!mounted) return;
         if (backend is AndroidVpnBackend) {
           unawaited(
@@ -1567,6 +1611,7 @@ class _HomePageState extends State<HomePage>
             activeProfileId != null &&
             !switchingServer) {
           activeProfileId = null;
+          unawaited(prefs?.remove('activeProfileId').then((_) {}));
           glow.stop();
           connectionIssue ??= process?.lastError ??
               'Ядро завершилось после автоматических попыток перезапуска';
@@ -1580,6 +1625,7 @@ class _HomePageState extends State<HomePage>
               'TUN-маршрутизатор sing-box остановился';
           _recordAppLog('Потеряно соединение: $connectionIssue');
           activeProfileId = null;
+          unawaited(prefs?.remove('activeProfileId').then((_) {}));
           glow.stop();
           unawaited(_disconnectActive());
           uptimeTicker?.cancel();
@@ -2854,20 +2900,21 @@ foreach ($route in $routes) {
     var httpPort = 0;
     try {
       if (Platform.isAndroid) {
-        // Android cores live in the VPN service/AAR. Reuse the active service's
-        // loopback HTTP inbound instead of trying to launch a desktop binary.
-        final localPort = activeLocalPort;
+        // Android routes requests through its native VpnService; do not use a
+        // loopback proxy port that belongs to the recreated Activity process.
         if (backend.state != VpnState.connected ||
-            activeProfileId != profile.id ||
-            localPort == null ||
-            localPort < 1) {
+            activeProfileId != profile.id) {
           throw StateError(_text(
             'Подключитесь к этому серверу перед проверкой скорости на Android.',
             'Connect to this server before testing its speed on Android.',
           ));
         }
         const timeout = Duration(seconds: 35);
-        final bytes = await _downloadThroughHttpProxy(localPort, timeout);
+        // Android routes the app's sockets through the active VpnService. A
+        // loopback proxy port belongs to the Activity process and may be gone
+        // after the Activity was recreated (for example, after changing the
+        // launcher icon), while the native VPN and its TUN remain alive.
+        final bytes = await _downloadThroughHttpProxy(null, timeout);
         if (bytes == 0) throw const HttpException('Сервер не передал данные');
         final speed = bytes / 1024 / 1024;
         if (mounted) {
@@ -2944,15 +2991,18 @@ foreach ($route in $routes) {
     return '${_text('Повторить тест скорости', 'Run speed test again')} · ${speed.toStringAsFixed(2)} ${english ? 'MB/s' : 'МБ/с'}';
   }
 
-  Future<int> _downloadThroughHttpProxy(int localPort, Duration timeout) async {
+  Future<int> _downloadThroughHttpProxy(
+      int? localPort, Duration timeout) async {
     // Cloudflare's download endpoint returns a fixed-size payload, so this
     // measures the selected profile's real download throughput, not ping RTT.
     final uri =
         Uri.https('speed.cloudflare.com', '/__down', {'bytes': '8000000'});
     final client = HttpClient()
       ..connectionTimeout = timeout
-      ..idleTimeout = timeout
-      ..findProxy = (_) => 'PROXY 127.0.0.1:$localPort';
+      ..idleTimeout = timeout;
+    if (localPort != null) {
+      client.findProxy = (_) => 'PROXY 127.0.0.1:$localPort';
+    }
     final watch = Stopwatch()..start();
     try {
       final request = await client.getUrl(uri).timeout(timeout);
@@ -8102,8 +8152,8 @@ foreach ($route in $routes) {
               Icons.system_update_alt_rounded,
               _text('Автообновление приложения', 'App auto-update'),
               autoUpdateApp
-                  ? _text('Скачать и установить при запуске',
-                      'Download and install at launch')
+                  ? _text('Скачать APK и открыть Загрузки',
+                      'Download APK and open Downloads')
                   : _text('Только сообщать о новой версии',
                       'Notify when an update is available'),
               _compactSwitch(
@@ -8331,8 +8381,8 @@ foreach ($route in $routes) {
               Icons.system_update_alt_rounded,
               _text('Автообновление приложения', 'App auto-update'),
               autoUpdateApp
-                  ? _text('Скачать и установить при запуске',
-                      'Download and install at launch')
+                  ? _text('Скачать APK и открыть Загрузки',
+                      'Download APK and open Downloads')
                   : _text('Только сообщать о новой версии',
                       'Notify when a new version is available'),
               _compactSwitch(
@@ -8663,14 +8713,63 @@ foreach ($route in $routes) {
               borderRadius: BorderRadius.circular(18),
               border: Border.all(color: _line.withValues(alpha: .45)),
             ),
-            child: SelectableText(
-              release.notes.trim(),
-              style: TextStyle(color: _foreground, height: 1.5, fontSize: 12),
-            ),
+            child: _releaseNotesMarkdown(release.notes.trim()),
           ),
         ],
       ],
     );
+  }
+
+  Widget _releaseNotesMarkdown(String markdown) {
+    final spans = <InlineSpan>[];
+    final inlinePattern = RegExp(r'(\*\*[^*]+\*\*|`[^`]+`|\*[^*]+\*)');
+    final lines = markdown.split('\n');
+    for (var index = 0; index < lines.length; index++) {
+      final line = lines[index].trimRight();
+      final heading = RegExp(r'^(#{1,3})\s+(.+)$').firstMatch(line);
+      final bullet = RegExp(r'^\s*[-*+]\s+(.+)$').firstMatch(line);
+      final numbered = RegExp(r'^\s*\d+[.)]\s+(.+)$').firstMatch(line);
+      final content =
+          heading?.group(2) ?? bullet?.group(1) ?? numbered?.group(1) ?? line;
+      final baseStyle = TextStyle(
+        color: _foreground,
+        height: 1.55,
+        fontSize:
+            heading == null ? 12 : (heading.group(1)!.length == 1 ? 15 : 13),
+        fontWeight: heading != null ? FontWeight.w700 : FontWeight.w400,
+      );
+      if (bullet != null || numbered != null) {
+        spans.add(
+            TextSpan(text: '•  ', style: baseStyle.copyWith(color: _accent)));
+      }
+      var cursor = 0;
+      for (final match in inlinePattern.allMatches(content)) {
+        if (match.start > cursor) {
+          spans.add(TextSpan(
+              text: content.substring(cursor, match.start), style: baseStyle));
+        }
+        final token = match.group(0)!;
+        final isCode = token.startsWith('`');
+        final isBold = token.startsWith('**');
+        spans.add(TextSpan(
+          text: token.substring(isCode || isBold ? (isBold ? 2 : 1) : 1,
+              token.length - (isBold ? 2 : 1)),
+          style: baseStyle.copyWith(
+            fontWeight: isBold ? FontWeight.w700 : baseStyle.fontWeight,
+            fontFamily: isCode ? 'monospace' : null,
+            color: isCode ? _accent : _foreground,
+          ),
+        ));
+        cursor = match.end;
+      }
+      if (cursor < content.length) {
+        spans.add(TextSpan(text: content.substring(cursor), style: baseStyle));
+      }
+      if (index < lines.length - 1) {
+        spans.add(const TextSpan(text: '\n'));
+      }
+    }
+    return SelectableText.rich(TextSpan(children: spans));
   }
 
   Widget _settingsPageIntro(IconData icon, String title, String subtitle) =>
@@ -8935,6 +9034,14 @@ foreach ($route in $routes) {
           'Загружаю ${GitHubUpdater.displayVersion(release.version)}…',
           'Downloading ${GitHubUpdater.displayVersion(release.version)}…'));
       await appUpdater.apply(release, asset);
+      if (Platform.isAndroid && mounted) {
+        final message = _text(
+          'APK сохранён в Загрузки. Открой GhostBox-${release.version}.apk и нажми «Установить».',
+          'APK saved to Downloads. Open GhostBox-${release.version}.apk and tap Install.',
+        );
+        setState(() => appUpdateStatus = message);
+        _message(message);
+      }
     } on Object catch (error) {
       if (mounted) {
         setState(() =>

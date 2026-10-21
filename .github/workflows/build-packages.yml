@@ -318,15 +318,15 @@ jobs:
             changes="$(git log -n 20 --no-merges --pretty=format:'- %s' "$tag_commit")"
           fi
           {
-            echo '## Update summary'
+            echo '## Что нового'
             echo
             printf '%s\n' "${summary:-Versioned GhostBox build.}"
             echo
-            echo '## Changes'
+            echo '## Изменения'
             echo
             printf '%s\n' "${changes:-See the source commit for details.}"
             echo
-            echo '## Built packages'
+            echo '## Сборки'
             echo
             echo '- Linux x86_64 AppImage'
             echo '- Linux ARM64 AppImage'
@@ -334,7 +334,7 @@ jobs:
             echo '- Android universal APK'
             echo '- Windows x64 installer (.exe) and portable ZIP'
             echo
-            echo '## Release files'
+            echo '## Файлы релиза'
             echo
             find dist -type f -printf '%P\n' | sort | sed 's/^/- /'
           } > release-notes.md

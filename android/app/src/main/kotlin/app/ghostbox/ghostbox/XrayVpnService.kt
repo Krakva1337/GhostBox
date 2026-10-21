@@ -36,14 +36,17 @@ class XrayVpnService : VpnService() {
     private var dialerController: Any? = null
     @Volatile private var proxyOnlyMode = false
     @Volatile private var stopping = false
+    @Volatile private var explicitStopRequested = false
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         recordAndroidVpnPolicy()
         if (intent?.action == "app.ghostbox.STOP_VPN") {
+            explicitStopRequested = true
             stopXray()
             return START_NOT_STICKY
         }
         stopping = false
+        explicitStopRequested = false
         proxyOnlyMode = intent?.getBooleanExtra(EXTRA_PROXY_ONLY, false) ?: false
         val config = intent?.getStringExtra(EXTRA_CONFIG)
         if (config.isNullOrBlank()) {
@@ -372,14 +375,29 @@ class XrayVpnService : VpnService() {
         tun = null
         if (proxyOnlyMode) {
             VpnStateStore.update(this) {
-                if (it.optString("xrayProxyState") != "error") {
+                if (it.optString("xrayProxyState") != "error" || explicitStopRequested) {
                     it.put("xrayProxyState", "disconnected")
                 }
+                if (it.optString("state") == "stopping") {
+                    it.put("state", "disconnected").remove("connectedAtMs")
+                    it.remove("startedAtMs")
+                }
+                if (explicitStopRequested) it.put("xrayStopComplete", true)
             }
-        } else if (VpnStateStore.state(this) != "error") {
+        } else if (VpnStateStore.state(this) != "error" || explicitStopRequested) {
             VpnStateStore.updateForCore(this, "xray") {
                 it.put("state", "disconnected").remove("connectedAtMs")
                 it.remove("startedAtMs")
+            }
+            if (explicitStopRequested) {
+                VpnStateStore.update(this) {
+                    it.put("xrayProxyState", "disconnected")
+                    it.put("xrayStopComplete", true)
+                    if (it.optString("state") == "stopping") {
+                        it.put("state", "disconnected").remove("connectedAtMs")
+                        it.remove("startedAtMs")
+                    }
+                }
             }
         }
         stopForeground(STOP_FOREGROUND_REMOVE)
