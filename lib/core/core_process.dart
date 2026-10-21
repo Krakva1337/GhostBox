@@ -62,6 +62,13 @@ class CoreProcessBackend implements VpnBackend {
 
   @override
   Future<void> connect(String profile) async {
+    if (Platform.isAndroid || Platform.isIOS) {
+      _state = VpnState.error;
+      _lastError = Platform.isAndroid
+          ? 'Android cores must run through the native VpnService backend.'
+          : 'iOS cores must run through the native VPN extension backend.';
+      throw UnsupportedError(_lastError!);
+    }
     if (_process != null || _state == VpnState.connecting) return;
     _shouldStayConnected = true;
     _initializing = true;

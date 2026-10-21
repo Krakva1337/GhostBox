@@ -66,9 +66,18 @@ class MainActivity : FlutterActivity() {
                         }
                     }
                     "stopVpn" -> {
-                        stopService(Intent(this, GhostBoxVpnService::class.java))
-                        stopService(Intent(this, XrayVpnService::class.java))
-                        result.success(null)
+                        try {
+                            // Ask both native services to close their VPN file
+                            // descriptors before stopping. stopService() can
+                            // destroy the service before asynchronous libbox
+                            // cleanup releases Android's TUN route.
+                            val stopIntent = Intent("app.ghostbox.STOP_VPN")
+                            startService(Intent(stopIntent).setClass(this, GhostBoxVpnService::class.java))
+                            startService(Intent(stopIntent).setClass(this, XrayVpnService::class.java))
+                            result.success(null)
+                        } catch (error: Exception) {
+                            result.error("stop_failed", error.message ?: error.toString(), null)
+                        }
                     }
                     "vpnState" -> result.success(currentVpnState())
                     "vpnConnectedAt" -> result.success(VpnStateStore.connectedAtMs(this))

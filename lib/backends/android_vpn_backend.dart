@@ -70,7 +70,9 @@ class AndroidVpnBackend implements VpnBackend {
   }
 
   Future<void> refreshState() async {
-    final nativeState = await _channel.invokeMethod<String>('vpnState');
+    final nativeState = await _channel
+        .invokeMethod<String>('vpnState')
+        .timeout(const Duration(seconds: 3));
     state = switch (nativeState) {
       'connecting' => VpnState.connecting,
       'connected' => VpnState.connected,
@@ -78,7 +80,9 @@ class AndroidVpnBackend implements VpnBackend {
       _ => VpnState.disconnected,
     };
     if (state == VpnState.connected) {
-      final timestamp = await _channel.invokeMethod<int>('vpnConnectedAt');
+      final timestamp = await _channel
+          .invokeMethod<int>('vpnConnectedAt')
+          .timeout(const Duration(seconds: 3));
       _connectedAt = timestamp == null
           ? (_connectedAt ?? DateTime.now())
           : DateTime.fromMillisecondsSinceEpoch(timestamp);
@@ -86,12 +90,16 @@ class AndroidVpnBackend implements VpnBackend {
       _connectedAt = null;
     }
     if (state == VpnState.error) {
-      lastError = await _channel.invokeMethod<String>('vpnError');
+      lastError = await _channel
+          .invokeMethod<String>('vpnError')
+          .timeout(const Duration(seconds: 3));
     }
   }
 
   Future<List<String>> readNewLogs() async {
-    final lines = await _channel.invokeMethod<List<dynamic>>('vpnLogs') ??
+    final lines = await _channel
+            .invokeMethod<List<dynamic>>('vpnLogs')
+            .timeout(const Duration(seconds: 3)) ??
         const <dynamic>[];
     if (_readLogCount > lines.length) _readLogCount = 0;
     final result =
@@ -165,12 +173,16 @@ class AndroidVpnBackend implements VpnBackend {
         'profileName': profile.name,
         'memoryMb': settings.memoryMb,
         'core': coreName,
-      });
+      }).timeout(const Duration(seconds: 60));
       for (var attempt = 0; attempt < 80; attempt++) {
-        final nativeState = await _channel.invokeMethod<String>('vpnState');
+        final nativeState = await _channel
+            .invokeMethod<String>('vpnState')
+            .timeout(const Duration(seconds: 3));
         if (nativeState == 'connected') {
           state = VpnState.connected;
-          final timestamp = await _channel.invokeMethod<int>('vpnConnectedAt');
+          final timestamp = await _channel
+              .invokeMethod<int>('vpnConnectedAt')
+              .timeout(const Duration(seconds: 3));
           _connectedAt = timestamp == null
               ? DateTime.now()
               : DateTime.fromMillisecondsSinceEpoch(timestamp);
@@ -179,7 +191,9 @@ class AndroidVpnBackend implements VpnBackend {
         if (nativeState == 'error') {
           throw PlatformException(
             code: 'core_start_failed',
-            message: await _channel.invokeMethod<String>('vpnError') ??
+            message: await _channel
+                    .invokeMethod<String>('vpnError')
+                    .timeout(const Duration(seconds: 3)) ??
                 'sing-box could not start the Android VPN',
           );
         }
@@ -193,11 +207,13 @@ class AndroidVpnBackend implements VpnBackend {
       lastError = error.message ?? error.code;
       state = VpnState.error;
       _connectedAt = null;
+      await _stopVpnBestEffort();
       rethrow;
     } on Object catch (error) {
       lastError = error.toString();
       state = VpnState.error;
       _connectedAt = null;
+      await _stopVpnBestEffort();
       rethrow;
     }
   }
@@ -269,7 +285,7 @@ class AndroidVpnBackend implements VpnBackend {
         'memoryMb': settings.memoryMb,
         'core': 'xray',
         'proxyOnly': true,
-      });
+      }).timeout(const Duration(seconds: 20));
       await _waitForXrayProxy();
 
       final bridgeProfile = ServerProfile(
@@ -311,22 +327,26 @@ class AndroidVpnBackend implements VpnBackend {
         'memoryMb': settings.memoryMb,
         'core': 'sing-box',
         'keepXray': true,
-      });
+      }).timeout(const Duration(seconds: 20));
       await _waitForSingBoxTun();
     } on Object {
-      await _channel.invokeMethod<void>('stopVpn').catchError((_) {});
+      await _stopVpnBestEffort();
       rethrow;
     }
   }
 
   Future<void> _waitForXrayProxy() async {
     for (var attempt = 0; attempt < 150; attempt++) {
-      final nativeState = await _channel.invokeMethod<String>('xrayProxyState');
+      final nativeState = await _channel
+          .invokeMethod<String>('xrayProxyState')
+          .timeout(const Duration(seconds: 3));
       if (nativeState == 'connected') return;
       if (nativeState == 'error') {
         throw PlatformException(
           code: 'xray_start_failed',
-          message: await _channel.invokeMethod<String>('xrayProxyError') ??
+          message: await _channel
+                  .invokeMethod<String>('xrayProxyError')
+                  .timeout(const Duration(seconds: 3)) ??
               'Xray could not start the Android upstream proxy',
         );
       }
@@ -340,10 +360,14 @@ class AndroidVpnBackend implements VpnBackend {
 
   Future<void> _waitForSingBoxTun() async {
     for (var attempt = 0; attempt < 150; attempt++) {
-      final nativeState = await _channel.invokeMethod<String>('vpnState');
+      final nativeState = await _channel
+          .invokeMethod<String>('vpnState')
+          .timeout(const Duration(seconds: 3));
       if (nativeState == 'connected') {
         state = VpnState.connected;
-        final timestamp = await _channel.invokeMethod<int>('vpnConnectedAt');
+        final timestamp = await _channel
+            .invokeMethod<int>('vpnConnectedAt')
+            .timeout(const Duration(seconds: 3));
         _connectedAt = timestamp == null
             ? DateTime.now()
             : DateTime.fromMillisecondsSinceEpoch(timestamp);
@@ -352,7 +376,9 @@ class AndroidVpnBackend implements VpnBackend {
       if (nativeState == 'error') {
         throw PlatformException(
           code: 'core_start_failed',
-          message: await _channel.invokeMethod<String>('vpnError') ??
+          message: await _channel
+                  .invokeMethod<String>('vpnError')
+                  .timeout(const Duration(seconds: 3)) ??
               'sing-box could not start the Android TUN router',
         );
       }
@@ -366,9 +392,25 @@ class AndroidVpnBackend implements VpnBackend {
 
   @override
   Future<void> disconnect() async {
-    await _channel.invokeMethod<void>('stopVpn');
+    await _stopVpnBestEffort();
     state = VpnState.disconnected;
+    lastError = null;
     _connectedAt = null;
     _readLogCount = 0;
+  }
+
+  Future<void> _stopVpnBestEffort() async {
+    try {
+      await _channel
+          .invokeMethod<void>('stopVpn')
+          .timeout(const Duration(seconds: 8));
+    } on Object {
+      // Always clear the local spinner even if Android does not acknowledge
+      // service shutdown; the native service has its own stop cleanup path.
+    } finally {
+      if (state != VpnState.connected) state = VpnState.disconnected;
+      _connectedAt = null;
+      _readLogCount = 0;
+    }
   }
 }

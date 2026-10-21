@@ -8,9 +8,11 @@ import android.content.Intent
 import android.net.IpPrefix
 import android.net.VpnService
 import android.os.Build
+import android.os.ParcelFileDescriptor
 import android.util.Log
 import io.nekohasekai.libbox.CommandServer
 import io.nekohasekai.libbox.CommandServerHandler
+import io.nekohasekai.libbox.ConnectionOwner
 import io.nekohasekai.libbox.Libbox
 import io.nekohasekai.libbox.OverrideOptions
 import io.nekohasekai.libbox.PlatformInterface
@@ -24,6 +26,7 @@ import java.lang.reflect.InvocationHandler
 import java.lang.reflect.Proxy
 import java.math.BigInteger
 import java.net.InetAddress
+import java.net.InetSocketAddress
 
 class GhostBoxVpnService : VpnService(), CommandServerHandler {
     companion object {
@@ -37,6 +40,7 @@ class GhostBoxVpnService : VpnService(), CommandServerHandler {
     }
 
     private var commandServer: CommandServer? = null
+    @Volatile private var tunDescriptor: ParcelFileDescriptor? = null
     @Volatile private var currentProfileName = "GhostBox"
     @Volatile private var stopping = false
     @Volatile private var tunEstablished = false
@@ -200,7 +204,7 @@ class GhostBoxVpnService : VpnService(), CommandServerHandler {
                     null
                 }
                 "usePlatformInterface" -> true
-                "useProcFS" -> false
+                "useProcFS" -> Build.VERSION.SDK_INT < Build.VERSION_CODES.Q
                 "openTun" -> openTun(args?.firstOrNull() ?: error("Missing TUN options"))
                 "underNetworkExtension", "includeAllNetworks", "usePlatformBridge",
                 "usePlatformAutoRedirect", "usePlatformShell" -> false
@@ -208,7 +212,7 @@ class GhostBoxVpnService : VpnService(), CommandServerHandler {
                 "clearDNSCache", "startNeighborMonitor", "closeNeighborMonitor",
                 "registerMyInterface" -> null
                 "getInterfaces" -> emptyIteratorProxy(method.returnType)
-                "findConnectionOwner" -> null
+                "findConnectionOwner" -> findConnectionOwner(args)
                 "readWIFIState", "localDNSTransport", "createBridge",
                 "createAutoRedirect", "openShellSession" -> null
                 "lookupUser" -> null
@@ -225,6 +229,65 @@ class GhostBoxVpnService : VpnService(), CommandServerHandler {
             arrayOf(PlatformInterface::class.java),
             handler,
         ) as PlatformInterface
+    }
+
+    /** libbox dereferences ConnectionOwner without a nil check. Returning null
+     * here crashed the Go runtime on the first routed packet. */
+    private fun findConnectionOwner(args: Array<out Any?>?): ConnectionOwner {
+        val owner = ConnectionOwner()
+        val emptyPackages = stringIteratorProxy(emptyList())
+        owner.userId = -1
+        owner.userName = ""
+        owner.setAndroidPackageNames(emptyPackages)
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            return owner
+        }
+        return try {
+            val protocol = (args?.getOrNull(0) as? Number)?.toInt() ?: -1
+            val sourceAddress = args?.getOrNull(1)?.toString() ?: return owner
+            val sourcePort = (args.getOrNull(2) as? Number)?.toInt() ?: return owner
+            val destinationAddress = args.getOrNull(3)?.toString() ?: return owner
+            val destinationPort = (args.getOrNull(4) as? Number)?.toInt() ?: return owner
+            val uid = getSystemService(android.net.ConnectivityManager::class.java)
+                .getConnectionOwnerUid(
+                    protocol,
+                    InetSocketAddress(sourceAddress, sourcePort),
+                    InetSocketAddress(destinationAddress, destinationPort),
+                )
+            val packages = if (uid >= 0) {
+                packageManager.getPackagesForUid(uid)?.toList().orEmpty()
+            } else {
+                emptyList()
+            }
+            owner.userId = uid
+            owner.userName = packages.firstOrNull().orEmpty()
+            owner.setAndroidPackageNames(stringIteratorProxy(packages))
+            owner
+        } catch (error: Exception) {
+            Log.w(TAG, "Could not resolve Android connection owner", error)
+            owner.userId = -1
+            owner.userName = ""
+            owner.setAndroidPackageNames(emptyPackages)
+            owner
+        }
+    }
+
+    private fun stringIteratorProxy(values: List<String>): StringIterator {
+        var index = 0
+        return Proxy.newProxyInstance(
+            StringIterator::class.java.classLoader,
+            arrayOf(StringIterator::class.java),
+        ) { _, method, _ ->
+            when (method.name) {
+                "hasNext" -> index < values.size
+                "len" -> values.size
+                "next" -> values.getOrNull(index++) ?: ""
+                "toString" -> values.toString()
+                "hashCode" -> System.identityHashCode(values)
+                "equals" -> false
+                else -> defaultValue(method.returnType)
+            }
+        } as StringIterator
     }
 
     private fun openTun(value: Any): Int {
@@ -290,7 +353,12 @@ class GhostBoxVpnService : VpnService(), CommandServerHandler {
             }
         }
         val descriptor = builder.establish() ?: error("Could not establish Android VPN interface")
-        val fd = descriptor.detachFd()
+        // Keep the ParcelFileDescriptor, like the upstream sing-box Android
+        // service. Closing it on stop is what releases Android's VPN route
+        // and status icon; detaching here left the service without a handle.
+        tunDescriptor?.let { runCatching { it.close() } }
+        tunDescriptor = descriptor
+        val fd = descriptor.fd
         tunEstablished = true
         Log.i(TAG, "Android TUN established (fd=$fd, mtu=${options.mtu})")
         VpnStateStore.appendLog(this, "Android sing-box TUN established (MTU ${options.mtu})")
@@ -486,6 +554,9 @@ class GhostBoxVpnService : VpnService(), CommandServerHandler {
 
     /** Called only after any in-flight libbox operation has returned. */
     private fun cleanupVpn() {
+        val descriptor = tunDescriptor
+        tunDescriptor = null
+        runCatching { descriptor?.close() }
         try {
             commandServer?.closeService()
             commandServer?.close()

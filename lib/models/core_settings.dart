@@ -5,7 +5,7 @@ class CoreSettings {
     this.core = 'xray',
     this.connectionMode = 'tun',
     this.routing = 'proxy',
-    this.dns = 'system',
+    this.dns = 'combined',
     this.customDnsResolver = 'https://1.1.1.1/dns-query',
     this.dnsThroughProxy = true,
     this.dnsBlacklistMode = 'none',
@@ -191,7 +191,7 @@ class CoreSettings {
           choice('connectionMode', ['proxy', 'system', 'tun', 'mixed'], 'tun'),
       routing: choice('routing', ['proxy', 'rules', 'exclude'], 'proxy'),
       dns: choice('dns',
-          ['system', 'cloudflare', 'google', 'combined', 'custom'], 'system'),
+          ['system', 'cloudflare', 'google', 'combined', 'custom'], 'combined'),
       customDnsResolver:
           data['customDnsResolver'] as String? ?? 'https://1.1.1.1/dns-query',
       logLevel: choice('logLevel', ['error', 'warning', 'info'], 'warning'),

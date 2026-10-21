@@ -971,6 +971,7 @@ class _HomePageState extends State<HomePage>
         Platform.isWindows && p.getBool('windowsProxyDefaultMigrated') != true;
     final migrateAutoLocalPortDefault =
         p.getBool('autoLocalPortDefaultMigrated') != true;
+    final migrateDnsDefault = p.getBool('dnsCombinedDefaultMigrated') != true;
     final migrateAndroidXrayDefault =
         Platform.isAndroid && p.getBool('androidXrayDefaultMigrated') != true;
     setState(() {
@@ -1014,6 +1015,9 @@ class _HomePageState extends State<HomePage>
               autoConnect: p.getBool('autoConnect') ?? false)
           : CoreSettings.fromJson(
               Map<String, dynamic>.from(jsonDecode(rawCore) as Map));
+      if (migrateDnsDefault && coreSettings.dns == 'system') {
+        coreSettings = coreSettings.copyWith(dns: 'combined');
+      }
       if (p.getBool('xrayDefaultMigrated') != true) {
         coreSettings = coreSettings.copyWith(
             core: Platform.isAndroid || Platform.isIOS ? 'sing-box' : 'xray');
@@ -1070,10 +1074,12 @@ class _HomePageState extends State<HomePage>
         p.getBool('tunDefaultMigrated') != true ||
         migrateWindowsProxy ||
         migrateAutoLocalPortDefault ||
+        migrateDnsDefault ||
         migrateAndroidXrayDefault) {
       await p.setString('coreSettings', jsonEncode(coreSettings.toJson()));
       await p.setBool('xrayDefaultMigrated', true);
       await p.setBool('tunDefaultMigrated', true);
+      await p.setBool('dnsCombinedDefaultMigrated', true);
       if (Platform.isAndroid) {
         await p.setBool('androidXrayDefaultMigrated', true);
       }
@@ -1464,7 +1470,11 @@ class _HomePageState extends State<HomePage>
         runtimeProfile = await _withDeviceMetadata(runtimeProfile);
         final activeCore = process;
         if (activeCore != null) _bindCoreRecoveryNotices(activeCore);
-        final connection = backend.connect(jsonEncode(runtimeProfile.toJson()));
+        final connection = backend
+            .connect(jsonEncode(runtimeProfile.toJson()))
+            .timeout(Platform.isAndroid
+                ? const Duration(seconds: 120)
+                : const Duration(seconds: 90));
         if (mounted) setState(() {});
         await connection;
         await _collectAndroidCoreLogs();
@@ -1549,7 +1559,8 @@ class _HomePageState extends State<HomePage>
       uptimeTicker = Timer.periodic(Duration(seconds: 1), (_) {
         if (!mounted) return;
         if (backend is AndroidVpnBackend) {
-          unawaited((backend as AndroidVpnBackend).refreshState());
+          unawaited(
+              (backend as AndroidVpnBackend).refreshState().catchError((_) {}));
         }
         if ((backend.state == VpnState.error ||
                 backend.state == VpnState.disconnected) &&
@@ -1624,8 +1635,14 @@ class _HomePageState extends State<HomePage>
   Future<void> _collectAndroidCoreLogs() async {
     final mobileBackend = backend;
     if (mobileBackend is! AndroidVpnBackend) return;
-    for (final line in await mobileBackend.readNewLogs()) {
-      _recordAppLog('[sing-box] $line');
+    try {
+      for (final line in await mobileBackend
+          .readNewLogs()
+          .timeout(const Duration(seconds: 5))) {
+        _recordAppLog('[sing-box] $line');
+      }
+    } on Object {
+      // Log collection must not keep the connection button in its busy state.
     }
   }
 
