@@ -4,11 +4,11 @@
 
 <h1 align="center">GhostBox</h1>
 
-<p align="center"><strong>v1.4.5 Alpha · Linux x86_64/ARM64 · Windows x64 · Xray-core + sing-box</strong></p>
+<p align="center"><strong>v1.4.6 Alpha · Linux x86_64/ARM64 · Windows x64 · Xray-core + sing-box</strong></p>
 
 ## Русский
 
-GhostBox — VPN-клиент на Flutter с ядрами Xray и sing-box. Linux поддерживает оба ядра. На Android подключение выполняется через системный `VpnService` и sing-box libbox; Windows поддерживает системный прокси и TUN с запросом прав администратора. На macOS доступны локальный и системный SOCKS-прокси; TUN пока не реализован. iOS проходит предварительную сборку, но VPN-подключение требует Network Extension, который пока не подключён.
+GhostBox — VPN-клиент на Flutter с ядрами Xray и sing-box. Linux поддерживает оба ядра. На Android подключение выполняется через системный `VpnService` и sing-box libbox; Windows поддерживает системный прокси и TUN через Wintun с запросом прав администратора. На macOS доступны прокси и TUN через привилегированный sing-box процесс. На iOS sing-box запускается в системном Packet Tunnel extension; для установки и распространения нужен Apple Developer team с включёнными Network Extension и App Groups.
 
 ### Возможности
 
@@ -16,14 +16,16 @@ GhostBox — VPN-клиент на Flutter с ядрами Xray и sing-box. Lin
 - Режимы TUN, локальный прокси, системный прокси и Mixed.
 - Xray по умолчанию; Xray XHTTP/REALITY и Linux TUN через sing-box-маршрутизатор.
 - Настройки DNS, маршрутов, DNS-блоклистов, локального порта, журналов и мягкого лимита памяти ядра.
-- Split tunneling по доменам и IP/CIDR; поддерживается импорт JSON-списков Amnezia.
+- Единые правила split tunneling по доменам и IP/CIDR на всех платформах; поддерживается импорт JSON-списков Amnezia.
 - Проверка серверов, журнал в файл, история последних подключений и просмотр сгенерированных конфигов.
 - Необязательный индикатор RAM ядер на главном экране.
-- Kill Switch для Linux TUN/Mixed: системный firewall блокирует исходящий трафик вне туннеля и оставляет разрешённым endpoint сервера.
+- Kill Switch для Linux и Windows TUN/Mixed. Его нельзя включить вместе с правилами split tunneling, которые отправляют трафик напрямую.
 - Данные подписки — трафик, срок действия, устройства, сайт и поддержка — отображаются, только если их прислал провайдер.
 - Скрипты сборки Xray/sing-box для Windows и macOS, sing-box libbox для Android и Apple.
 
 Windows-сборка включает установщик и системный прокси текущего пользователя. При выборе TUN приложение запросит права администратора Windows. Android APK собирается локально вместе с libbox; общий workflow пакетов его не собирает и не публикует. Сборка и статус платформ описаны в [deploy/PLATFORMS.md](deploy/PLATFORMS.md).
+
+В списках маршрутов `example.com` включает поддомены, `*.example.com` — только поддомены, `full:example.com` — только точный hostname. IP/CIDR правила проверяются по адресу назначения. Доменные правила используют DNS-ответы и видимые HTTP/TLS/QUIC hostname; зашифрованный DNS и ECH могут скрыть имя сайта, поэтому для таких адресов используй IP/CIDR. На iOS выбор отдельных приложений доступен только в управляемом устройстве.
 
 Поддержка протоколов и транспортов зависит от ядра и его параметров сборки. Для XHTTP и REALITY выбирай Xray: поставляемая сборка sing-box может не содержать дополнительных тегов XHTTP/uTLS.
 
@@ -43,24 +45,24 @@ SDK можно установить через `tool/setup_android.sh`. Linux с
 приложения собираются на Windows и macOS соответственно; для Windows на Linux
 используй GitHub Actions. Apple dev-сборки доступны в **Actions → Build GhostBox
 for Apple platforms**. macOS выдаёт ad-hoc подписанный `.app` для проверки;
-iOS выдаёт только unsigned compile artifact и libbox XCFramework, пока без VPN.
+iOS собирается как unsigned app вместе с Packet Tunnel extension и libbox XCFramework. Для установки нужен Apple Developer team с provisioning profiles для VPN extension и App Group.
 
 Скачай подходящий AppImage в **Actions → Build GhostBox packages → Artifacts**:
 `x86_64` подходит для Intel/AMD 64-bit, `aarch64` — для ARM64 Linux.
 
 ```bash
-chmod +x GhostBox-1.4.5-alpha-linux-x86_64.AppImage
-./GhostBox-1.4.5-alpha-linux-x86_64.AppImage
+chmod +x GhostBox-1.4.6-alpha-linux-x86_64.AppImage
+./GhostBox-1.4.6-alpha-linux-x86_64.AppImage
 ```
 
 Пакеты для x86_64 и ARM64 содержат нативные бинарники и не взаимозаменяемы.
 Чтобы установить приложение в меню рабочего стола без прав root, из клона репозитория выполни:
 
 ```bash
-./tool/install_appimage.sh ./dist/GhostBox-1.4.5-alpha-linux-x86_64.AppImage
+./tool/install_appimage.sh ./dist/GhostBox-1.4.6-alpha-linux-x86_64.AppImage
 ```
 
-Добавь ссылку-подписку или сервер, выбери профиль и нажми кнопку подключения. TUN включён по умолчанию. Если AppImage не запускается из-за отсутствия FUSE, попробуй `APPIMAGE_EXTRACT_AND_RUN=1 ./GhostBox-1.4.5-alpha-linux-x86_64.AppImage`.
+Добавь ссылку-подписку или сервер, выбери профиль и нажми кнопку подключения. TUN включён по умолчанию. Если AppImage не запускается из-за отсутствия FUSE, попробуй `APPIMAGE_EXTRACT_AND_RUN=1 ./GhostBox-1.4.6-alpha-linux-x86_64.AppImage`.
 
 ### TUN без запуска VPN от root
 
@@ -122,7 +124,7 @@ keytool -genkeypair -v -keystore "$HOME/.android/ghostbox-release.jks" -keyalg R
 ./build.sh
 ```
 
-Чтобы выбрать Linux без меню: `./build.sh linux`. После сборки установить AppImage в меню можно командой `./tool/install_appimage.sh ./dist/GhostBox-1.4.5-alpha-linux-x86_64.AppImage`. Для локальной Android-сборки запусти `./tool/build_android.sh`; требования платформ описаны в [deploy/PLATFORMS.md](deploy/PLATFORMS.md).
+Чтобы выбрать Linux без меню: `./build.sh linux`. После сборки установить AppImage в меню можно командой `./tool/install_appimage.sh ./dist/GhostBox-1.4.6-alpha-linux-x86_64.AppImage`. Для локальной Android-сборки запусти `./tool/build_android.sh`; требования платформ описаны в [deploy/PLATFORMS.md](deploy/PLATFORMS.md).
 
 ### Приватность и диагностика
 
@@ -132,11 +134,11 @@ keytool -genkeypair -v -keystore "$HOME/.android/ghostbox-release.jks" -keyalg R
 
 ### Статус альфа-релиза
 
-Текущая цель релиза — Linux desktop и Windows x64; macOS proxy-сборка доступна для разработки, а iOS пока без Network Extension VPN-провайдера. Альфа требует проверки на твоём сервере и сети; держи возможность вернуться к предыдущему VPN и не запускай два TUN-клиента одновременно. Подробности и шаги установки — в [RELEASE-ALPHA.md](RELEASE-ALPHA.md).
+Текущая цель релиза — Linux desktop и Windows x64; macOS proxy-сборка и iOS unsigned-сборка доступны для разработки. Для установки iOS-сборки требуются Apple-подпись и provisioning profiles с Network Extension и App Groups. Альфа требует проверки на твоём сервере и сети; держи возможность вернуться к предыдущему VPN и не запускай два TUN-клиента одновременно. Подробности и шаги установки — в [RELEASE-ALPHA.md](RELEASE-ALPHA.md).
 
 ## English
 
-GhostBox is a Flutter VPN client powered by Xray and sing-box. Linux supports both cores. Android connects through the system `VpnService` and sing-box libbox; Windows supports the current user's system proxy and TUN with a Windows administrator prompt. macOS supports local and system SOCKS proxy modes; TUN is not implemented yet. iOS has a preliminary build path, but VPN connections still need a Network Extension, which is not integrated yet.
+GhostBox is a Flutter VPN client powered by Xray and sing-box. Linux supports both cores. Android connects through the system `VpnService` and sing-box libbox; Windows supports the current user's system proxy and TUN through Wintun with a Windows administrator prompt. macOS supports proxy modes and TUN through a privileged sing-box process. On iOS, sing-box runs inside a system Packet Tunnel extension. Installation and distribution require an Apple Developer team with Network Extension and App Groups enabled.
 
 ### Features
 
@@ -173,27 +175,27 @@ development artifacts are available in **Actions → Build GhostBox for Apple
 platforms**. The macOS `.app` is ad-hoc signed for local testing; the iOS output
 is only an unsigned compile artifact and libbox XCFramework, not a VPN release.
 
-Download `GhostBox-1.4.5-alpha-linux-x86_64.AppImage` from GitHub Releases and run:
+Download `GhostBox-1.4.6-alpha-linux-x86_64.AppImage` from GitHub Releases and run:
 
 ```bash
-chmod +x GhostBox-1.4.5-alpha-linux-x86_64.AppImage
-./GhostBox-1.4.5-alpha-linux-x86_64.AppImage
+chmod +x GhostBox-1.4.6-alpha-linux-x86_64.AppImage
+./GhostBox-1.4.6-alpha-linux-x86_64.AppImage
 ```
 
 To add GhostBox to the desktop app menu without root access, run this from a repository checkout:
 
 ```bash
-./tool/install_appimage.sh ./dist/GhostBox-1.4.5-alpha-linux-x86_64.AppImage
+./tool/install_appimage.sh ./dist/GhostBox-1.4.6-alpha-linux-x86_64.AppImage
 ```
 
 On macOS, install a built `.app` bundle or ZIP into `/Applications` and launch it with:
 
 ```bash
-./tool/install_macos.sh ./dist/GhostBox-1.4.5-alpha-macOS-arm64.zip
+./tool/install_macos.sh ./dist/GhostBox-1.4.6-alpha-macOS-arm64.zip
 ```
 The script asks for administrator authorization to replace `/Applications/GhostBox.app`.
 
-Add a subscription URL or server, select a profile and press Connect. TUN is enabled by default. If AppImage cannot start because FUSE is unavailable, try `APPIMAGE_EXTRACT_AND_RUN=1 ./GhostBox-1.4.5-alpha-linux-x86_64.AppImage`.
+Add a subscription URL or server, select a profile and press Connect. TUN is enabled by default. If AppImage cannot start because FUSE is unavailable, try `APPIMAGE_EXTRACT_AND_RUN=1 ./GhostBox-1.4.6-alpha-linux-x86_64.AppImage`.
 
 ### TUN without running the VPN as root
 
@@ -257,7 +259,7 @@ Settings and profiles are stored locally. The User-Agent contains the client nam
 
 ### Alpha status
 
-The current release target is Linux desktop. macOS proxy builds are available for development; iOS is still missing its Network Extension VPN provider. Validate this alpha with your server and network, keep your previous VPN available, and do not run two TUN clients at once. See [RELEASE-ALPHA.md](RELEASE-ALPHA.md) for release notes and installation steps.
+The current release target is Linux desktop. macOS proxy and unsigned iOS builds are available for development. Installing the iOS build requires Apple signing and provisioning profiles with Network Extension and App Groups. Validate this alpha with your server and network, keep your previous VPN available, and do not run two TUN clients at once. See [RELEASE-ALPHA.md](RELEASE-ALPHA.md) for release notes and installation steps.
 
 On macOS, install a built `.app` bundle or ZIP into `/Applications` with `./tool/install_macos.sh /path/to/GhostBox.zip`. It requests administrator access before replacing the installed app.
 

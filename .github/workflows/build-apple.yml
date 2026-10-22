@@ -8,8 +8,16 @@ permissions:
 
 jobs:
   macos:
-    name: macOS app (Apple Silicon)
-    runs-on: macos-15
+    name: macOS app (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - uses: subosito/flutter-action@v2
@@ -31,21 +39,21 @@ jobs:
           "$app/Contents/MacOS/vendor/bin/xray" version
           version="$(awk '/^version:/ {split($2, parts, "+"); print parts[1]}' pubspec.yaml)"
           mkdir -p dist
-          archive="dist/GhostBox-${version}-macOS-arm64.zip"
+          archive="dist/GhostBox-${version}-macOS-${{ matrix.arch }}.zip"
           ditto -c -k --sequesterRsrc --keepParent "$app" "$archive"
           shasum -a 256 "$archive" > "$archive.sha256"
       - uses: actions/upload-artifact@v4
         with:
-          name: GhostBox-macOS-arm64
+          name: GhostBox-macOS-${{ matrix.arch }}
           path: |
-            dist/GhostBox-*-macOS-arm64.zip
-            dist/GhostBox-*-macOS-arm64.zip.sha256
+            dist/GhostBox-*-macOS-${{ matrix.arch }}.zip
+            dist/GhostBox-*-macOS-${{ matrix.arch }}.zip.sha256
             tool/install_macos.sh
           if-no-files-found: error
           retention-days: 14
 
   ios-unsigned:
-    name: iOS unsigned compile (VPN extension pending)
+    name: iOS unsigned app and Packet Tunnel extension
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
@@ -57,19 +65,15 @@ jobs:
         with:
           go-version: '1.27.2'
           cache: true
-      - name: Build Apple sing-box library
-        run: ./tool/build_mobile_cores.sh apple
-      - name: Compile unsigned iOS shell
-        run: |
-          flutter pub get
-          flutter build ios --release --no-codesign
-      - name: Explain current iOS scope
-        run: echo 'This is a compile artifact only. PacketTunnelProvider, its app-extension target and Apple VPN entitlements are not integrated yet.'
+      - name: Compile and package unsigned iOS app and VPN extension
+        run: ./tool/build_ios.sh unsigned
       - uses: actions/upload-artifact@v4
         with:
           name: GhostBox-iOS-unsigned-compile
           path: |
-            build/ios/iphoneos/Runner.app
-            dist/cores/apple/Libbox.xcframework
+            dist/GhostBox-*-iOS-unsigned.zip
+            dist/GhostBox-*-iOS-unsigned.zip.sha256
+            dist/cores/apple/BUILD-INFO.txt
+            dist/cores/apple/LICENSE*
           if-no-files-found: error
           retention-days: 14

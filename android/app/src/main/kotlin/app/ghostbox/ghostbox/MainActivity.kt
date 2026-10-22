@@ -94,6 +94,7 @@ class MainActivity : FlutterActivity() {
                             result.error("stop_failed", error.message ?: error.toString(), null)
                         }
                     }
+                    "cleanupVpnBeforeConnect" -> cleanupVpnBeforeConnect(result)
                     "vpnState" -> result.success(currentVpnState())
                     "vpnStopComplete" -> {
                         val state = VpnStateStore.read(this)
@@ -664,6 +665,100 @@ class MainActivity : FlutterActivity() {
         }
         VpnStateStore.appendLog(this, message)
         return "error"
+    }
+
+    /**
+     * Drain a VPN session left behind by a killed/recreated Flutter Activity
+     * before starting another libbox/Xray runtime. The isolated services get
+     * a normal STOP command first; after a short grace period only this app's
+     * two dedicated VPN child processes may be killed. The channel call is
+     * completed only after Android no longer reports either child process.
+     */
+    private fun cleanupVpnBeforeConnect(result: MethodChannel.Result) {
+        try {
+            VpnStateStore.update(this) {
+                it.put("state", "stopping")
+                    .put("xrayProxyState", "stopping")
+                    .put("singBoxStopComplete", false)
+                    .put("xrayStopComplete", false)
+                    .remove("connectedAtMs")
+            }
+            val stopIntent = Intent("app.ghostbox.STOP_VPN")
+            startService(Intent(stopIntent).setClass(this, GhostBoxVpnService::class.java))
+            startService(Intent(stopIntent).setClass(this, XrayVpnService::class.java))
+        } catch (error: Exception) {
+            result.error("cleanup_failed", error.message ?: error.toString(), null)
+            return
+        }
+
+        Thread({
+            val childNames = setOf("$packageName:xray", "$packageName:singboxcore")
+            fun liveChildren(): List<android.app.ActivityManager.RunningAppProcessInfo> =
+                getSystemService(android.app.ActivityManager::class.java)
+                    .runningAppProcesses
+                    ?.filter {
+                        it.processName in childNames &&
+                            it.pid != android.os.Process.myPid()
+                    }
+                    .orEmpty()
+
+            try {
+                val gracefulDeadline = System.currentTimeMillis() + 2_500L
+                while (
+                    System.currentTimeMillis() < gracefulDeadline &&
+                    liveChildren().isNotEmpty()
+                ) {
+                    Thread.sleep(100L)
+                }
+
+                val remaining = liveChildren()
+                if (remaining.isNotEmpty()) {
+                    remaining.forEach { process ->
+                        VpnStateStore.appendLog(
+                            this,
+                            "Останавливаю оставшийся VPN-процесс " +
+                                "${process.processName} (pid ${process.pid}) перед новым подключением",
+                        )
+                        android.os.Process.killProcess(process.pid)
+                    }
+                }
+
+                val exitDeadline = System.currentTimeMillis() + 3_000L
+                var stillRunning = liveChildren()
+                while (System.currentTimeMillis() < exitDeadline && stillRunning.isNotEmpty()) {
+                    Thread.sleep(100L)
+                    stillRunning = liveChildren()
+                }
+                if (stillRunning.isNotEmpty()) {
+                    throw IllegalStateException(
+                        "VPN-процесс остался запущен (${stillRunning.joinToString { it.processName }}); новое подключение не запущено",
+                    )
+                }
+
+                VpnStateStore.update(this) {
+                    it.put("state", "disconnected")
+                        .put("xrayProxyState", "disconnected")
+                        .put("singBoxStopComplete", true)
+                        .put("xrayStopComplete", true)
+                        .remove("connectedAtMs")
+                        .remove("startedAtMs")
+                        .remove("xrayProxyStartedAtMs")
+                        .remove("error")
+                        .remove("xrayProxyError")
+                }
+                runOnUiThread { result.success(null) }
+            } catch (error: Exception) {
+                VpnStateStore.update(this) {
+                    it.put("state", "error")
+                        .put("error", error.message ?: error.toString())
+                        .remove("connectedAtMs")
+                        .remove("startedAtMs")
+                }
+                runOnUiThread {
+                    result.error("cleanup_failed", error.message ?: error.toString(), null)
+                }
+            }
+        }, "GhostBox-vpn-preconnect-cleanup").start()
     }
 
     /**

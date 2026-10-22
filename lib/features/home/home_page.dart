@@ -16,17 +16,20 @@ import 'package:qr_flutter/qr_flutter.dart';
 
 import '../../backends/sing_box_backend.dart';
 import '../../backends/android_vpn_backend.dart';
+import '../../backends/ios_vpn_backend.dart';
 import '../../backends/xray_backend.dart';
 import '../../backends/core_path.dart';
 import '../../core/core_process.dart';
 import '../../core/vpn_backend.dart';
 import '../../models/server_profile.dart';
 import '../../models/core_settings.dart';
+import '../../models/route_rule_list.dart';
 import '../../models/subscription_metadata.dart';
 import '../../platform/system_proxy.dart';
 import '../../platform/windows_elevation.dart';
 import '../../platform/linux_kill_switch.dart';
 import '../../platform/windows_kill_switch.dart';
+import '../../platform/windows_core_lifecycle.dart';
 import '../../services/profile_parser.dart';
 import '../../services/device_identity.dart';
 import '../../services/app_version.dart';
@@ -89,7 +92,7 @@ class _HomePageState extends State<HomePage>
   VpnBackend backend = Platform.isAndroid
       ? AndroidVpnBackend()
       : Platform.isIOS
-          ? SingBoxBackend()
+          ? IosVpnBackend()
           : XrayBackend();
   CoreProcessBackend? tunnelBridgeBackend;
   bool xrayTunnelBridgeActive = false;
@@ -172,6 +175,27 @@ class _HomePageState extends State<HomePage>
   int _probeGeneration = 0;
   CoreProcessBackend? get process =>
       backend is CoreProcessBackend ? backend as CoreProcessBackend : null;
+
+  void _configureCoreLifecycle(VpnBackend target) {
+    if (Platform.isWindows && target is CoreProcessBackend) {
+      target.onProcessStarted = (pid, executable) =>
+          WindowsCoreLifecycle.trackCore(pid: pid, executable: executable);
+    }
+  }
+
+  Future<void> _cleanupWindowsCoreProcesses() async {
+    if (!Platform.isWindows) return;
+    final stale = await WindowsCoreLifecycle.cleanupStaleCores(
+      executables: [
+        coreExecutable('xray', 'vendor'),
+        coreExecutable('sing-box', 'vendor'),
+      ],
+    );
+    if (stale > 0) {
+      _recordAppLog('Очищены оставшиеся процессы VPN-ядер: $stale');
+    }
+  }
+
   ServerProfile? get selected =>
       profiles.where((p) => p.id == selectedId).firstOrNull;
   String _text(String ru, String en) => english ? en : ru;
@@ -406,8 +430,8 @@ class _HomePageState extends State<HomePage>
     'Новый выбор ждёт переподключения':
         'Your new server selection is waiting to reconnect',
     'Применить': 'Apply',
-    'Домен, маска или IP-сеть на строку. Подойдут *.ru, 10.0.0.0/8 и JSON-списки Amnezia.':
-        'One domain pattern or IP network per line. Supports *.ru, 10.0.0.0/8 and Amnezia JSON lists.',
+    'Домен, маска или IP-сеть на строку. example.com включает поддомены, *.example.com — только поддомены, full:example.com — только точный домен. Поддерживается JSON Amnezia.':
+        'One domain pattern or IP network per line. example.com includes subdomains, *.example.com matches subdomains only, and full:example.com matches exactly. Amnezia JSON is supported.',
     'ИЗМЕНЕНИЯ': 'CHANGES',
     'СОЕДИНЕНИЕ': 'CONNECTION',
     'ЗАЩИТА ТРАФИКА': 'TRAFFIC PROTECTION',
@@ -971,8 +995,9 @@ class _HomePageState extends State<HomePage>
                 ServerProfile.fromJson(Map<String, dynamic>.from(e as Map)))
             .toList();
     if (!mounted) return;
-    final migrateWindowsProxy =
-        Platform.isWindows && p.getBool('windowsProxyDefaultMigrated') != true;
+    final migrateDesktopTunDefault =
+        (Platform.isWindows || Platform.isLinux || Platform.isMacOS) &&
+            p.getBool('desktopTunDefaultMigrated') != true;
     final migrateAutoLocalPortDefault =
         p.getBool('autoLocalPortDefaultMigrated') != true;
     final migrateDnsDefault = p.getBool('dnsCombinedDefaultMigrated') != true;
@@ -1044,11 +1069,17 @@ class _HomePageState extends State<HomePage>
         );
       }
       if (p.getBool('tunDefaultMigrated') != true) {
-        coreSettings = coreSettings.copyWith(
-            connectionMode: Platform.isWindows ? 'system' : 'tun');
+        coreSettings = coreSettings.copyWith(connectionMode: 'tun');
       }
-      if (migrateWindowsProxy) {
-        coreSettings = coreSettings.copyWith(connectionMode: 'system');
+      if (migrateDesktopTunDefault) {
+        coreSettings = coreSettings.copyWith(connectionMode: 'tun');
+      }
+      // Domain and CIDR split routing belongs to the full system tunnel.
+      // Existing local-proxy mode cannot steer traffic from other apps.
+      if (coreSettings.routing != 'proxy' &&
+          coreSettings.connectionMode != 'tun' &&
+          coreSettings.connectionMode != 'mixed') {
+        coreSettings = coreSettings.copyWith(connectionMode: 'tun');
       }
       if (migrateAutoLocalPortDefault) {
         coreSettings = coreSettings.copyWith(autoLocalPort: true);
@@ -1058,11 +1089,20 @@ class _HomePageState extends State<HomePage>
       }
       backend = Platform.isAndroid
           ? AndroidVpnBackend()
-          : coreSettings.core == 'xray'
-              ? XrayBackend()
-              : SingBoxBackend();
+          : Platform.isIOS
+              ? IosVpnBackend()
+              : coreSettings.core == 'xray'
+                  ? XrayBackend()
+                  : SingBoxBackend();
+      _configureCoreLifecycle(backend);
       if (backend is AndroidVpnBackend) {
         (backend as AndroidVpnBackend).settings = coreSettings;
+      }
+      if (backend is IosVpnBackend) {
+        (backend as IosVpnBackend).settings = coreSettings.copyWith(
+          core: 'sing-box',
+          connectionMode: 'tun',
+        );
       }
       process?.settings = coreSettings;
       subscriptionUrl = p.getString('subscriptionUrl');
@@ -1085,7 +1125,7 @@ class _HomePageState extends State<HomePage>
     }
     if (p.getBool('xrayDefaultMigrated') != true ||
         p.getBool('tunDefaultMigrated') != true ||
-        migrateWindowsProxy ||
+        migrateDesktopTunDefault ||
         migrateAutoLocalPortDefault ||
         migrateDnsDefault ||
         migrateAndroidXrayDefault ||
@@ -1102,8 +1142,8 @@ class _HomePageState extends State<HomePage>
     if (Platform.isAndroid || Platform.isIOS || Platform.isMacOS) {
       await p.setString('coreSettings', jsonEncode(coreSettings.toJson()));
     }
-    if (migrateWindowsProxy) {
-      await p.setBool('windowsProxyDefaultMigrated', true);
+    if (migrateDesktopTunDefault) {
+      await p.setBool('desktopTunDefaultMigrated', true);
     }
     if (migrateAutoLocalPortDefault) {
       await p.setBool('autoLocalPortDefaultMigrated', true);
@@ -1224,6 +1264,9 @@ class _HomePageState extends State<HomePage>
     if (Platform.isAndroid) {
       await _restoreAndroidVpnSession(p);
     }
+    if (Platform.isIOS) {
+      await _restoreIosVpnSession(p);
+    }
     if (mounted &&
         (coreSettings.autoConnect || resumeAfterElevation) &&
         selected != null &&
@@ -1340,20 +1383,13 @@ class _HomePageState extends State<HomePage>
     uptimeTicker?.cancel();
     glow.dispose();
     ambientMotion.dispose();
-    if (!Platform.isAndroid) unawaited(_disconnectActive());
+    if (!Platform.isAndroid && !Platform.isIOS) unawaited(_disconnectActive());
     super.dispose();
   }
 
   Future<void> _toggle({bool allowDuringSwitch = false}) async {
     if (backend.state == VpnState.connecting ||
         (switchingServer && !allowDuringSwitch)) return;
-    if (Platform.isIOS && backend.state != VpnState.connected) {
-      _message(_text(
-        'Для iOS ещё нужен Network Extension. Сборка приложения и ядра подготовлена, системный VPN-модуль пока не подключён.',
-        'iOS still needs a Network Extension. The app and core build is prepared, but the system VPN provider is not integrated yet.',
-      ));
-      return;
-    }
     if (backend.state == VpnState.connected) {
       _recordAppLog('Отключено');
       glow.stop();
@@ -1362,6 +1398,14 @@ class _HomePageState extends State<HomePage>
       await prefs?.remove('activeProfileId');
       pendingReconnect = false;
     } else if (selected != null) {
+      if ((Platform.isLinux || Platform.isWindows) &&
+          coreSettings.killSwitchEnabled &&
+          coreSettings.routing != 'proxy') {
+        _message(_text(
+            'Отключи Kill Switch перед раздельным туннелированием: он блокирует прямые маршруты правил.',
+            'Turn off Kill Switch before split tunneling; it blocks direct rule routes.'));
+        return;
+      }
       if (Platform.isWindows &&
           (coreSettings.connectionMode == 'tun' ||
               coreSettings.connectionMode == 'mixed')) {
@@ -1396,6 +1440,7 @@ class _HomePageState extends State<HomePage>
         ..value = 0;
       try {
         connectionIssue = null;
+        await _cleanupWindowsCoreProcesses();
         final runtimeLocalPort = await _chooseLocalPort();
         activeLocalPort = runtimeLocalPort;
         if (coreSettings.autoLocalPort) {
@@ -1429,6 +1474,13 @@ class _HomePageState extends State<HomePage>
         if (backend is AndroidVpnBackend) {
           (backend as AndroidVpnBackend).settings = runtimeRouting.copyWith(
             core: attemptCore,
+            connectionMode: 'tun',
+            localPort: runtimeLocalPort,
+          );
+        }
+        if (backend is IosVpnBackend) {
+          (backend as IosVpnBackend).settings = runtimeRouting.copyWith(
+            core: 'sing-box',
             connectionMode: 'tun',
             localPort: runtimeLocalPort,
           );
@@ -1609,6 +1661,33 @@ class _HomePageState extends State<HomePage>
     }
   }
 
+  Future<void> _restoreIosVpnSession(SharedPreferences storage) async {
+    final iosBackend = backend;
+    if (iosBackend is! IosVpnBackend) return;
+    try {
+      await iosBackend.refreshState().timeout(const Duration(seconds: 5));
+      if (iosBackend.state == VpnState.connected) {
+        final restoredProfile = storage.getString('activeProfileId') ??
+            storage.getString('selectedProfile');
+        if (restoredProfile != null &&
+            profiles.any((profile) => profile.id == restoredProfile)) {
+          activeProfileId = restoredProfile;
+          await storage.setString('activeProfileId', restoredProfile);
+        }
+        _recordAppLog(
+            'Обнаружено активное iOS VPN-подключение; состояние восстановлено');
+        if (mounted) setState(() {});
+        _startConnectedMonitoring();
+      } else if (iosBackend.state == VpnState.error) {
+        connectionIssue = iosBackend.lastError;
+        _recordAppLog(
+            'iOS Packet Tunnel завершился: ${connectionIssue ?? 'ошибка ядра'}');
+      }
+    } on Object catch (error) {
+      _recordAppLog('Не удалось восстановить состояние iOS VPN: $error');
+    }
+  }
+
   void _startConnectedMonitoring() {
     uptimeTicker?.cancel();
     final connected = backend.state == VpnState.connected;
@@ -1620,6 +1699,10 @@ class _HomePageState extends State<HomePage>
         if (backend is AndroidVpnBackend) {
           unawaited(
               (backend as AndroidVpnBackend).refreshState().catchError((_) {}));
+        }
+        if (backend is IosVpnBackend) {
+          unawaited(
+              (backend as IosVpnBackend).refreshState().catchError((_) {}));
         }
         if ((backend.state == VpnState.error ||
                 backend.state == VpnState.disconnected) &&
@@ -2340,6 +2423,7 @@ exit 1
         connectionMode: coreSettings.connectionMode,
         localPort: bridgePort,
       );
+    _configureCoreLifecycle(bridge);
     _bindCoreRecoveryNotices(bridge);
     tunnelBridgeBackend = bridge;
     await bridge.connect(jsonEncode(bridgeProfile.toJson()));
@@ -2532,6 +2616,14 @@ foreach ($route in $routes) {
   }
 
   Future<void> _setKillSwitch(bool enabled) async {
+    if (enabled &&
+        (Platform.isLinux || Platform.isWindows) &&
+        coreSettings.routing != 'proxy') {
+      _message(_text(
+          'Перед включением Kill Switch переключи маршрутизацию на «Весь трафик через VPN».',
+          'Switch routing to “All traffic through VPN” before enabling Kill Switch.'));
+      return;
+    }
     if (Platform.isAndroid) {
       await _refreshAndroidKillSwitchStatus();
       final androidBackend = backend;
@@ -2685,6 +2777,14 @@ foreach ($route in $routes) {
           'Turn off Kill Switch before changing this mode'));
       return;
     }
+    if ((Platform.isLinux || Platform.isWindows || Platform.isMacOS) &&
+        coreSettings.routing != 'proxy' &&
+        mode != 'tun' &&
+        mode != 'mixed') {
+      _message(_text('Для раздельной маршрутизации нужен режим TUN или Mixed.',
+          'Split routing requires TUN or Mixed mode.'));
+      return;
+    }
     final reconnect = backend.state == VpnState.connected;
     if (backend.state == VpnState.connecting) {
       _message('Подождите завершения подключения');
@@ -2694,11 +2794,13 @@ foreach ($route in $routes) {
     final nextCore = coreSettings.core;
     final next = coreSettings.copyWith(connectionMode: mode, core: nextCore);
     await _saveCore(next);
-    if (nextCore != (process?.name ?? coreSettings.core) ||
-        backend is! CoreProcessBackend ||
-        process?.name != nextCore) {
+    if (!Platform.isIOS &&
+        (nextCore != (process?.name ?? coreSettings.core) ||
+            backend is! CoreProcessBackend ||
+            process?.name != nextCore)) {
       setState(() {
         backend = nextCore == 'xray' ? XrayBackend() : SingBoxBackend();
+        _configureCoreLifecycle(backend);
       });
     }
     process?.settings = coreSettings;
@@ -4005,9 +4107,18 @@ foreach ($route in $routes) {
     setState(() {
       backend = Platform.isAndroid
           ? AndroidVpnBackend()
-          : next == 'xray'
-              ? XrayBackend()
-              : SingBoxBackend();
+          : Platform.isIOS
+              ? IosVpnBackend()
+              : next == 'xray'
+                  ? XrayBackend()
+                  : SingBoxBackend();
+      _configureCoreLifecycle(backend);
+      if (backend is IosVpnBackend) {
+        (backend as IosVpnBackend).settings = coreSettings.copyWith(
+          core: 'sing-box',
+          connectionMode: 'tun',
+        );
+      }
       activeProfileId = null;
       pendingReconnect = false;
       pingMs = null;
@@ -4243,13 +4354,13 @@ foreach ($route in $routes) {
                                 borderRadius: BorderRadius.circular(24),
                                 child: AnimatedSwitcher(
                                     duration: _motion(
-                                        const Duration(milliseconds: 300)),
+                                        const Duration(milliseconds: 360)),
                                     reverseDuration: _motion(
-                                        const Duration(milliseconds: 220)),
+                                        const Duration(milliseconds: 240)),
                                     switchInCurve: Curves.easeOutCubic,
                                     switchOutCurve: Curves.easeInCubic,
                                     layoutBuilder: _pageSwitcherLayout,
-                                    transitionBuilder: _fadeSlideSwap,
+                                    transitionBuilder: _tabPageTransition,
                                     child: KeyedSubtree(
                                         key: ValueKey(_tabIndex),
                                         child: settings
@@ -5116,48 +5227,11 @@ foreach ($route in $routes) {
   }
 
   List<String>? _readRouteDomains(String raw) {
-    final trimmed = raw.trim();
-    if (trimmed.isEmpty) return <String>[];
-    List<String>? fromJson(dynamic value) {
-      final found = <String>{};
-      void collect(dynamic node) {
-        if (node is String) {
-          for (final token in node.split(RegExp(r'[\s,;]+'))) {
-            final candidate = CoreSettings.normalizeRoutePattern(token);
-            if (CoreSettings.isValidRoutePattern(candidate))
-              found.add(candidate);
-          }
-        } else if (node is List) {
-          for (final entry in node) {
-            collect(entry);
-          }
-        } else if (node is Map) {
-          for (final entry in node.entries) {
-            final key = entry.key.toString();
-            final candidate = CoreSettings.normalizeRoutePattern(key);
-            if (CoreSettings.isValidRoutePattern(candidate)) {
-              found.add(candidate);
-            }
-            collect(entry.value);
-          }
-        }
-      }
-
-      collect(value);
-      return found.isEmpty ? null : found.toList();
+    try {
+      return RouteRuleList.parse(raw);
+    } on FormatException {
+      return null;
     }
-
-    if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
-      try {
-        return fromJson(jsonDecode(trimmed));
-      } on FormatException {
-        return null;
-      }
-    }
-    return trimmed
-        .split(RegExp(r'[\s,;]+'))
-        .where((value) => value.isNotEmpty)
-        .toList();
   }
 
   Future<void> _saveRouteList() async {
@@ -5165,22 +5239,14 @@ foreach ($route in $routes) {
       _message('Подождите завершения подключения');
       return;
     }
-    final values = _readRouteDomains(routeListController.text);
-    if (values == null) {
-      _message('JSON должен содержать домены или IP-сети');
+    late final List<String> values;
+    try {
+      values = RouteRuleList.parse(routeListController.text);
+    } on FormatException catch (error) {
+      _message(error.message);
       return;
     }
-    final normalized = values
-        .map(CoreSettings.normalizeRoutePattern)
-        .where((value) => value.isNotEmpty)
-        .toSet()
-        .toList();
-    final invalid =
-        normalized.where((value) => !CoreSettings.isValidRoutePattern(value));
-    if (invalid.isNotEmpty) {
-      _message('Неверный домен: ${invalid.first}');
-      return;
-    }
+    final normalized = values.toSet().toList();
     final next = routeListMode == 'rules'
         ? coreSettings.copyWith(proxyDomains: normalized)
         : coreSettings.copyWith(directDomains: normalized);
@@ -5202,7 +5268,7 @@ foreach ($route in $routes) {
           const SizedBox(height: 6),
           Text(
               _localized(
-                  'Домен, маска или IP-сеть на строку. Подойдут *.ru, 10.0.0.0/8 и JSON-списки Amnezia.'),
+                  'Домен, маска или IP-сеть на строку. example.com включает поддомены, *.example.com — только поддомены, full:example.com — только точный домен. Поддерживается JSON Amnezia.'),
               style: TextStyle(color: _muted, fontSize: 12)),
           const SizedBox(height: 16),
           Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -5218,7 +5284,7 @@ foreach ($route in $routes) {
               decoration: InputDecoration(
                 labelText:
                     _text('Добавить сайт или сеть', 'Add site or network'),
-                hintText: 'example.com · *.ru · 203.0.113.0/24',
+                hintText: 'example.com · *.example.com · full:example.com',
                 prefixIcon: const Icon(Icons.language_rounded),
                 filled: true,
                 fillColor: _surface,
@@ -5284,7 +5350,7 @@ foreach ($route in $routes) {
               style: const TextStyle(fontSize: 13, height: 1.5),
               decoration: const InputDecoration(
                   hintText:
-                      'example.com\n*.ru\n203.0.113.0/24\n\nили JSON Amnezia',
+                      'example.com\n*.example.com\nfull:example.com\n203.0.113.0/24\n\nили JSON Amnezia',
                   border: InputBorder.none,
                   counterText: ''),
             ),
@@ -5686,7 +5752,9 @@ foreach ($route in $routes) {
   String _uptimeLabel() {
     final d = backend is AndroidVpnBackend
         ? (backend as AndroidVpnBackend).uptime
-        : process?.uptime ?? Duration.zero;
+        : backend is IosVpnBackend
+            ? (backend as IosVpnBackend).uptime
+            : process?.uptime ?? Duration.zero;
     return '${d.inHours.toString().padLeft(2, '0')}:${(d.inMinutes % 60).toString().padLeft(2, '0')}:${(d.inSeconds % 60).toString().padLeft(2, '0')}';
   }
 
@@ -5714,6 +5782,31 @@ foreach ($route in $routes) {
           end: Offset.zero,
         ).animate(motion),
         child: child,
+      ),
+    );
+  }
+
+  Widget _tabPageTransition(Widget child, Animation<double> animation) {
+    if (reduceAnimations) {
+      return FadeTransition(opacity: animation, child: child);
+    }
+
+    final motion = CurvedAnimation(
+      parent: animation,
+      curve: Curves.easeOutCubic,
+      reverseCurve: Curves.easeInCubic,
+    );
+    return FadeTransition(
+      opacity: motion,
+      child: SlideTransition(
+        position: Tween<Offset>(
+          begin: const Offset(0, .025),
+          end: Offset.zero,
+        ).animate(motion),
+        child: ScaleTransition(
+          scale: Tween<double>(begin: .988, end: 1).animate(motion),
+          child: child,
+        ),
       ),
     );
   }
@@ -7151,6 +7244,22 @@ foreach ($route in $routes) {
     if (backend.state == VpnState.connecting) {
       _message('Подождите завершения подключения');
       return;
+    }
+    if ((Platform.isLinux || Platform.isWindows) &&
+        value.routing != 'proxy' &&
+        value.killSwitchEnabled) {
+      _message(_text(
+          'Выключи Kill Switch: текущие правила блокируют прямые маршруты раздельного туннелирования.',
+          'Turn off Kill Switch; its current rules block direct split routes.'));
+      return;
+    }
+    if ((Platform.isLinux || Platform.isWindows || Platform.isMacOS) &&
+        value.routing != 'proxy' &&
+        value.connectionMode != 'tun' &&
+        value.connectionMode != 'mixed') {
+      value = value.copyWith(connectionMode: 'tun');
+      _message(_text('Для раздельной маршрутизации включён режим TUN.',
+          'TUN mode was enabled for split routing.'));
     }
     final reconnect = backend.state == VpnState.connected;
     if (reconnect) {
@@ -9555,8 +9664,8 @@ foreach ($route in $routes) {
                                         'Статус проверяется Android. Нажми, чтобы открыть системные настройки VPN.',
                                         'Android has not reported the status yet. Tap to open system VPN settings.')
                             : _text(
-                                'Недоступен: в этой Apple-сборке нет системного Network Extension VPN.',
-                                'Unavailable: this Apple build has no system Network Extension VPN.'),
+                                'Системная блокировка трафика iOS управляется настройками VPN устройства.',
+                                'iOS system traffic blocking is managed in the device VPN settings.'),
                 _compactSwitch(
                     value: Platform.isAndroid
                         ? androidKillSwitchStatus['lockdownEnabled'] == true
@@ -10187,6 +10296,10 @@ foreach ($route in $routes) {
           updated.connectionMode != 'tun' &&
           updated.connectionMode != 'mixed') {
         throw const FormatException('Kill Switch требует режим TUN или Mixed.');
+      }
+      if (updated.killSwitchEnabled && updated.routing != 'proxy') {
+        throw const FormatException(
+            'Kill Switch несовместим с прямыми маршрутами split tunneling.');
       }
       if (updated.killSwitchEnabled != coreSettings.killSwitchEnabled) {
         if (updated.killSwitchEnabled) {

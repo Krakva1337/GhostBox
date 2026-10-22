@@ -53,13 +53,23 @@ for core in sing-box xray; do
   target_core="$VENDOR_DIR/$core"
   if [[ -x "$source_core" ]]; then
     had_net_admin=false
-    if command -v getcap >/dev/null 2>&1 && getcap "$target_core" 2>/dev/null | grep -q 'cap_net_admin'; then
-      had_net_admin=true
+    if command -v getcap >/dev/null 2>&1; then
+      if getcap "$target_core" 2>/dev/null | grep -q 'cap_net_admin'; then
+        had_net_admin=true
+      fi
+    elif [[ -e "$target_core" ]]; then
+      echo "Warning: cannot inspect CAP_NET_ADMIN on $target_core (getcap is missing); TUN may need its permission restored." >&2
     fi
     install -m 0755 "$source_core" "$target_core.new"
     mv -f "$target_core.new" "$target_core"
-    if "$had_net_admin" && command -v setcap >/dev/null 2>&1; then
-      setcap cap_net_admin+ep "$target_core" 2>/dev/null || true
+    if "$had_net_admin"; then
+      if command -v setcap >/dev/null 2>&1; then
+        if ! setcap cap_net_admin+ep "$target_core" 2>/dev/null; then
+          echo "Warning: could not restore CAP_NET_ADMIN on $target_core. Run: sudo setcap cap_net_admin+ep '$target_core'" >&2
+        fi
+      else
+        echo "Warning: setcap is missing; restore TUN permission with: sudo setcap cap_net_admin+ep '$target_core'" >&2
+      fi
     fi
   fi
 done

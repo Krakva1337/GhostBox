@@ -4,7 +4,7 @@ class AppVersion {
 
   static const version = String.fromEnvironment(
     'GHOSTBOX_VERSION',
-    defaultValue: '1.4.5-alpha',
+    defaultValue: '1.4.6-alpha',
   );
   static const build = String.fromEnvironment(
     'GHOSTBOX_BUILD',

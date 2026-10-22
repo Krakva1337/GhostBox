@@ -6,6 +6,7 @@ import '../models/server_profile.dart';
 import '../models/core_settings.dart';
 
 import 'vpn_backend.dart';
+import 'split_routing.dart';
 
 /// Small process adapter shared by xray-core and sing-box.
 ///
@@ -42,6 +43,7 @@ class CoreProcessBackend implements VpnBackend {
   final List<String> _logs = <String>[];
   Future<void> _coreLogWriteQueue = Future<void>.value();
   void Function(String message, {bool error})? onRecoveryNotice;
+  Future<void> Function(int pid, String executable)? onProcessStarted;
 
   @override
   VpnState get state => _state;
@@ -137,7 +139,7 @@ class CoreProcessBackend implements VpnBackend {
           splitEntries.where((value) => !CoreSettings.isIpRoute(value)).length;
       final networkCount = splitEntries.where(CoreSettings.isIpRoute).length;
       _logs.add(
-          'Split routing: ${settings.routing}, $domainCount domain rules, $networkCount IP/CIDR rules. Domain rules use HTTP/TLS/QUIC sniffing${name == 'sing-box' ? ' and DNS reverse mapping' : ''}; CIDRs match destination addresses directly.');
+          'Split routing: ${settings.routing}, $domainCount domain rules, $networkCount IP/CIDR rules. Domains match DNS answers and visible HTTP/TLS/QUIC hostnames; CIDRs match destination addresses directly. Encrypted DNS and ECH can hide domain names.');
     }
     await _cleanupConfig();
     _runtimeDirectory = await Directory.systemTemp.createTemp('ghostbox-core-');
@@ -171,6 +173,15 @@ class CoreProcessBackend implements VpnBackend {
       runInShell: false,
       environment: {'GOMEMLIMIT': '${settings.memoryMb}MiB'},
     );
+    try {
+      await onProcessStarted?.call(_process!.pid, executable);
+    } on Object {
+      final unsupervised = _process!;
+      _process = null;
+      unsupervised.kill(ProcessSignal.sigkill);
+      await unsupervised.exitCode;
+      rethrow;
+    }
     _stderr = _process!.stderr
         .transform<String>(const SystemEncoding().decoder)
         .transform(const LineSplitter())
@@ -307,12 +318,17 @@ class CoreProcessBackend implements VpnBackend {
 
   Future<bool> _macElevatedProcessAlive(int pid) async {
     try {
-      final result =
-          await Process.run('/bin/ps', ['-p', '$pid', '-o', 'stat=']);
+      final result = await Process.run(
+          '/bin/ps', ['-ww', '-p', '$pid', '-o', 'stat=,command=']);
       final status = result.stdout.toString().trim();
+      final separator = status.indexOf(RegExp(r'\s'));
+      final config = _runtimeConfig;
       return result.exitCode == 0 &&
-          status.isNotEmpty &&
-          !status.startsWith('Z');
+          separator > 0 &&
+          !status.startsWith('Z') &&
+          config != null &&
+          status.substring(separator).trim() ==
+              '$executable run -c ${config.path}';
     } on Object {
       return false;
     }
@@ -422,8 +438,11 @@ class CoreProcessBackend implements VpnBackend {
         await Future<void>.delayed(const Duration(milliseconds: 100));
       }
       if (await _macElevatedProcessAlive(elevatedPid)) {
-        _writeLifecycleLog(
-            'macOS не завершила привилегированное ядро TUN после запроса остановки');
+        _macElevatedPid = elevatedPid;
+        _state = VpnState.error;
+        _lastError =
+            'macOS не завершила ядро TUN. Подтвердите остановку с правами администратора.';
+        throw StateError(_lastError!);
       }
     }
     await _cleanupConfig();
@@ -433,12 +452,16 @@ class CoreProcessBackend implements VpnBackend {
   }
 
   Future<void> _stopMacElevated(int pid) async {
-    final command = 'if /bin/kill -0 $pid 2>/dev/null; then '
-        '/bin/kill -TERM $pid 2>/dev/null || true; '
-        'i=0; while [ \$i -lt 30 ] && /bin/kill -0 $pid 2>/dev/null; do '
+    final config = _runtimeConfig;
+    if (config == null) return;
+    // PID reuse must never turn a delayed stop into killing an unrelated app.
+    final expected = _shellQuote('$executable run -c ${config.path}');
+    final command =
+        'owned() { [ "\$(/bin/ps -ww -p $pid -o command=)" = $expected ]; }; '
+        'if owned; then /bin/kill -TERM $pid 2>/dev/null || true; '
+        'i=0; while [ \$i -lt 30 ] && owned; do '
         '/bin/sleep 0.1; i=\$((i + 1)); done; '
-        'if /bin/kill -0 $pid 2>/dev/null; then '
-        '/bin/kill -KILL $pid 2>/dev/null || true; fi; fi';
+        'if owned; then /bin/kill -KILL $pid 2>/dev/null || true; fi; fi';
     final script = 'do shell script ${_appleScriptQuote(command)} '
         'with administrator privileges';
     try {
@@ -844,55 +867,15 @@ class CoreProcessBackend implements VpnBackend {
           if (q['host'] != null) 'host': q['host'],
         };
       if (p.network == 'quic') outbound['transport'] = {'type': 'quic'};
-      final blocked = settings.effectiveBlockedDomains;
-      final routeDomains = (settings.routing == 'exclude'
-              ? settings.directDomains
-              : settings.proxyDomains)
-          .where((value) => !CoreSettings.isIpRoute(value))
-          .map(CoreSettings.routeSuffix)
-          .toList();
-      final routeIps = (settings.routing == 'exclude'
-              ? settings.directDomains
-              : settings.proxyDomains)
-          .where(CoreSettings.isIpRoute)
-          .map(CoreSettings.routeIp)
-          .toList();
+      final routing = SplitRoutingPlan.fromSettings(settings);
       final rawExclusions = p.raw['_tunExcludeAddresses'];
       final routeExclusions = rawExclusions is List
           ? rawExclusions.map((value) => value.toString()).toList()
           : <String>[];
-      final rules = <Map<String, dynamic>>[
-        if (blocked.isNotEmpty) {'domain_suffix': blocked, 'action': 'reject'},
-        if (settings.routing == 'exclude' && routeDomains.isNotEmpty)
-          {
-            'domain_suffix': routeDomains,
-            'action': 'route',
-            'outbound': 'direct'
-          },
-        if (settings.routing == 'exclude' && routeIps.isNotEmpty)
-          {'ip_cidr': routeIps, 'action': 'route', 'outbound': 'direct'},
-        if (settings.routing == 'rules' && routeDomains.isNotEmpty)
-          {
-            'domain_suffix': routeDomains,
-            'action': 'route',
-            'outbound': 'proxy'
-          },
-        if (settings.routing == 'rules' && routeIps.isNotEmpty)
-          {'ip_cidr': routeIps, 'action': 'route', 'outbound': 'proxy'},
-      ];
+      // Resolve the VPN endpoint directly: resolving it through its own
+      // outbound creates a DNS bootstrap cycle before a tunnel can connect.
+      outbound['domain_resolver'] = {'server': 'endpoint-resolver'};
       final dnsConfig = _singBoxDnsConfig();
-      final hasSplitDnsDomains = (settings.routing == 'exclude'
-              ? settings.directDomains
-              : settings.proxyDomains)
-          .any((value) => !CoreSettings.isIpRoute(value));
-      final defaultDnsDetour = hasSplitDnsDomains
-          ? (settings.routing == 'rules' ? 'direct' : 'proxy')
-          : (settings.dnsThroughProxy ? 'proxy' : 'direct');
-      final defaultDnsTag =
-          settings.dns == 'combined' ? 'cloudflare' : 'resolver';
-      final defaultDnsResolverTag = hasSplitDnsDomains
-          ? '$defaultDnsTag-$defaultDnsDetour'
-          : defaultDnsTag;
       return {
         'log': {
           'level': settings.logLevel == 'warning' ? 'warn' : settings.logLevel
@@ -904,9 +887,12 @@ class CoreProcessBackend implements VpnBackend {
             {
               'type': 'tun',
               'tag': 'tun-in',
-              if (!Platform.isMacOS) 'interface_name': 'ghostbox0',
+              if (!Platform.isMacOS && !Platform.isIOS)
+                'interface_name': 'ghostbox0',
               'address': ['172.19.0.1/30', 'fdfe:dcba:9876::1/126'],
-              'mtu': Platform.isAndroid || Platform.isMacOS ? 1500 : 9000,
+              'mtu': Platform.isAndroid || Platform.isIOS || Platform.isMacOS
+                  ? 1500
+                  : 9000,
               'auto_route': true,
               if (!Platform.isMacOS) 'strict_route': true,
               if (routeExclusions.isNotEmpty)
@@ -933,19 +919,24 @@ class CoreProcessBackend implements VpnBackend {
           {'type': 'direct', 'tag': 'direct'}
         ],
         'route': {
-          'default_domain_resolver': {'server': defaultDnsResolverTag},
+          'default_domain_resolver': {'server': 'endpoint-resolver'},
           if (settings.connectionMode == 'tun' ||
               settings.connectionMode == 'mixed')
             'auto_detect_interface': true,
           'rules': [
             if (settings.connectionMode == 'tun' ||
                 settings.connectionMode == 'mixed')
-              {'protocol': 'dns', 'action': 'hijack-dns'},
-            if (settings.sniffingEnabled || routeDomains.isNotEmpty)
-              {'action': 'sniff'},
-            ...rules,
+              {'port': 53, 'action': 'hijack-dns'},
+            if (settings.sniffingEnabled || routing.targets.hasDomains)
+              {'action': 'sniff', 'timeout': '300ms'},
+            {
+              'inbound': ['http-probe'],
+              'action': 'route',
+              'outbound': 'proxy'
+            },
+            ...routing.singBoxRules,
           ],
-          'final': settings.routing == 'rules' ? 'direct' : 'proxy'
+          'final': routing.finalOutbound
         }
       };
     }
@@ -1088,18 +1079,7 @@ class CoreProcessBackend implements VpnBackend {
       if (settings.tlsFragmentEnabled && usesTls)
         'dialerProxy': 'ghostbox-fragment',
     };
-    final blocked = settings.effectiveBlockedDomains;
-    final routeEntries = settings.routing == 'exclude'
-        ? settings.directDomains
-        : settings.proxyDomains;
-    final routeDomains = routeEntries
-        .where((value) => !CoreSettings.isIpRoute(value))
-        .map(CoreSettings.routeSuffix)
-        .toList();
-    final routeIps = routeEntries
-        .where(CoreSettings.isIpRoute)
-        .map(CoreSettings.routeIp)
-        .toList();
+    final routing = SplitRoutingPlan.fromSettings(settings);
     final rules = <Map<String, dynamic>>[
       if (settings.connectionMode == 'tun' ||
           settings.connectionMode == 'mixed')
@@ -1107,44 +1087,35 @@ class CoreProcessBackend implements VpnBackend {
           'type': 'field',
           'network': 'tcp,udp',
           'port': '53',
+          'inboundTag': ['tun-in', 'local'],
           'outboundTag': 'dns-out'
         },
-      if (blocked.isNotEmpty)
-        {
-          'type': 'field',
-          'domain': blocked.map((e) => 'domain:$e').toList(),
-          'outboundTag': 'block'
-        },
-      if (settings.routing == 'exclude' && routeDomains.isNotEmpty)
-        {
-          'type': 'field',
-          'domain': routeDomains.map((e) => 'domain:$e').toList(),
-          'outboundTag': 'direct'
-        },
-      if (settings.routing == 'exclude' && routeIps.isNotEmpty)
-        {'type': 'field', 'ip': routeIps, 'outboundTag': 'direct'},
-      if (settings.routing == 'rules' && routeDomains.isNotEmpty)
-        {
-          'type': 'field',
-          'domain': routeDomains.map((e) => 'domain:$e').toList(),
-          'outboundTag': 'proxy'
-        },
-      if (settings.routing == 'rules' && routeIps.isNotEmpty)
-        {'type': 'field', 'ip': routeIps, 'outboundTag': 'proxy'},
+      // Built-in resolver traffic must not be caught by a split/default rule.
       {
         'type': 'field',
-        'network': 'tcp,udp',
-        'outboundTag': settings.routing == 'rules' ? 'direct' : 'proxy'
+        'inboundTag': ['ghostbox-dns-proxy'],
+        'outboundTag': 'proxy'
       },
+      {
+        'type': 'field',
+        'inboundTag': ['ghostbox-dns-direct'],
+        'outboundTag': 'direct'
+      },
+      {
+        'type': 'field',
+        'inboundTag': ['http-probe'],
+        'outboundTag': 'proxy'
+      },
+      ...routing.xrayRules,
     ];
-    final dnsServers = _xrayDnsServers();
+    final dnsServers = _xrayDnsServers(p.address);
     return {
       'log': {'loglevel': settings.logLevel},
       'dns': {
         'servers': dnsServers,
         'queryStrategy': 'UseIP',
-        if (blocked.isNotEmpty)
-          'hosts': {for (final domain in blocked) domain: '0.0.0.0'}
+        'tag': 'ghostbox-dns-proxy',
+        'disableFallbackIfMatch': true,
       },
       'inbounds': [
         if (settings.connectionMode == 'tun' ||
@@ -1163,7 +1134,7 @@ class CoreProcessBackend implements VpnBackend {
             'sniffing': {
               // Domain-based split routing depends on the original host name
               // even when the user disabled optional general sniffing.
-              'enabled': settings.sniffingEnabled || routeDomains.isNotEmpty,
+              'enabled': settings.sniffingEnabled || routing.targets.hasDomains,
               'destOverride': ['http', 'tls', 'quic'],
               // Use the sniffed SNI/Host for routing only. Replacing the
               // original destination can break TLS on CDN/virtual-host sites.
@@ -1177,7 +1148,7 @@ class CoreProcessBackend implements VpnBackend {
           'protocol': 'socks',
           'settings': {'auth': 'noauth', 'udp': true},
           'sniffing': {
-            'enabled': settings.sniffingEnabled || routeDomains.isNotEmpty,
+            'enabled': settings.sniffingEnabled || routing.targets.hasDomains,
             'destOverride': ['http', 'tls', 'quic'],
             'routeOnly': true,
           }
@@ -1243,78 +1214,71 @@ class CoreProcessBackend implements VpnBackend {
           {'tag': 'dns-out', 'protocol': 'dns'},
       ],
       'routing': {
-        'domainStrategy': routeIps.isNotEmpty ? 'IPIfNonMatch' : 'AsIs',
+        // IPIfNonMatch never resolves while an explicit final rule matches.
+        'domainStrategy':
+            routing.targets.cidrs.isNotEmpty ? 'IPOnDemand' : 'AsIs',
         'rules': rules,
       }
     };
   }
 
   Map<String, dynamic> _singBoxDnsConfig() {
-    final splitEntries = settings.routing == 'exclude'
-        ? settings.directDomains
-        : settings.routing == 'rules'
-            ? settings.proxyDomains
-            : const <String>[];
-    final splitDomains =
-        splitEntries.where((value) => !CoreSettings.isIpRoute(value)).toList();
-    final splitIsProxy = settings.routing == 'rules';
-    final hasSplit = splitDomains.isNotEmpty;
+    final routing = SplitRoutingPlan.fromSettings(settings);
+    final hasSplit = routing.targets.hasDomains;
     final defaultDetour = hasSplit
-        ? (splitIsProxy ? 'direct' : 'proxy')
+        ? routing.finalOutbound
         : (settings.dnsThroughProxy ? 'proxy' : 'direct');
-    final splitDetour = splitIsProxy ? 'proxy' : 'direct';
+    final splitDetour = routing.matchedOutbound;
     String tag(String name, String detour) => hasSplit ? '$name-$detour' : name;
 
     final servers = <Map<String, dynamic>>[
+      {
+        'type': 'https',
+        'tag': 'endpoint-resolver',
+        'server': '1.1.1.1',
+        'path': '/dns-query'
+      },
       ..._singBoxDnsServers(
           detour: defaultDetour, suffix: hasSplit ? '-$defaultDetour' : ''),
       if (hasSplit)
         ..._singBoxDnsServers(detour: splitDetour, suffix: '-$splitDetour'),
     ];
     final dnsRules = <Map<String, dynamic>>[
-      if (settings.effectiveBlockedDomains.isNotEmpty)
+      if (routing.blocked.hasDomains)
         {
-          'domain_suffix': settings.effectiveBlockedDomains,
+          ...routing.blocked.singBoxDomains,
           'action': 'predefined',
           'rcode': 'NXDOMAIN'
         },
-      if (hasSplit && settings.dns != 'combined')
+      if (hasSplit && settings.dns == 'combined')
         {
-          'domain_suffix': splitDomains.map(CoreSettings.routeSuffix).toList(),
-          'action': 'route',
-          'server': tag('resolver', splitDetour),
-        },
-      if (settings.dns == 'combined' && hasSplit)
-        {
-          'domain_suffix': splitDomains.map(CoreSettings.routeSuffix).toList(),
-          'query_type': [1],
-          'action': 'route',
-          'server': tag('cloudflare', splitDetour),
-        },
-      if (settings.dns == 'combined' && hasSplit)
-        {
-          'domain_suffix': splitDomains.map(CoreSettings.routeSuffix).toList(),
+          ...routing.targets.singBoxDomains,
           'query_type': [28],
           'action': 'route',
           'server': tag('google', splitDetour),
         },
-      if (settings.dns == 'combined')
+      if (hasSplit)
         {
-          'query_type': [1],
+          ...routing.targets.singBoxDomains,
           'action': 'route',
-          'server': tag('cloudflare', defaultDetour),
+          'server': tag(settings.dns == 'combined' ? 'cloudflare' : 'resolver',
+              splitDetour),
         },
+      // All query types (including HTTPS/SVCB) follow the same split decision.
+      // Google resolves AAAA while Cloudflare resolves other query types.
       if (settings.dns == 'combined')
         {
           'query_type': [28],
           'action': 'route',
-          'server': tag('google', defaultDetour),
+          'server': tag('google', defaultDetour)
         },
     ];
     return {
       'servers': servers,
-      // Remember DNS answers so connections addressed directly by IP can
-      // still match a domain-based split rule.
+      // Keep DNS answers in sing-box's private runtime reverse map. This lets
+      // IP-addressed follow-up connections inherit the original domain rule,
+      // including hosts matched by a configured *.example suffix, without
+      // persisting CDN addresses in the visible routing lists.
       'reverse_mapping': true,
       'final': settings.dns == 'combined'
           ? tag('cloudflare', defaultDetour)
@@ -1401,41 +1365,56 @@ class CoreProcessBackend implements VpnBackend {
     ];
   }
 
-  List<String> _xrayDnsServers() {
-    String route(String endpoint) {
-      if (settings.dnsThroughProxy) return endpoint;
-      if (endpoint.startsWith('https://')) {
-        return endpoint.replaceFirst('https://', 'https+local://');
+  List<Map<String, dynamic>> _xrayDnsServers(String endpointHost) {
+    final routing = SplitRoutingPlan.fromSettings(settings);
+    final split = routing.targets.hasDomains;
+    final defaultDetour = split
+        ? routing.finalOutbound
+        : (settings.dnsThroughProxy ? 'proxy' : 'direct');
+    List<String> addresses() => switch (settings.dns) {
+          'cloudflare' => ['https://1.1.1.1/dns-query'],
+          'google' => ['https://8.8.8.8/dns-query'],
+          'combined' => [
+              'https://1.1.1.1/dns-query',
+              'https://8.8.8.8/dns-query'
+            ],
+          'custom' => [settings.customDnsResolver.trim()],
+          _ => ['localhost'],
+        };
+    String address(String value, String detour) {
+      if (value.toLowerCase().startsWith('udp://')) {
+        final uri = Uri.parse(value);
+        final host = uri.host.contains(':') ? '[${uri.host}]' : uri.host;
+        return '$host:${uri.hasPort ? uri.port : 53}';
       }
-      if (endpoint.startsWith('tcp://')) {
-        return endpoint.replaceFirst('tcp://', 'tcp+local://');
+      if (detour == 'direct') {
+        if (value.startsWith('https://'))
+          return value.replaceFirst('https://', 'https+local://');
+        if (value.startsWith('tcp://'))
+          return value.replaceFirst('tcp://', 'tcp+local://');
       }
-      return endpoint;
+      return value;
     }
 
-    switch (settings.dns) {
-      case 'cloudflare':
-        return [route('https://1.1.1.1/dns-query')];
-      case 'google':
-        return [route('https://8.8.8.8/dns-query')];
-      case 'combined':
-        return [
-          route('https://1.1.1.1/dns-query'),
-          route('https://8.8.8.8/dns-query')
-        ];
-      case 'custom':
-        final value = route(settings.customDnsResolver.trim());
-        if (value.toLowerCase().startsWith('udp://')) {
-          final uri = Uri.tryParse(value);
-          if (uri != null && uri.host.isNotEmpty) {
-            final host = uri.host.contains(':') ? '[${uri.host}]' : uri.host;
-            return ['$host:${uri.hasPort ? uri.port : 53}'];
-          }
-        }
-        return [value];
-      default:
-        return ['localhost'];
-    }
+    Map<String, dynamic> server(String value, String detour,
+            {List<String>? domains}) =>
+        {
+          'address': address(value, detour),
+          'tag': 'ghostbox-dns-$detour',
+          if (domains != null) 'domains': domains,
+          if (domains != null) 'skipFallback': true,
+        };
+    return [
+      // Never resolve the VPN server using the VPN server itself.
+      if (InternetAddress.tryParse(endpointHost) == null)
+        server('https://1.1.1.1/dns-query', 'direct',
+            domains: ['full:$endpointHost']),
+      if (split)
+        for (final value in addresses())
+          server(value, routing.matchedOutbound,
+              domains: routing.targets.xrayDomains),
+      for (final value in addresses()) server(value, defaultDetour),
+    ];
   }
 
   Map<String, dynamic> _xrayLegacySettings(

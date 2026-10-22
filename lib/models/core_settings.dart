@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:typed_data';
 
 class CoreSettings {
   const CoreSettings({
@@ -195,7 +196,7 @@ class CoreSettings {
       customDnsResolver:
           data['customDnsResolver'] as String? ?? 'https://1.1.1.1/dns-query',
       logLevel: choice('logLevel', ['error', 'warning', 'info'], 'warning'),
-      dnsThroughProxy: data['dnsThroughProxy'] == true,
+      dnsThroughProxy: data['dnsThroughProxy'] != false,
       dnsBlacklistMode: blacklistMode,
       blocklistEnabled: blacklistMode != 'none',
       autoConnect: data['autoConnect'] == true,
@@ -219,7 +220,7 @@ class CoreSettings {
       tcpFastOpen: data['tcpFastOpen'] == true,
       udpFragment: data['udpFragment'] == true,
       pingMode: choice('pingMode', ['proxy', 'tcp', 'icmp'],
-          Platform.isAndroid ? 'tcp' : 'proxy'),
+          Platform.isAndroid || Platform.isIOS ? 'tcp' : 'proxy'),
       proxyGetUrl: data['proxyGetUrl'] == 'https://httpbin.org/status/404'
           ? 'https://example.com/ghostbox-probe-404'
           : data['proxyGetUrl'] as String? ??
@@ -283,28 +284,51 @@ class CoreSettings {
         'disconnectVpnForPing': disconnectVpnForPing,
       };
 
-  static bool isValidDomain(String value) => RegExp(
-          r'^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$')
-      .hasMatch(value.trim().toLowerCase());
+  static bool isValidDomain(String value) =>
+      _isValidDomainName(value.trim().toLowerCase(), allowSingleLabel: false);
 
-  /// Route lists accept DNS suffix patterns such as `*.ru`, IP addresses and
-  /// CIDR networks. Core routing engines receive DNS suffixes without `*.`.
+  /// Bare domains include their subdomains. `full:` matches one hostname and
+  /// `*.` matches subdomains only. IP networks are stored with host bits cleared.
   static String normalizeRoutePattern(String value) {
     var pattern = value.trim().toLowerCase();
+    final exact = pattern.startsWith('full:');
+    if (exact) pattern = pattern.substring(5);
+    if (pattern.startsWith('domain:')) pattern = pattern.substring(7);
     if (pattern.startsWith('http://') || pattern.startsWith('https://')) {
       final uri = Uri.tryParse(pattern);
       if (uri != null && uri.host.isNotEmpty) pattern = uri.host;
+    }
+    if (pattern.startsWith('[') && pattern.endsWith(']')) {
+      pattern = pattern.substring(1, pattern.length - 1);
+    }
+    if (_isIpOrCidr(pattern)) {
+      final parts = pattern.split('/');
+      final address = InternetAddress.tryParse(parts.first)!;
+      if (parts.length == 1)
+        return exact ? 'full:${address.address}' : address.address;
+      final prefix = int.parse(parts.last);
+      final bytes = Uint8List.fromList(address.rawAddress);
+      for (var index = 0; index < bytes.length; index++) {
+        final bits = (prefix - index * 8).clamp(0, 8);
+        bytes[index] &= bits == 0 ? 0 : (0xff << (8 - bits)) & 0xff;
+      }
+      final network = InternetAddress.fromRawAddress(bytes).address;
+      return exact ? 'full:$network/$prefix' : '$network/$prefix';
     }
     // Domain lists commonly use `.example.org` as shorthand for every
     // subdomain. Convert that notation to the UI's explicit wildcard format.
     if (pattern.startsWith('.') && !pattern.startsWith('*.')) {
       pattern = '*$pattern';
     }
-    return pattern.replaceFirst(RegExp(r'\.$'), '');
+    pattern = pattern.replaceFirst(RegExp(r'\.$'), '');
+    return exact ? 'full:$pattern' : pattern;
   }
 
   static bool isValidRoutePattern(String value) {
     final pattern = normalizeRoutePattern(value);
+    if (pattern.startsWith('full:')) {
+      return isValidDomain(pattern.substring(5));
+    }
     if (_isIpOrCidr(pattern)) return true;
     if (pattern.startsWith('*.')) {
       final suffix = pattern.substring(2);
@@ -328,11 +352,13 @@ class CoreSettings {
   }
 
   static bool _isIpOrCidr(String value) {
+    if (value.contains('%')) return false;
     final parts = value.split('/');
     if (parts.length > 2) return false;
     final address = InternetAddress.tryParse(parts.first);
     if (address == null) return false;
     if (parts.length == 1) return true;
+    if (!RegExp(r'^\d{1,3}$').hasMatch(parts.last)) return false;
     final prefix = int.tryParse(parts.last);
     if (prefix == null) return false;
     final maxPrefix = address.type == InternetAddressType.IPv4 ? 32 : 128;

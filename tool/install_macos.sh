@@ -44,6 +44,19 @@ if [[ ! -x "$app_path/Contents/MacOS/GhostBox" && ! -x "$app_path/Contents/MacOS
   exit 1
 fi
 
+# Reject an incomplete or modified bundle before requesting administrator access.
+/usr/bin/codesign --verify --deep --strict "$app_path"
+for core in sing-box xray; do
+  [[ -x "$app_path/Contents/MacOS/vendor/bin/$core" ]] || {
+    echo "Bundled $core is missing; install a complete macOS release archive." >&2
+    exit 1
+  }
+  /usr/bin/lipo -verify_arch "$(uname -m)" "$app_path/Contents/MacOS/vendor/bin/$core" || {
+    echo "The bundled $core does not support this Mac ($(uname -m))." >&2
+    exit 1
+  }
+done
+
 echo "Installing GhostBox to /Applications/GhostBox.app (macOS will request administrator access)."
 sudo -v
 sudo /usr/bin/ditto "$app_path" "$new_path"

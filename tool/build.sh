@@ -197,12 +197,7 @@ case "$target" in
     ;;
   ios)
     [[ "$(uname -s)" == Darwin ]] || { echo 'iOS builds require macOS and Xcode.' >&2; exit 1; }
-    for command in flutter go git xcodebuild; do need "$command"; done
-    "$project_dir/tool/build_mobile_cores.sh" apple
-    cd "$project_dir"
-    flutter pub get
-    flutter build ios --no-codesign
-    echo 'Built unsigned iOS app. Network Extension setup and Apple signing are still required for VPN distribution.'
+    exec "$project_dir/tool/build_ios.sh" unsigned
     ;;
   *) echo 'Usage: ./tool/build.sh [linux|android|windows|macos|ios]' >&2; exit 2 ;;
 esac

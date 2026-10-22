@@ -144,6 +144,10 @@ class AndroidVpnBackend implements VpnBackend {
       final profile = ServerProfile.fromJson(
         _stringKeyedMap(jsonDecode(profileJson)),
       );
+      _logs.add('Перед подключением очищаю оставшиеся Android VPN/Xray процессы');
+      await _channel
+          .invokeMethod<void>('cleanupVpnBeforeConnect')
+          .timeout(const Duration(seconds: 9));
       final coreName = settings.core == 'xray' ? 'xray' : 'sing-box';
       if (coreName == 'xray') {
         await _connectXrayThroughSingBox(profile);

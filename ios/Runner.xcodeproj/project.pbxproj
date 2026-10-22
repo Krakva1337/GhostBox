@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A11000000000000000000011 /* Library.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = A11000000000000000000014 /* Library.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		A11000000000000000000001 /* Packet Tunnel Extension in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = A11000000000000000000004 /* Packet Tunnel Extension.appex */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		1498D2341E8E89220040F4C2 /* GeneratedPluginRegistrant.m in Sources */ = {isa = PBXBuildFile; fileRef = 1498D2331E8E89220040F4C2 /* GeneratedPluginRegistrant.m */; };
 		331C808B294A63AB00263BE5 /* RunnerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 331C807B294A618700263BE5 /* RunnerTests.swift */; };
 		3B3967161E833CAA004F5970 /* AppFrameworkInfo.plist in Resources */ = {isa = PBXBuildFile; fileRef = 3B3967151E833CAA004F5970 /* AppFrameworkInfo.plist */; };
@@ -19,6 +21,9 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
+		A11000000000000000000013 /* Library Product Proxy */ = {isa = PBXContainerItemProxy; containerPortal = 4A1100000000000000000001 /* sing-box.xcodeproj */; proxyType = 2; remoteGlobalIDString = 3AEC211D2A459B4700A63465; remoteInfo = Library; };
+		A11000000000000000000002 /* Packet Tunnel Target Proxy */ = {isa = PBXContainerItemProxy; containerPortal = 4A1100000000000000000001 /* sing-box.xcodeproj */; proxyType = 1; remoteGlobalIDString = 3A096F852A4ED3DE00D4A2ED; remoteInfo = Extension; };
+		A11000000000000000000003 /* Packet Tunnel Product Proxy */ = {isa = PBXContainerItemProxy; containerPortal = 4A1100000000000000000001 /* sing-box.xcodeproj */; proxyType = 2; remoteGlobalIDString = 3A096F862A4ED3DE00D4A2ED; remoteInfo = Extension; };
 		331C8085294A63A400263BE5 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 97C146E61CF9000F007C117D /* Project object */;
@@ -29,12 +34,14 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
+		A11000000000000000000005 /* Embed App Extensions */ = {isa = PBXCopyFilesBuildPhase; buildActionMask = 2147483647; dstPath = ""; dstSubfolderSpec = 13; files = (A11000000000000000000001 /* Packet Tunnel Extension in Embed App Extensions */, ); name = "Embed App Extensions"; runOnlyForDeploymentPostprocessing = 0; };
 		9705A1C41CF9048500538489 /* Embed Frameworks */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 2147483647;
 			dstPath = "";
 			dstSubfolderSpec = 10;
 			files = (
+				A11000000000000000000011 /* Library.framework in Embed Frameworks */,
 			);
 			name = "Embed Frameworks";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -42,6 +49,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		4A1100000000000000000001 /* sing-box.xcodeproj */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.pb-project"; name = sing-box.xcodeproj; path = "../.toolchains/apple-client/sing-box.xcodeproj"; sourceTree = SOURCE_ROOT; };
 		1498D2321E8E86230040F4C2 /* GeneratedPluginRegistrant.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = GeneratedPluginRegistrant.h; sourceTree = "<group>"; };
 		1498D2331E8E89220040F4C2 /* GeneratedPluginRegistrant.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = GeneratedPluginRegistrant.m; sourceTree = "<group>"; };
 		331C807B294A618700263BE5 /* RunnerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunnerTests.swift; sourceTree = "<group>"; };
@@ -73,6 +81,7 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		A11000000000000000000006 /* sing-box Products */ = {isa = PBXGroup; children = (A11000000000000000000004 /* Packet Tunnel Extension.appex */, A11000000000000000000014 /* Library.framework */, ); name = Products; sourceTree = "<group>"; };
 		331C8082294A63A400263BE5 /* RunnerTests */ = {
 			isa = PBXGroup;
 			children = (
@@ -108,6 +117,7 @@
 			children = (
 				97C146EE1CF9000F007C117D /* Runner.app */,
 				331C8081294A63A400263BE5 /* RunnerTests.xctest */,
+				A11000000000000000000006 /* sing-box Products */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -157,11 +167,13 @@
 				97C146EB1CF9000F007C117D /* Frameworks */,
 				97C146EC1CF9000F007C117D /* Resources */,
 				9705A1C41CF9048500538489 /* Embed Frameworks */,
+				A11000000000000000000005 /* Embed App Extensions */,
 				3B06AD1E1E4923F5004D2608 /* Thin Binary */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				A11000000000000000000007 /* Packet Tunnel Extension */,
 			);
 			name = Runner;
 			packageProductDependencies = (
@@ -203,6 +215,9 @@
 			packageReferences = (
 				781AD8BC2B33823900A9FFBB /* XCLocalSwiftPackageReference "Flutter/ephemeral/Packages/FlutterGeneratedPluginSwiftPackage" */,
 			);
+			projectReferences = (
+				{ ProductGroup = A11000000000000000000006 /* sing-box Products */; ProjectRef = 4A1100000000000000000001 /* sing-box.xcodeproj */; },
+			);
 			productRefGroup = 97C146EF1CF9000F007C117D /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -212,6 +227,11 @@
 			);
 		};
 /* End PBXProject section */
+
+/* Begin PBXReferenceProxy section */
+		A11000000000000000000014 /* Library.framework */ = {isa = PBXReferenceProxy; fileType = "wrapper.framework"; path = Library.framework; remoteRef = A11000000000000000000013 /* Library Product Proxy */; sourceTree = BUILT_PRODUCTS_DIR; };
+		A11000000000000000000004 /* Packet Tunnel Extension.appex */ = {isa = PBXReferenceProxy; fileType = "wrapper.app-extension"; path = Extension.appex; remoteRef = A11000000000000000000003 /* Packet Tunnel Product Proxy */; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXReferenceProxy section */
 
 /* Begin PBXResourcesBuildPhase section */
 		331C807F294A63A400263BE5 /* Resources */ = {
@@ -290,6 +310,7 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		A11000000000000000000007 /* Packet Tunnel Extension */ = {isa = PBXTargetDependency; targetProxy = A11000000000000000000002 /* Packet Tunnel Target Proxy */; };
 		331C8086294A63A400263BE5 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = 97C146ED1CF9000F007C117D /* Runner */;
@@ -384,6 +405,7 @@
 					"@executable_path/Frameworks",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = app.ghostbox.ghostbox;
+				CODE_SIGN_ENTITLEMENTS = Runner/Runner.entitlements;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_OBJC_BRIDGING_HEADER = "Runner/Runner-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;
@@ -565,6 +587,7 @@
 					"@executable_path/Frameworks",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = app.ghostbox.ghostbox;
+				CODE_SIGN_ENTITLEMENTS = Runner/Runner.entitlements;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_OBJC_BRIDGING_HEADER = "Runner/Runner-Bridging-Header.h";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
@@ -587,6 +610,7 @@
 					"@executable_path/Frameworks",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = app.ghostbox.ghostbox;
+				CODE_SIGN_ENTITLEMENTS = Runner/Runner.entitlements;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_OBJC_BRIDGING_HEADER = "Runner/Runner-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;

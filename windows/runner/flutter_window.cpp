@@ -207,6 +207,8 @@ bool FlutterWindow::OnCreate() {
     return false;
   }
   RegisterPlugins(flutter_controller_->engine());
+  core_lifecycle_ = std::make_unique<CoreLifecycle>(
+      flutter_controller_->engine()->messenger());
   app_icon_channel_ = std::make_unique<
       flutter::MethodChannel<flutter::EncodableValue>>(
       flutter_controller_->engine()->messenger(),
@@ -289,6 +291,7 @@ bool FlutterWindow::OnCreate() {
 }
 
 void FlutterWindow::OnDestroy() {
+  core_lifecycle_.reset();
   if (flutter_controller_) {
     flutter_controller_ = nullptr;
   }

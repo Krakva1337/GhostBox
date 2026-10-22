@@ -62,7 +62,7 @@ fi
 # sing-box-lx pins the exact compiler in go.version. Using a newer installed Go
 # version can produce Android libbox crashes that only surface at runtime, so
 # always build its AAR with the source tree's declared toolchain.
-if [[ "$target" == android ]]; then
+if [[ -f "$source_dir/go.version" ]]; then
   pinned_go_version="$(tr -d '[:space:]' < "$source_dir/go.version")"
   [[ "$pinned_go_version" =~ ^go[0-9]+\.[0-9]+(\.[0-9]+)?$ ]] || {
     echo "Invalid Go toolchain pin in $source_dir/go.version: $pinned_go_version" >&2
@@ -98,6 +98,14 @@ else
   mkdir -p "$artifact_dir/apple"
   rm -rf "$artifact_dir/apple/Libbox.xcframework"
   cp -a Libbox.xcframework "$artifact_dir/apple/Libbox.xcframework"
+  rm -rf "$source_dir/clients/apple/Libbox.xcframework"
+  cp -a Libbox.xcframework "$source_dir/clients/apple/Libbox.xcframework"
+  python3 "$project_dir/tool/prepare_apple_extension.py" "$source_dir"
+  # Keep the provenance and redistributable license with Apple core artifacts.
+  install -m 0644 "$source_dir/LICENSE" "$artifact_dir/apple/LICENSE-sing-box"
+  if [[ -f "$source_dir/clients/apple/LICENSE" ]]; then
+    install -m 0644 "$source_dir/clients/apple/LICENSE" "$artifact_dir/apple/LICENSE-apple-client"
+  fi
   printf 'sing-box %s\nGo %s\niOS low-memory build tag: with_low_memory (upstream gomobile builder)\n' \
     "$sing_box_version" "$(go version)" > "$artifact_dir/apple/BUILD-INFO.txt"
   echo "Apple Libbox.xcframework: $artifact_dir/apple/Libbox.xcframework"

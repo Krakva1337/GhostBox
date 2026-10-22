@@ -9,6 +9,7 @@
 #include <memory>
 
 #include "win32_window.h"
+#include "core_lifecycle.h"
 
 // A window that does nothing but host a Flutter view.
 class FlutterWindow : public Win32Window {
@@ -25,6 +26,8 @@ class FlutterWindow : public Win32Window {
                          LPARAM const lparam) noexcept override;
 
  private:
+  std::unique_ptr<CoreLifecycle> core_lifecycle_;
+
   // The project to run.
   flutter::DartProject project_;
 
