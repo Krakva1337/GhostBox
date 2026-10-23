@@ -80,7 +80,7 @@ class _HomePageState extends State<HomePage>
   bool showWelcomeSetup = false;
   bool english = false;
   double contentTopSpacing = 55;
-  String appNickname = 'GhostBox';
+  String appNickname = 'nick';
   String? _draggingProfileId;
   String? _lastReorderedProfileId;
   bool powerHovered = false;
@@ -1038,9 +1038,10 @@ class _HomePageState extends State<HomePage>
       customDnsBlocklistUrls =
           p.getStringList('customDnsBlocklistUrls') ?? <String>[];
       english = p.getBool('appEnglish') ?? false;
-      appNickname = p.getString('appNickname')?.trim().isNotEmpty == true
-          ? p.getString('appNickname')!.trim()
-          : 'GhostBox';
+      final storedNickname = p.getString('appNickname')?.trim() ?? '';
+      appNickname = storedNickname.isNotEmpty
+          ? storedNickname.replaceFirst(RegExp(r'^@+'), '')
+          : 'nick';
       profiles = rows;
       final savedHistory = p.getString('connectionHistory');
       if (savedHistory != null) {
@@ -8102,12 +8103,12 @@ foreach ($route in $routes) {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Text(appNickname,
+                    const Text('GhostBox',
                         style: TextStyle(
                             fontSize: 17, fontWeight: FontWeight.w700)),
                     const SizedBox(height: 3),
                     Text(
-                      _text('Ник и значок приложения', 'Nickname and app icon'),
+                      '@${appNickname.replaceFirst(RegExp(r'^@+'), '')}',
                       style: TextStyle(color: _muted, fontSize: 12),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
@@ -8152,7 +8153,8 @@ foreach ($route in $routes) {
             labelText: _text('Ник', 'Nickname'),
             hintText: 'GhostBox',
           ),
-          onSubmitted: (value) => Navigator.pop(dialogContext, value.trim()),
+          onSubmitted: (value) => Navigator.pop(
+              dialogContext, value.trim().replaceFirst(RegExp(r'^@+'), '')),
         ),
         actions: [
           TextButton.icon(
@@ -8165,8 +8167,8 @@ foreach ($route in $routes) {
             child: Text(_text('Отмена', 'Cancel')),
           ),
           TextButton(
-            onPressed: () =>
-                Navigator.pop(dialogContext, controller.text.trim()),
+            onPressed: () => Navigator.pop(dialogContext,
+                controller.text.trim().replaceFirst(RegExp(r'^@+'), '')),
             child: Text(_text('Сохранить', 'Save')),
           ),
         ],
