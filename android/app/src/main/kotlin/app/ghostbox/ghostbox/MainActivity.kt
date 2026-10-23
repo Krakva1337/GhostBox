@@ -294,7 +294,10 @@ class MainActivity : FlutterActivity() {
                 packageName to label
             }
             .distinctBy { it.first }
-            .sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.second }.thenBy { it.first })
+            .sortedWith(Comparator<Pair<String, String>> { left, right ->
+                val labelOrder = String.CASE_INSENSITIVE_ORDER.compare(left.second, right.second)
+                if (labelOrder != 0) labelOrder else left.first.compareTo(right.first)
+            })
             .map { (packageName, label) ->
                 mapOf("packageName" to packageName, "label" to label)
             }
@@ -768,22 +771,22 @@ class MainActivity : FlutterActivity() {
 
                 VpnStateStore.update(this) {
                     it.put("state", "disconnected")
-                        .put("xrayProxyState", "disconnected")
-                        .put("singBoxStopComplete", true)
-                        .put("xrayStopComplete", true)
-                        .remove("connectedAtMs")
-                        .remove("startedAtMs")
-                        .remove("xrayProxyStartedAtMs")
-                        .remove("error")
-                        .remove("xrayProxyError")
+                    it.put("xrayProxyState", "disconnected")
+                    it.put("singBoxStopComplete", true)
+                    it.put("xrayStopComplete", true)
+                    it.remove("connectedAtMs")
+                    it.remove("startedAtMs")
+                    it.remove("xrayProxyStartedAtMs")
+                    it.remove("error")
+                    it.remove("xrayProxyError")
                 }
                 runOnUiThread { result.success(null) }
             } catch (error: Exception) {
                 VpnStateStore.update(this) {
                     it.put("state", "error")
-                        .put("error", error.message ?: error.toString())
-                        .remove("connectedAtMs")
-                        .remove("startedAtMs")
+                    it.put("error", error.message ?: error.toString())
+                    it.remove("connectedAtMs")
+                    it.remove("startedAtMs")
                 }
                 runOnUiThread {
                     result.error("cleanup_failed", error.message ?: error.toString(), null)
