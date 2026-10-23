@@ -714,6 +714,11 @@ class CoreProcessBackend implements VpnBackend {
   }
 
   Map<String, dynamic> makeConfig(ServerProfile p) {
+    final initialRouting = SplitRoutingPlan.fromSettings(settings);
+    if (initialRouting.targets.hasApps && !Platform.isAndroid) {
+      throw const FormatException(
+          'app:<package> маршрутизация доступна только в Android Sing-box TUN.');
+    }
     final q = p.raw.map((k, v) => MapEntry(k, v?.toString()))
       ..removeWhere((_, value) => value == null || value.isEmpty);
     final usesTls = p.security == 'tls' ||
@@ -927,8 +932,6 @@ class CoreProcessBackend implements VpnBackend {
             if (settings.connectionMode == 'tun' ||
                 settings.connectionMode == 'mixed')
               {'port': 53, 'action': 'hijack-dns'},
-            if (settings.sniffingEnabled || routing.targets.hasDomains)
-              {'action': 'sniff', 'timeout': '300ms'},
             {
               'inbound': ['http-probe'],
               'action': 'route',
@@ -1224,7 +1227,7 @@ class CoreProcessBackend implements VpnBackend {
 
   Map<String, dynamic> _singBoxDnsConfig() {
     final routing = SplitRoutingPlan.fromSettings(settings);
-    final hasSplit = routing.targets.hasDomains;
+    final hasSplit = routing.targets.hasDomains || routing.targets.hasApps;
     final defaultDetour = hasSplit
         ? routing.finalOutbound
         : (settings.dnsThroughProxy ? 'proxy' : 'direct');
@@ -1238,6 +1241,13 @@ class CoreProcessBackend implements VpnBackend {
         'server': '1.1.1.1',
         'path': '/dns-query'
       },
+      if (routing.targets.hasDomains)
+        {
+          'type': 'fakeip',
+          'tag': 'fakeip',
+          'inet4_range': '198.18.0.0/15',
+          'inet6_range': 'fc00::/18',
+        },
       ..._singBoxDnsServers(
           detour: defaultDetour, suffix: hasSplit ? '-$defaultDetour' : ''),
       if (hasSplit)
@@ -1250,14 +1260,57 @@ class CoreProcessBackend implements VpnBackend {
           'action': 'predefined',
           'rcode': 'NXDOMAIN'
         },
-      if (hasSplit && settings.dns == 'combined')
+      // A direct split target must not receive AAAA answers on networks with
+      // no native IPv6 route. Browsers can then use the A record and keep the
+      // selected traffic direct instead of stalling on an unreachable v6
+      // address. Existing/cached v6 flows are handled by the route fallback.
+      if (routing.matchedOutbound == 'direct' && routing.targets.hasApps)
+        {
+          'package_name': routing.targets.appPackages,
+          'query_type': [28],
+          'action': 'predefined',
+          'rcode': 'NOERROR',
+        },
+      if (routing.matchedOutbound == 'direct' && routing.targets.hasDomains)
+        {
+          ...routing.targets.singBoxDomains,
+          'query_type': [28],
+          'action': 'predefined',
+          'rcode': 'NOERROR',
+        },
+      if (routing.targets.hasApps && settings.dns == 'combined')
+        {
+          'package_name': routing.targets.appPackages,
+          'query_type': [28],
+          'action': 'route',
+          'server': tag('google', splitDetour),
+        },
+      if (routing.targets.hasApps)
+        {
+          'package_name': routing.targets.appPackages,
+          'action': 'route',
+          'server': tag(settings.dns == 'combined' ? 'cloudflare' : 'resolver',
+              splitDetour),
+        },
+      // FakeIP gives every matching domain a stable per-session synthetic
+      // destination. In sing-box 1.14.3 internal resolve lookups skip FakeIP
+      // servers, so they continue to the selected Cloudflare/Google upstream
+      // and populate the domain/IP reverse map used by TUN routing.
+      if (routing.targets.hasDomains)
+        {
+          ...routing.targets.singBoxDomains,
+          'query_type': [1, 28],
+          'action': 'route',
+          'server': 'fakeip',
+        },
+      if (routing.targets.hasDomains && settings.dns == 'combined')
         {
           ...routing.targets.singBoxDomains,
           'query_type': [28],
           'action': 'route',
           'server': tag('google', splitDetour),
         },
-      if (hasSplit)
+      if (routing.targets.hasDomains)
         {
           ...routing.targets.singBoxDomains,
           'action': 'route',

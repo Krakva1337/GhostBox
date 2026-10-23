@@ -4,8 +4,9 @@ import android.app.Activity
 import android.app.DownloadManager
 import android.Manifest
 import android.content.ContentValues
-import android.content.pm.PackageManager
 import android.content.Intent
+import android.content.pm.ApplicationInfo
+import android.content.pm.PackageManager
 import android.net.VpnService
 import android.net.Uri
 import android.os.Build
@@ -110,6 +111,7 @@ class MainActivity : FlutterActivity() {
                         val sent = android.net.TrafficStats.getUidTxBytes(uid)
                         result.success(mapOf("received" to received, "sent" to sent))
                     }
+                    "installedApps" -> result.success(installedApps())
                     "vpnError" -> result.success(VpnStateStore.error(this))
                     "androidCoreInventory" -> result.success(androidCoreInventory())
                     "androidKillSwitchStatus" -> result.success(androidKillSwitchStatus())
@@ -268,6 +270,35 @@ class MainActivity : FlutterActivity() {
                     result.error("downloads_failed", error.message, null)
                 }
             }
+    }
+
+    /**
+     * Lists launchable, non-system apps for per-app split routing. The manifest
+     * declares only launcher intent visibility, so this does not request broad
+     * QUERY_ALL_PACKAGES access.
+     */
+    private fun installedApps(): List<Map<String, String>> {
+        val launcherIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+        return packageManager.queryIntentActivities(launcherIntent, 0)
+            .asSequence()
+            .mapNotNull { resolveInfo ->
+                val activityInfo = resolveInfo.activityInfo ?: return@mapNotNull null
+                val appInfo = activityInfo.applicationInfo ?: return@mapNotNull null
+                val packageName = activityInfo.packageName ?: return@mapNotNull null
+                if (packageName == this.packageName) return@mapNotNull null
+                if (!appInfo.enabled || appInfo.flags and ApplicationInfo.FLAG_SYSTEM != 0) {
+                    return@mapNotNull null
+                }
+                val label = resolveInfo.loadLabel(packageManager)?.toString()?.trim()
+                    ?.takeIf { it.isNotEmpty() } ?: packageName
+                packageName to label
+            }
+            .distinctBy { it.first }
+            .sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.second }.thenBy { it.first })
+            .map { (packageName, label) ->
+                mapOf("packageName" to packageName, "label" to label)
+            }
+            .toList()
     }
 
     /**

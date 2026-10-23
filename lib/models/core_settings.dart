@@ -15,6 +15,8 @@ class CoreSettings {
     this.adBlockDomains = const [],
     this.directDomains = const [],
     this.proxyDomains = const [],
+    this.directApps = const [],
+    this.proxyApps = const [],
     this.memoryMb = 128,
     this.showRamUsage = false,
     this.localPort = 2080,
@@ -25,7 +27,7 @@ class CoreSettings {
     this.killSwitchEnabled = false,
     this.killSwitchEndpoint = '',
     this.killSwitchProfileId = '',
-    this.aggressiveXhttpCleanup = false,
+    this.aggressiveXhttpCleanup = true,
     this.tlsFragmentEnabled = false,
     this.fragmentPackets = 'tlshello',
     this.fragmentLength = '100-200',
@@ -67,7 +69,9 @@ class CoreSettings {
   final List<String> blockedDomains,
       adBlockDomains,
       directDomains,
-      proxyDomains;
+      proxyDomains,
+      directApps,
+      proxyApps;
   final int memoryMb, localPort;
 
   static int clampMemoryMb(int value) =>
@@ -107,6 +111,8 @@ class CoreSettings {
           List<String>? adBlockDomains,
           List<String>? directDomains,
           List<String>? proxyDomains,
+          List<String>? directApps,
+          List<String>? proxyApps,
           int? memoryMb,
           bool? showRamUsage,
           int? localPort,
@@ -156,6 +162,8 @@ class CoreSettings {
           adBlockDomains: adBlockDomains ?? this.adBlockDomains,
           directDomains: directDomains ?? this.directDomains,
           proxyDomains: proxyDomains ?? this.proxyDomains,
+          directApps: directApps ?? this.directApps,
+          proxyApps: proxyApps ?? this.proxyApps,
           memoryMb: clampMemoryMb(memoryMb ?? this.memoryMb),
           showRamUsage: showRamUsage ?? this.showRamUsage,
           localPort: localPort ?? this.localPort,
@@ -184,6 +192,12 @@ class CoreSettings {
         .where(isValidRoutePattern)
         .toSet()
         .toList();
+    List<String> appIds(String key) => (data[key] as List? ?? const [])
+        .whereType<String>()
+        .map((value) => value.trim().toLowerCase())
+        .where(isValidAppPackageName)
+        .toSet()
+        .toList();
     final blacklistMode = choice('dnsBlacklistMode', ['none', 'ads', 'custom'],
         data['blocklistEnabled'] == true ? 'custom' : 'none');
     return CoreSettings(
@@ -204,7 +218,10 @@ class CoreSettings {
       killSwitchEnabled: data['killSwitchEnabled'] == true,
       killSwitchEndpoint: data['killSwitchEndpoint'] as String? ?? '',
       killSwitchProfileId: data['killSwitchProfileId'] as String? ?? '',
-      aggressiveXhttpCleanup: data['aggressiveXhttpCleanup'] == true,
+      // XHTTP needs session cleanup on this profile to avoid partial browser
+      // transfers. Preserve an explicit opt-out, while enabling it for older
+      // settings that do not contain this option yet.
+      aggressiveXhttpCleanup: data['aggressiveXhttpCleanup'] != false,
       tlsFragmentEnabled: data['tlsFragmentEnabled'] == true,
       fragmentPackets:
           choice('fragmentPackets', ['tlshello', '1-3'], 'tlshello'),
@@ -235,6 +252,8 @@ class CoreSettings {
       blockedDomains: domains('blockedDomains'),
       directDomains: routePatterns('directDomains'),
       proxyDomains: routePatterns('proxyDomains'),
+      directApps: appIds('directApps'),
+      proxyApps: appIds('proxyApps'),
       memoryMb: clampMemoryMb(
           (data['memoryMb'] as num?)?.toInt() ?? (Platform.isIOS ? 32 : 128)),
       showRamUsage: data['showRamUsage'] == true,
@@ -256,6 +275,8 @@ class CoreSettings {
         'blockedDomains': blockedDomains,
         'directDomains': directDomains,
         'proxyDomains': proxyDomains,
+        'directApps': directApps,
+        'proxyApps': proxyApps,
         'memoryMb': memoryMb,
         'showRamUsage': showRamUsage,
         'localPort': localPort,
@@ -291,6 +312,9 @@ class CoreSettings {
   /// `*.` matches subdomains only. IP networks are stored with host bits cleared.
   static String normalizeRoutePattern(String value) {
     var pattern = value.trim().toLowerCase();
+    if (pattern.startsWith('app:')) {
+      return 'app:${pattern.substring(4).trim()}';
+    }
     final exact = pattern.startsWith('full:');
     if (exact) pattern = pattern.substring(5);
     if (pattern.startsWith('domain:')) pattern = pattern.substring(7);
@@ -326,6 +350,9 @@ class CoreSettings {
 
   static bool isValidRoutePattern(String value) {
     final pattern = normalizeRoutePattern(value);
+    if (pattern.startsWith('app:')) {
+      return isValidAppRouteTarget(pattern);
+    }
     if (pattern.startsWith('full:')) {
       return isValidDomain(pattern.substring(5));
     }
@@ -335,6 +362,24 @@ class CoreSettings {
       return _isValidDomainName(suffix, allowSingleLabel: true);
     }
     return isValidDomain(pattern);
+  }
+
+  /// Android package selectors use `app:<applicationId>` in split lists.
+  /// The selector is compiled to Sing-box `package_name`; it is not an IP or
+  /// hostname rule and cannot be implemented by Xray's routing engine.
+  static bool isValidAppRouteTarget(String value) {
+    final normalized = value.trim().toLowerCase();
+    if (!normalized.startsWith('app:')) return false;
+    return isValidAppPackageName(normalized.substring(4));
+  }
+
+  static bool isValidAppPackageName(String packageName) {
+    final normalized = packageName.trim().toLowerCase();
+    if (normalized.length > 255) return false;
+    final segments = normalized.split('.');
+    if (segments.length < 2) return false;
+    return segments.every((segment) =>
+        segment.length <= 63 && RegExp(r'^[a-z][a-z0-9_]*$').hasMatch(segment));
   }
 
   static String routeSuffix(String value) =>

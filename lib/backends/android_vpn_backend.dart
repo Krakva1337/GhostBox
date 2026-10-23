@@ -144,7 +144,6 @@ class AndroidVpnBackend implements VpnBackend {
       final profile = ServerProfile.fromJson(
         _stringKeyedMap(jsonDecode(profileJson)),
       );
-      _logs.add('Перед подключением очищаю оставшиеся Android VPN/Xray процессы');
       await _channel
           .invokeMethod<void>('cleanupVpnBeforeConnect')
           .timeout(const Duration(seconds: 9));
@@ -254,6 +253,14 @@ class AndroidVpnBackend implements VpnBackend {
     )..settings = settings.copyWith(
         core: 'xray',
         connectionMode: 'proxy',
+        // Split policy belongs to the sing-box TUN router in this bridge.
+        // Keep Xray as the SOCKS -> VLESS/XHTTP upstream and clear Android
+        // package selectors (which Xray cannot implement).
+        routing: 'proxy',
+        directDomains: const [],
+        proxyDomains: const [],
+        directApps: const [],
+        proxyApps: const [],
         localPort: settings.localPort,
       );
     final xrayConfig = xrayBuilder.makeConfig(profile);

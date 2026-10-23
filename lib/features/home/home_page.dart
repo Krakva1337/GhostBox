@@ -241,6 +241,17 @@ class _HomePageState extends State<HomePage>
     'Xray · рекомендуется': 'Xray · recommended',
     'Способ подключения': 'Connection mode',
     'Режим маршрутизации': 'Routing mode',
+    'ПРИЛОЖЕНИЯ ЧЕРЕЗ VPN': 'APPS THROUGH VPN',
+    'ПРИЛОЖЕНИЯ НАПРЯМУЮ': 'APPS DIRECTLY',
+    'Приложения через VPN': 'Apps through VPN',
+    'Исключения приложений': 'App exclusions',
+    'Выбрать приложения': 'Choose apps',
+    'Правило приложения проверяется раньше домена и IP-сети.':
+        'App rules are checked before domain and IP rules.',
+    'Порядок: приложение → домен (DNS/FakeIP, SNI/Host) → IP/CIDR → маршрут по умолчанию.':
+        'Order: app → domain (DNS/FakeIP, SNI/Host) → IP/CIDR → default route.',
+    'Порядок: домен (DNS/FakeIP, SNI/Host) → IP/CIDR → маршрут по умолчанию.':
+        'Order: domain (DNS/FakeIP, SNI/Host) → IP/CIDR → default route.',
     'Поиск адресов (DNS)': 'DNS resolver',
     'Системный DNS': 'System DNS',
     'Системный': 'System',
@@ -5155,6 +5166,29 @@ foreach ($route in $routes) {
                 'exclude'),
             if (coreSettings.routing == 'rules' ||
                 coreSettings.routing == 'exclude') ...[
+              if (Platform.isAndroid) ...[
+                const SizedBox(height: 14),
+                Center(
+                    child: _section(coreSettings.routing == 'rules'
+                        ? 'ПРИЛОЖЕНИЯ ЧЕРЕЗ VPN'
+                        : 'ПРИЛОЖЕНИЯ НАПРЯМУЮ')),
+                _row(
+                    Icons.apps_rounded,
+                    coreSettings.routing == 'rules'
+                        ? 'Приложения через VPN'
+                        : 'Исключения приложений',
+                    '${(coreSettings.routing == 'rules' ? coreSettings.proxyApps : coreSettings.directApps).length} приложений',
+                    IconButton(
+                        tooltip: _localized('Выбрать приложения'),
+                        onPressed: _editAndroidAppRoutes,
+                        icon: const Icon(Icons.chevron_right_rounded))),
+                Padding(
+                    padding: const EdgeInsets.only(top: 3, left: 2),
+                    child: Text(
+                        'Правило приложения проверяется раньше домена и IP-сети.',
+                        style: TextStyle(
+                            color: _muted, fontSize: 11, height: 1.4))),
+              ],
               const SizedBox(height: 14),
               Center(
                   child: _section(coreSettings.routing == 'rules'
@@ -5178,6 +5212,14 @@ foreach ($route in $routes) {
                       'Домены (*.ru) и IP-сети (203.0.113.0/24). Для IP-списков маршрутизация работает без TLS sniffing. Принимается JSON Amnezia.',
                       style:
                           TextStyle(color: _muted, fontSize: 11, height: 1.4))),
+              Padding(
+                  padding: const EdgeInsets.only(top: 7, left: 2),
+                  child: Text(
+                      _localized(Platform.isAndroid
+                          ? 'Порядок: приложение → домен (DNS/FakeIP, SNI/Host) → IP/CIDR → маршрут по умолчанию.'
+                          : 'Порядок: домен (DNS/FakeIP, SNI/Host) → IP/CIDR → маршрут по умолчанию.'),
+                      style:
+                          TextStyle(color: _muted, fontSize: 11, height: 1.4))),
             ],
             _animatedReconnectBanner(
                 visible: pendingReconnect,
@@ -5195,6 +5237,139 @@ foreach ($route in $routes) {
     routeListController.text = values.join('\n');
     routeDomainController.clear();
     setState(() => routeListOpen = true);
+  }
+
+  Future<void> _editAndroidAppRoutes() async {
+    if (!Platform.isAndroid) return;
+    try {
+      final apps = await const MethodChannel('app.ghostbox.ghostbox/vpn')
+          .invokeListMethod<dynamic>('installedApps');
+      if (!mounted) return;
+      final isProxyList = coreSettings.routing == 'rules';
+      final current =
+          (isProxyList ? coreSettings.proxyApps : coreSettings.directApps)
+              .toSet();
+      final selectedApps = current.toSet();
+      final searchController = TextEditingController();
+      final result = await showModalBottomSheet<Set<String>>(
+        context: context,
+        isScrollControlled: true,
+        backgroundColor: _surface,
+        shape: const RoundedRectangleBorder(
+            borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+        builder: (sheetContext) => StatefulBuilder(
+          builder: (context, setSheetState) {
+            final query = searchController.text.trim().toLowerCase();
+            final visibleApps = (apps ?? const <dynamic>[])
+                .whereType<Map>()
+                .map((app) => <String, String>{
+                      'packageName': '${app['packageName'] ?? ''}',
+                      'label': '${app['label'] ?? app['packageName'] ?? ''}',
+                    })
+                .where((app) => app['packageName']!.isNotEmpty)
+                .where((app) =>
+                    query.isEmpty ||
+                    app['label']!.toLowerCase().contains(query) ||
+                    app['packageName']!.toLowerCase().contains(query))
+                .toList(growable: false);
+            return SafeArea(
+              child: Padding(
+                padding: EdgeInsets.only(
+                    bottom: MediaQuery.viewInsetsOf(context).bottom),
+                child: SizedBox(
+                  height: MediaQuery.sizeOf(context).height * .78,
+                  child: Column(children: [
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(20, 20, 20, 8),
+                      child: Row(children: [
+                        Expanded(
+                            child: Text(
+                                isProxyList
+                                    ? 'Приложения через VPN'
+                                    : 'Приложения напрямую',
+                                style: const TextStyle(
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.w700))),
+                        Text('${selectedApps.length}',
+                            style: TextStyle(color: _muted)),
+                      ]),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      child: TextField(
+                        controller: searchController,
+                        onChanged: (_) => setSheetState(() {}),
+                        decoration: InputDecoration(
+                            prefixIcon: const Icon(Icons.search_rounded),
+                            hintText: _text('Поиск приложения', 'Search apps'),
+                            isDense: true),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Expanded(
+                      child: visibleApps.isEmpty
+                          ? Center(
+                              child: Text(
+                                  _text(
+                                      'Приложения не найдены', 'No apps found'),
+                                  style: TextStyle(color: _muted)))
+                          : ListView.builder(
+                              itemCount: visibleApps.length,
+                              itemBuilder: (context, index) {
+                                final app = visibleApps[index];
+                                final packageName = app['packageName']!;
+                                final checked =
+                                    selectedApps.contains(packageName);
+                                return CheckboxListTile(
+                                  value: checked,
+                                  onChanged: (value) => setSheetState(() {
+                                    if (value == true) {
+                                      selectedApps.add(packageName);
+                                    } else {
+                                      selectedApps.remove(packageName);
+                                    }
+                                  }),
+                                  title: Text(app['label']!,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis),
+                                  subtitle: Text(packageName,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(
+                                          color: _muted, fontSize: 11)),
+                                  controlAffinity:
+                                      ListTileControlAffinity.leading,
+                                );
+                              },
+                            ),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+                      child: SizedBox(
+                        width: double.infinity,
+                        child: FilledButton(
+                          onPressed: () =>
+                              Navigator.pop(sheetContext, selectedApps.toSet()),
+                          child: Text(_localized('Сохранить')),
+                        ),
+                      ),
+                    ),
+                  ]),
+                ),
+              ),
+            );
+          },
+        ),
+      );
+      searchController.dispose();
+      if (result == null || !mounted) return;
+      await _applyRoutingSettings(isProxyList
+          ? coreSettings.copyWith(proxyApps: result.toList()..sort())
+          : coreSettings.copyWith(directApps: result.toList()..sort()));
+    } on PlatformException catch (error) {
+      _message(_text('Не удалось загрузить список приложений: ${error.message}',
+          'Could not load installed apps: ${error.message}'));
+    }
   }
 
   void _addRouteDomain() {
