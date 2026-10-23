@@ -156,6 +156,10 @@ class _HomePageState extends State<HomePage>
   bool checkingAppUpdate = false;
   bool installingAppUpdate = false;
   String? appUpdateStatus;
+  UpdateDownloadProgress? appUpdateProgress;
+  final ValueNotifier<UpdateDownloadProgress?> _updateProgressNotifier =
+      ValueNotifier(null);
+  DateTime? _lastAppUpdateProgressPaint;
   GhostBoxRelease? availableAppRelease;
   String? _offeredUpdateTag;
   final GitHubUpdater appUpdater = GitHubUpdater();
@@ -1403,6 +1407,7 @@ class _HomePageState extends State<HomePage>
     routingScroll.dispose();
     routeListController.dispose();
     routeDomainController.dispose();
+    _updateProgressNotifier.dispose();
     unawaited(_appLinkSubscription?.cancel());
     subscriptionRefreshTimer?.cancel();
     uptimeTicker?.cancel();
@@ -9095,6 +9100,11 @@ foreach ($route in $routes) {
                       ? null
                       : () => _checkAppUpdate(forceLatest: true),
                   icon: const Icon(Icons.download_for_offline_rounded))),
+          if (installingAppUpdate && appUpdateProgress != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 10),
+              child: _appUpdateProgressCard(appUpdateProgress!),
+            ),
           InkWell(
               borderRadius: BorderRadius.circular(16),
               onTap: () => _openSettingsPage('release'),
@@ -9399,6 +9409,10 @@ foreach ($route in $routes) {
             ),
           ],
         ),
+        if (installingAppUpdate && appUpdateProgress != null) ...[
+          const SizedBox(height: 12),
+          _appUpdateProgressCard(appUpdateProgress!),
+        ],
         if (release != null && release.notes.trim().isNotEmpty) ...[
           const SizedBox(height: 22),
           _section(_text('ПРИМЕЧАНИЯ К РЕЛИЗУ', 'RELEASE NOTES')),
@@ -9467,6 +9481,93 @@ foreach ($route in $routes) {
       }
     }
     return SelectableText.rich(TextSpan(children: spans));
+  }
+
+  Widget _appUpdateProgressCard(UpdateDownloadProgress progress) {
+    final total = progress.totalBytes;
+    final fraction =
+        total > 0 ? (progress.downloadedBytes / total).clamp(0.0, 1.0) : null;
+    final stageText = switch (progress.stage) {
+      UpdateDownloadStage.downloading =>
+        _text('Загрузка обновления', 'Downloading update'),
+      UpdateDownloadStage.verifying =>
+        _text('Проверка файла', 'Verifying package'),
+      UpdateDownloadStage.launchingInstaller =>
+        _text('Запускаю установщик', 'Opening installer'),
+    };
+    final rate = progress.bytesPerSecond >= 1024 * 1024
+        ? '${(progress.bytesPerSecond / (1024 * 1024)).toStringAsFixed(1)} ${english ? 'MB/s' : 'МБ/с'}'
+        : '${(progress.bytesPerSecond / 1024).toStringAsFixed(0)} ${english ? 'KB/s' : 'КБ/с'}';
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: _surface,
+        borderRadius: BorderRadius.circular(17),
+        border: Border.all(color: _accent.withValues(alpha: .28)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(children: [
+            if (progress.stage != UpdateDownloadStage.downloading) ...[
+              const SizedBox(
+                width: 15,
+                height: 15,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+              const SizedBox(width: 9),
+            ] else ...[
+              Icon(Icons.download_rounded, color: _accent, size: 18),
+              const SizedBox(width: 6),
+            ],
+            Expanded(
+              child: Text(stageText,
+                  style: const TextStyle(fontWeight: FontWeight.w700)),
+            ),
+            if (fraction != null &&
+                progress.stage == UpdateDownloadStage.downloading)
+              Text('${(fraction * 100).round()}%',
+                  style: TextStyle(color: _muted, fontSize: 11)),
+          ]),
+          const SizedBox(height: 10),
+          LinearProgressIndicator(value: fraction),
+          const SizedBox(height: 8),
+          Row(children: [
+            Expanded(
+              child: Text(
+                total > 0
+                    ? '${_formatUpdateBytes(progress.downloadedBytes)} / ${_formatUpdateBytes(total)}'
+                    : _formatUpdateBytes(progress.downloadedBytes),
+                style: TextStyle(color: _muted, fontSize: 11),
+              ),
+            ),
+            if (progress.stage == UpdateDownloadStage.downloading)
+              Text(rate, style: TextStyle(color: _muted, fontSize: 11)),
+          ]),
+          const SizedBox(height: 6),
+          Text(
+            _text('Файл: ${progress.assetName}', 'File: ${progress.assetName}'),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(color: _muted, fontSize: 10),
+          ),
+          const SizedBox(height: 3),
+          SelectableText(
+            _text('Путь: ${progress.path}', 'Path: ${progress.path}'),
+            style: TextStyle(color: _muted, fontSize: 10),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _formatUpdateBytes(int bytes) {
+    if (bytes < 1024) return '$bytes ${english ? 'B' : 'Б'}';
+    if (bytes < 1024 * 1024) {
+      return '${(bytes / 1024).toStringAsFixed(1)} ${english ? 'KB' : 'КБ'}';
+    }
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} ${english ? 'MB' : 'МБ'}';
   }
 
   Widget _settingsPageIntro(IconData icon, String title, String subtitle) =>
@@ -9743,9 +9844,15 @@ foreach ($route in $routes) {
       return;
     }
     setState(() => installingAppUpdate = true);
+    Future<void>? progressDialog;
     try {
       final assetName = await appUpdater.platformAssetName(release);
       if (assetName == null) {
+        if (Platform.isAndroid) {
+          throw FileSystemException(
+            'В релизе ${release.tagName} нет APK для Android. Загрузите GhostBox-Android-universal.apk и файл .sha256 рядом с ним.',
+          );
+        }
         _message(_text(
             'Для этой платформы скачай обновление со страницы релиза',
             'Download the update for this platform from the releases page'));
@@ -9760,24 +9867,88 @@ foreach ($route in $routes) {
       setState(() => appUpdateStatus = _text(
           'Загружаю ${GitHubUpdater.displayVersion(release.version)}…',
           'Downloading ${GitHubUpdater.displayVersion(release.version)}…'));
-      await appUpdater.apply(release, asset);
+      appUpdateProgress = null;
+      _updateProgressNotifier.value = null;
+      progressDialog = showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (dialogContext) => AlertDialog(
+          title: Text(_text('Обновление GhostBox', 'Updating GhostBox')),
+          content: ValueListenableBuilder<UpdateDownloadProgress?>(
+            valueListenable: _updateProgressNotifier,
+            builder: (context, progress, _) => progress == null
+                ? Row(children: [
+                    const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(_text(
+                          'Подготавливаю загрузку…', 'Preparing download…')),
+                    ),
+                  ])
+                : _appUpdateProgressCard(progress),
+          ),
+        ),
+      );
+      final savedPath =
+          await appUpdater.apply(release, asset, onProgress: (progress) {
+        final now = DateTime.now();
+        final isTerminalProgress = progress.totalBytes > 0 &&
+            progress.downloadedBytes >= progress.totalBytes;
+        if (progress.stage == UpdateDownloadStage.downloading &&
+            !isTerminalProgress &&
+            _lastAppUpdateProgressPaint != null &&
+            now.difference(_lastAppUpdateProgressPaint!).inMilliseconds < 180) {
+          return;
+        }
+        _lastAppUpdateProgressPaint = now;
+        if (!mounted) return;
+        _updateProgressNotifier.value = progress;
+        setState(() {
+          appUpdateProgress = progress;
+          appUpdateStatus = switch (progress.stage) {
+            UpdateDownloadStage.downloading => _text(
+                'Загрузка ${GitHubUpdater.displayVersion(release.version)}…',
+                'Downloading ${GitHubUpdater.displayVersion(release.version)}…'),
+            UpdateDownloadStage.verifying =>
+              _text('Проверяю SHA-256…', 'Verifying SHA-256…'),
+            UpdateDownloadStage.launchingInstaller =>
+              _text('Открываю установщик…', 'Opening installer…'),
+          };
+        });
+      });
       if (Platform.isAndroid && mounted) {
         final message = _text(
-          'APK сохранён в Загрузки. Открой GhostBox-${release.version}.apk и нажми «Установить».',
-          'APK saved to Downloads. Open GhostBox-${release.version}.apk and tap Install.',
+          'APK сохранён: ${savedPath ?? 'Download/GhostBox/GhostBox-${release.version}.apk'}. Открой файл и нажми «Установить».',
+          'APK saved to ${savedPath ?? 'Download/GhostBox/GhostBox-${release.version}.apk'}. Open it and tap Install.',
         );
         setState(() => appUpdateStatus = message);
         _message(message);
       }
     } on Object catch (error) {
       if (mounted) {
-        setState(() =>
-            appUpdateStatus = _text('Обновление не удалось', 'Update failed'));
+        setState(() {
+          appUpdateProgress = null;
+          appUpdateStatus = _text('Обновление не удалось', 'Update failed');
+        });
         _message(_text('Не удалось установить обновление: $error',
             'Could not install update: $error'));
       }
     } finally {
-      if (mounted) setState(() => installingAppUpdate = false);
+      if (mounted) {
+        setState(() {
+          installingAppUpdate = false;
+          appUpdateProgress = null;
+        });
+        _updateProgressNotifier.value = null;
+        if (Navigator.of(context, rootNavigator: true).canPop()) {
+          Navigator.of(context, rootNavigator: true).pop();
+        }
+      }
+      if (progressDialog != null) await progressDialog;
     }
   }
 

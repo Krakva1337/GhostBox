@@ -45,4 +45,6 @@ for apk in "$project_dir"/dist/android/*.apk; do
 done
 install -m 0644 build/app/outputs/flutter-apk/app-release.apk \
   "$project_dir/dist/android/GhostBox-Android-universal.apk"
+sha256sum "$project_dir/dist/android/GhostBox-Android-universal.apk" \
+  > "$project_dir/dist/android/GhostBox-Android-universal.apk.sha256"
 echo "Built dist/android/GhostBox-Android-universal.apk"

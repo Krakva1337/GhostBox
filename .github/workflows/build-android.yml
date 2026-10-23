@@ -66,6 +66,8 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: GhostBox-Android-universal
-          path: dist/android/GhostBox-Android-universal.apk
+          path: |
+            dist/android/GhostBox-Android-universal.apk
+            dist/android/GhostBox-Android-universal.apk.sha256
           if-no-files-found: error
           retention-days: 14

@@ -4,7 +4,7 @@
 
 <h1 align="center">GhostBox</h1>
 
-<p align="center"><strong>v1.4.7 Alpha · Linux x86_64/ARM64 · Windows x64 · Xray-core + sing-box</strong></p>
+<p align="center"><strong>v1.4.8 Alpha · Linux x86_64/ARM64 · Windows x64 · Xray-core + sing-box</strong></p>
 
 ## Русский
 
@@ -51,18 +51,18 @@ iOS собирается как unsigned app вместе с Packet Tunnel exten
 `x86_64` подходит для Intel/AMD 64-bit, `aarch64` — для ARM64 Linux.
 
 ```bash
-chmod +x GhostBox-1.4.7-alpha-linux-x86_64.AppImage
-./GhostBox-1.4.7-alpha-linux-x86_64.AppImage
+chmod +x GhostBox-1.4.8-alpha-linux-x86_64.AppImage
+./GhostBox-1.4.8-alpha-linux-x86_64.AppImage
 ```
 
 Пакеты для x86_64 и ARM64 содержат нативные бинарники и не взаимозаменяемы.
 Чтобы установить приложение в меню рабочего стола без прав root, из клона репозитория выполни:
 
 ```bash
-./tool/install_appimage.sh ./dist/GhostBox-1.4.7-alpha-linux-x86_64.AppImage
+./tool/install_appimage.sh ./dist/GhostBox-1.4.8-alpha-linux-x86_64.AppImage
 ```
 
-Добавь ссылку-подписку или сервер, выбери профиль и нажми кнопку подключения. TUN включён по умолчанию. Если AppImage не запускается из-за отсутствия FUSE, попробуй `APPIMAGE_EXTRACT_AND_RUN=1 ./GhostBox-1.4.7-alpha-linux-x86_64.AppImage`.
+Добавь ссылку-подписку или сервер, выбери профиль и нажми кнопку подключения. TUN включён по умолчанию. Если AppImage не запускается из-за отсутствия FUSE, попробуй `APPIMAGE_EXTRACT_AND_RUN=1 ./GhostBox-1.4.8-alpha-linux-x86_64.AppImage`.
 
 ### TUN без запуска VPN от root
 
@@ -104,7 +104,7 @@ Kill Switch пока работает в Linux с установленными `
 ./tool/build_android.sh
 ```
 
-Готовый APK появится в `dist/android/GhostBox-Android-universal.apk`; предыдущая сборка будет сохранена в `old/`. Нужны Flutter, Go, Java 17 и Android SDK/NDK (их можно подготовить через `tool/setup_android.sh`). Android требует API 24 или новее и включает sing-box XHTTP. Если локальный keystore не настроен, сборка подписывается Android Debug сертификатом из `~/.android/debug.keystore`; сохрани этот файл, чтобы последующие APK с этого компьютера могли обновлять друг друга. При подключении Android запросит разрешение на VPN и, если доступно, уведомления.
+Готовый APK и его checksum появятся в `dist/android/GhostBox-Android-universal.apk` и `dist/android/GhostBox-Android-universal.apk.sha256`; предыдущие сборки сохраняются в `old/`. Чтобы автообновление нашло APK, загрузи оба файла в один GitHub Release без переименования. Нужны Flutter, Go, Java 17 и Android SDK/NDK (их можно подготовить через `tool/setup_android.sh`). Android требует API 24 или новее и включает sing-box XHTTP. Если локальный keystore не настроен, сборка подписывается Android Debug сертификатом из `~/.android/debug.keystore`; сохрани этот файл, чтобы последующие APK с этого компьютера могли обновлять друг друга. При подключении Android запросит разрешение на VPN и, если доступно, уведомления.
 
 Для отдельного постоянного release-ключа создай keystore локально:
 
@@ -124,7 +124,7 @@ keytool -genkeypair -v -keystore "$HOME/.android/ghostbox-release.jks" -keyalg R
 ./build.sh
 ```
 
-Чтобы выбрать Linux без меню: `./build.sh linux`. После сборки установить AppImage в меню можно командой `./tool/install_appimage.sh ./dist/GhostBox-1.4.7-alpha-linux-x86_64.AppImage`. Для локальной Android-сборки запусти `./tool/build_android.sh`; требования платформ описаны в [deploy/PLATFORMS.md](deploy/PLATFORMS.md).
+Чтобы выбрать Linux без меню: `./build.sh linux`. После сборки установить AppImage в меню можно командой `./tool/install_appimage.sh ./dist/GhostBox-1.4.8-alpha-linux-x86_64.AppImage`. Для локальной Android-сборки запусти `./tool/build_android.sh`; требования платформ описаны в [deploy/PLATFORMS.md](deploy/PLATFORMS.md).
 
 ### Приватность и диагностика
 
@@ -181,27 +181,27 @@ Flutter, Go and Visual Studio's **Desktop development with C++** workload must
 be installed. The portable ZIP is written to `dist`; Inno Setup is optional
 and adds the installer `.exe`.
 
-Download `GhostBox-1.4.7-alpha-linux-x86_64.AppImage` from GitHub Releases and run:
+Download `GhostBox-1.4.8-alpha-linux-x86_64.AppImage` from GitHub Releases and run:
 
 ```bash
-chmod +x GhostBox-1.4.7-alpha-linux-x86_64.AppImage
-./GhostBox-1.4.7-alpha-linux-x86_64.AppImage
+chmod +x GhostBox-1.4.8-alpha-linux-x86_64.AppImage
+./GhostBox-1.4.8-alpha-linux-x86_64.AppImage
 ```
 
 To add GhostBox to the desktop app menu without root access, run this from a repository checkout:
 
 ```bash
-./tool/install_appimage.sh ./dist/GhostBox-1.4.7-alpha-linux-x86_64.AppImage
+./tool/install_appimage.sh ./dist/GhostBox-1.4.8-alpha-linux-x86_64.AppImage
 ```
 
 On macOS, install a built `.app` bundle or ZIP into `/Applications` and launch it with:
 
 ```bash
-./tool/install_macos.sh ./dist/GhostBox-1.4.7-alpha-macOS-arm64.zip
+./tool/install_macos.sh ./dist/GhostBox-1.4.8-alpha-macOS-arm64.zip
 ```
 The script asks for administrator authorization to replace `/Applications/GhostBox.app`.
 
-Add a subscription URL or server, select a profile and press Connect. TUN is enabled by default. If AppImage cannot start because FUSE is unavailable, try `APPIMAGE_EXTRACT_AND_RUN=1 ./GhostBox-1.4.7-alpha-linux-x86_64.AppImage`.
+Add a subscription URL or server, select a profile and press Connect. TUN is enabled by default. If AppImage cannot start because FUSE is unavailable, try `APPIMAGE_EXTRACT_AND_RUN=1 ./GhostBox-1.4.8-alpha-linux-x86_64.AppImage`.
 
 ### TUN without running the VPN as root
 
@@ -237,7 +237,7 @@ Artifacts from a manual run are kept for 14 days. To publish a release, commit y
 ./tool/publish_release.sh "Fixed split tunneling and improved startup"
 ```
 
-The script pushes `main`, creates a version tag from `pubspec.yaml` and starts GitHub Actions. The main workflow builds Linux x86_64/ARM64 AppImages, a Windows installer `.exe` and ZIP, and a macOS ARM64 ZIP, then publishes a prerelease with the version, update summary, commit subjects and build files. Android APKs are built locally with `./tool/build_android.sh` and are not included in the general workflow or release. The local build needs Flutter, Go, Java 17, and Android SDK/NDK; it writes `dist/android/GhostBox-Android-universal.apk` and archives the previous APK in `old/`. Android requires API 24 or later and includes sing-box XHTTP. Without a configured release keystore, the APK uses the Android Debug certificate at `~/.android/debug.keystore`; keep that file to install future local builds as updates. On connect, Android requests VPN consent and, when available, notification permission.
+The script pushes `main`, creates a version tag from `pubspec.yaml` and starts GitHub Actions. The main workflow builds Linux x86_64/ARM64 AppImages, a Windows installer `.exe` and ZIP, and a macOS ARM64 ZIP, then publishes a prerelease with the version, update summary, commit subjects and build files. Android APKs are built locally with `./tool/build_android.sh` and are not included in the general workflow or release. The local build needs Flutter, Go, Java 17, and Android SDK/NDK; it writes `dist/android/GhostBox-Android-universal.apk` and its `.sha256` sidecar, and archives previous builds in `old/`. Upload both APK and checksum to the GitHub Release with their original filenames for Android auto-update. Android requires API 24 or later and includes sing-box XHTTP. Without a configured release keystore, the APK uses the Android Debug certificate at `~/.android/debug.keystore`; keep that file to install future local builds as updates. On connect, Android requests VPN consent and, when available, notification permission.
 
 To create a separate persistent release key, create a private keystore locally:
 

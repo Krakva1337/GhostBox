@@ -35,6 +35,26 @@ class GhostBoxReleaseAsset {
   final int size;
 }
 
+enum UpdateDownloadStage { downloading, verifying, launchingInstaller }
+
+class UpdateDownloadProgress {
+  const UpdateDownloadProgress({
+    required this.assetName,
+    required this.path,
+    required this.downloadedBytes,
+    required this.totalBytes,
+    required this.bytesPerSecond,
+    required this.stage,
+  });
+
+  final String assetName;
+  final String path;
+  final int downloadedBytes;
+  final int totalBytes;
+  final double bytesPerSecond;
+  final UpdateDownloadStage stage;
+}
+
 class GitHubUpdater {
   GitHubUpdater({HttpClient? client}) : _client = client ?? HttpClient();
 
@@ -136,7 +156,10 @@ class GitHubUpdater {
         comparison['status'] == 'identical';
   }
 
-  Future<File> download(GhostBoxReleaseAsset asset) async {
+  Future<File> download(
+    GhostBoxReleaseAsset asset, {
+    void Function(UpdateDownloadProgress progress)? onProgress,
+  }) async {
     final destination = File(
         '${Directory.systemTemp.path}${Platform.pathSeparator}${asset.name}');
     final request = await _client
@@ -151,8 +174,27 @@ class GitHubUpdater {
           'Не удалось скачать ${asset.name}: HTTP ${response.statusCode}');
     }
     final sink = destination.openWrite();
+    final stopwatch = Stopwatch()..start();
+    var downloadedBytes = 0;
+    final totalBytes =
+        response.contentLength > 0 ? response.contentLength : asset.size;
     try {
-      await response.pipe(sink).timeout(const Duration(minutes: 15));
+      await for (final chunk in response.timeout(const Duration(minutes: 15))) {
+        sink.add(chunk);
+        downloadedBytes += chunk.length;
+        onProgress?.call(UpdateDownloadProgress(
+          assetName: asset.name,
+          path: destination.path,
+          downloadedBytes: downloadedBytes,
+          totalBytes: totalBytes,
+          bytesPerSecond: stopwatch.elapsedMicroseconds == 0
+              ? 0
+              : downloadedBytes * 1000000 / stopwatch.elapsedMicroseconds,
+          stage: UpdateDownloadStage.downloading,
+        ));
+      }
+      await sink.flush();
+      await sink.close();
     } on Object {
       await sink.close();
       if (destination.existsSync()) await destination.delete();
@@ -168,14 +210,25 @@ class GitHubUpdater {
     return destination;
   }
 
-  Future<void> apply(
-      GhostBoxRelease release, GhostBoxReleaseAsset asset) async {
-    final package = await download(asset);
+  Future<String?> apply(
+    GhostBoxRelease release,
+    GhostBoxReleaseAsset asset, {
+    void Function(UpdateDownloadProgress progress)? onProgress,
+  }) async {
+    final package = await download(asset, onProgress: onProgress);
     try {
+      onProgress?.call(UpdateDownloadProgress(
+        assetName: asset.name,
+        path: package.path,
+        downloadedBytes: await package.length(),
+        totalBytes: await package.length(),
+        bytesPerSecond: 0,
+        stage: UpdateDownloadStage.verifying,
+      ));
       final checksumAsset = release.asset('${asset.name}.sha256');
       if (checksumAsset == null) {
         throw FileSystemException(
-            'В релизе ${release.tagName} нет SHA-256 для ${asset.name}');
+            'В релизе ${release.tagName} нет файла ${asset.name}.sha256. Загрузите APK и созданный рядом checksum-файл в один релиз.');
       }
       final checksumFile = await download(checksumAsset);
       try {
@@ -206,24 +259,17 @@ class GitHubUpdater {
         exit(0);
       }
       if (Platform.isWindows) {
-        final helper = File(
-            '${Directory.systemTemp.path}${Platform.pathSeparator}ghostbox-update-${pid}.ps1');
-        await helper.writeAsString(_windowsUpdateScript, flush: true);
+        onProgress?.call(UpdateDownloadProgress(
+          assetName: asset.name,
+          path: package.path,
+          downloadedBytes: await package.length(),
+          totalBytes: await package.length(),
+          bytesPerSecond: 0,
+          stage: UpdateDownloadStage.launchingInstaller,
+        ));
         await Process.start(
-          'powershell.exe',
-          [
-            '-NoProfile',
-            '-NonInteractive',
-            '-ExecutionPolicy',
-            'Bypass',
-            '-WindowStyle',
-            'Hidden',
-            '-File',
-            helper.path,
-            '$pid',
-            package.path,
-            Platform.resolvedExecutable,
-          ],
+          package.path,
+          const ['/CLOSEAPPLICATIONS=1'],
           mode: ProcessStartMode.detached,
         );
         exit(0);
@@ -250,15 +296,16 @@ class GitHubUpdater {
       if (Platform.isAndroid) {
         final result = await _androidUpdateChannel
             .invokeMethod<String>('saveApkToDownloads', {
-          'path': package.path,
+          'path': package.absolute.path,
           'fileName': 'GhostBox-${release.version}.apk',
         });
-        if (result != 'downloads_opened') {
+        const resultPrefix = 'downloads_opened:';
+        if (result == null || !result.startsWith(resultPrefix)) {
           throw const FileSystemException(
-              'Android не смог открыть папку «Загрузки». APK сохранён в памяти приложения.');
+              'Android не подтвердил сохранение APK в «Загрузки».');
         }
         if (package.existsSync()) await package.delete();
-        return;
+        return result.substring(resultPrefix.length);
       }
       throw UnsupportedError(
           'Автоустановка не поддерживается на этой платформе');
@@ -289,7 +336,7 @@ class GitHubUpdater {
 
   Future<String?> platformAssetName(GhostBoxRelease release) async {
     if (Platform.isWindows) {
-      return 'GhostBox-${release.version}-Windows-x64.zip';
+      return 'GhostBox-${release.version}-Windows-x64-Setup.exe';
     }
     if (Platform.isLinux) {
       final result = await Process.run('uname', ['-m']);
@@ -309,7 +356,19 @@ class GitHubUpdater {
         return 'GhostBox-${release.version}-macOS-arm64.zip';
       }
     }
-    if (Platform.isAndroid) return 'GhostBox-Android-universal.apk';
+    if (Platform.isAndroid) {
+      const expectedName = 'GhostBox-Android-universal.apk';
+      if (release.asset(expectedName) != null) return expectedName;
+      final apkAssets = release.assets
+          .where((asset) =>
+              asset.name.toLowerCase().contains('android') &&
+              asset.name.toLowerCase().endsWith('.apk'))
+          .toList();
+      for (final asset in apkAssets) {
+        if (asset.name.toLowerCase().contains('universal')) return asset.name;
+      }
+      return apkAssets.firstOrNull?.name;
+    }
     return null;
   }
 
@@ -322,81 +381,6 @@ class GitHubUpdater {
     throw const FileSystemException(
         'Не удалось определить расположение GhostBox.app');
   }
-
-  static const _windowsUpdateScript = r'''
-$ErrorActionPreference = 'Stop'
-$oldPid = [int]$args[0]
-$archive = $args[1]
-$appExe = $args[2]
-$helper = $PSCommandPath
-$installDir = Split-Path -Parent $appExe
-$parentDir = Split-Path -Parent $installDir
-$stage = Join-Path $parentDir ".ghostbox-update-$oldPid"
-$backup = Join-Path $parentDir ".ghostbox-old-$oldPid"
-function Update-GhostBoxShortcuts {
-  $newExe = Join-Path $installDir 'GhostBox.exe'
-  $icon = Join-Path $env:LOCALAPPDATA 'GhostBox\ghostbox-current.ico'
-  $shell = New-Object -ComObject WScript.Shell
-  $roots = @(
-    [Environment]::GetFolderPath('Desktop'),
-    [Environment]::GetFolderPath('Programs')
-  ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) }
-  foreach ($root in $roots) {
-    Get-ChildItem -LiteralPath $root -Filter '*.lnk' -File -Recurse -ErrorAction SilentlyContinue |
-      ForEach-Object {
-        try {
-          $shortcut = $shell.CreateShortcut($_.FullName)
-          if ([IO.Path]::GetFileName($shortcut.TargetPath) -ieq 'GhostBox.exe') {
-            $shortcut.TargetPath = $newExe
-            $shortcut.WorkingDirectory = $installDir
-            if (Test-Path -LiteralPath $icon) { $shortcut.IconLocation = "$icon,0" }
-            $shortcut.Save()
-          }
-        } catch { }
-      }
-  }
-  if (-not ('GhostBoxShellNotify' -as [type])) {
-    Add-Type -TypeDefinition @'
-using System;
-using System.Runtime.InteropServices;
-public static class GhostBoxShellNotify {
-  [DllImport("shell32.dll")] public static extern void SHChangeNotify(uint eventId, uint flags, IntPtr item1, IntPtr item2);
-}
-'@
-  }
-  [GhostBoxShellNotify]::SHChangeNotify(0x08000000, 0, [IntPtr]::Zero, [IntPtr]::Zero)
-}
-try {
-  while (Get-Process -Id $oldPid -ErrorAction SilentlyContinue) {
-    Start-Sleep -Milliseconds 400
-  }
-  New-Item -ItemType Directory -Force -Path $stage | Out-Null
-  Expand-Archive -LiteralPath $archive -DestinationPath $stage -Force
-  $newExe = Join-Path $stage 'GhostBox.exe'
-  if (-not (Test-Path -LiteralPath $newExe)) { throw 'The Windows ZIP does not contain GhostBox.exe at its root.' }
-  Move-Item -LiteralPath $installDir -Destination $backup
-  try {
-    Move-Item -LiteralPath $stage -Destination $installDir
-  } catch {
-    if (Test-Path -LiteralPath $installDir) { Remove-Item -LiteralPath $installDir -Recurse -Force }
-    if (Test-Path -LiteralPath $backup) { Move-Item -LiteralPath $backup -Destination $installDir }
-    throw
-  }
-  try { Update-GhostBoxShortcuts } catch { }
-  Start-Process -FilePath (Join-Path $installDir 'GhostBox.exe') -ArgumentList '--ghostbox-updated'
-  Start-Sleep -Seconds 3
-  Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction SilentlyContinue
-} catch {
-  if (Test-Path -LiteralPath $appExe) {
-    Start-Process -FilePath $appExe -ArgumentList '--ghostbox-updated' -ErrorAction SilentlyContinue
-  }
-  throw
-} finally {
-  Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue
-  Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
-  Remove-Item -LiteralPath $helper -Force -ErrorAction SilentlyContinue
-}
-''';
 
   GhostBoxRelease? _parseRelease(Map row) {
     final tag = row['tag_name'];

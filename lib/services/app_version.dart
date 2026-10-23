@@ -4,11 +4,11 @@ class AppVersion {
 
   static const version = String.fromEnvironment(
     'GHOSTBOX_VERSION',
-    defaultValue: '1.4.7-alpha',
+    defaultValue: '1.4.8-alpha',
   );
   static const build = String.fromEnvironment(
     'GHOSTBOX_BUILD',
-    defaultValue: '23',
+    defaultValue: '24',
   );
 
   static String get userAgent => 'GhostBox/$version (build $build)';

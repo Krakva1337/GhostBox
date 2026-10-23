@@ -518,12 +518,17 @@ class MainActivity : FlutterActivity() {
     private fun saveApkAndOpenDownloads(sourcePath: String, fileName: String): String {
         val source = File(sourcePath)
         if (!source.isFile || source.length() <= 0L) {
-            error("Downloaded APK was not found or is empty")
+            error(
+                "Downloaded APK was not found or is empty: " +
+                    "${source.absolutePath} (exists=${source.exists()}, size=${source.length()})",
+            )
         }
         validateUpdateApk(source)
         val mimeType = "application/vnd.android.package-archive"
+        val downloadsRelativePath = "${Environment.DIRECTORY_DOWNLOADS}/GhostBox"
+        var savedFileName = fileName
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            val relativePath = "${Environment.DIRECTORY_DOWNLOADS}/GhostBox/"
+            val relativePath = "$downloadsRelativePath/"
             val values = ContentValues().apply {
                 put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
                 put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
@@ -541,6 +546,17 @@ class MainActivity : FlutterActivity() {
                 }
                 if (contentResolver.update(uri, completed, null, null) <= 0) {
                     error("Android could not finish saving the APK")
+                }
+                contentResolver.query(
+                    uri,
+                    arrayOf(MediaStore.MediaColumns.DISPLAY_NAME),
+                    null,
+                    null,
+                    null,
+                )?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        savedFileName = cursor.getString(0) ?: fileName
+                    }
                 }
             } catch (error: Exception) {
                 contentResolver.delete(uri, null, null)
@@ -581,7 +597,7 @@ class MainActivity : FlutterActivity() {
                 },
             )
         }
-        return "downloads_opened"
+        return "downloads_opened:$downloadsRelativePath/$savedFileName"
     }
 
     private fun requestVpnPermission(result: MethodChannel.Result) {
