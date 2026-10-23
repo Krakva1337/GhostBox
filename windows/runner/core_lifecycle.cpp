@@ -137,9 +137,16 @@ CoreLifecycle::CoreLifecycle(flutter::BinaryMessenger* messenger) {
         bool matches = false;
         for (const auto& expected : paths) matches = matches || SamePath(path, expected);
         if (matches && !HasLiveOwner(process_entry.th32ParentProcessID, process)) {
-          if (TerminateProcess(process, 0) && WaitForSingleObject(process, 3000) == WAIT_OBJECT_0) {
+          // TerminateProcess is forceful; a three-second grace period made a
+          // reconnect wait feel stuck when Windows was slow to reap stale
+          // cores. Keep a short bound so a genuinely wedged process still
+          // fails visibly without serially blocking the next profile start.
+          if (TerminateProcess(process, 0) &&
+              WaitForSingleObject(process, 500) == WAIT_OBJECT_0) {
             ++stopped;
-          } else { failed = true; }
+          } else {
+            failed = true;
+          }
         }
         CloseHandle(process);
       } while (Process32NextW(snapshot, &process_entry));

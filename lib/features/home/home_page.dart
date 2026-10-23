@@ -2955,95 +2955,270 @@ foreach ($route in $routes) {
 
   Future<void> _testProfileSpeed(ServerProfile profile) async {
     if (_speedTestProfiles.contains(profile.id)) return;
+    final useAndroidVpn = Platform.isAndroid;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(_text('Тест скорости', 'Speed test')),
+        content: Text(_text(
+          useAndroidVpn
+              ? 'Трафик теста пойдёт через ${profile.name}. Если VPN подключён к другому серверу, GhostBox переключит его; если отключён — подключит. Тест передаст около 12 МБ через Cloudflare, который может использовать результаты в агрегированной статистике.'
+              : 'GhostBox подключит отдельный тестовый туннель к ${profile.name}; текущее VPN-подключение останется без изменений. Тест передаст около 12 МБ через Cloudflare и измерит задержку, загрузку и отправку.',
+          useAndroidVpn
+              ? 'Test traffic will go through ${profile.name}. GhostBox will switch the VPN if another server is active, or connect it if it is off. The test sends about 12 MB through Cloudflare, which may use results in aggregated statistics.'
+              : 'GhostBox will open a temporary test tunnel to ${profile.name}; your current VPN connection will stay unchanged. The test sends about 12 MB through Cloudflare and measures latency, download, and upload.',
+        )),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: Text(_text('Отмена', 'Cancel')),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            icon: const Icon(Icons.speed_rounded),
+            label: Text(_text('Начать тест', 'Start test')),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    if (useAndroidVpn) {
+      if (backend.state == VpnState.connecting) {
+        _message(_text('Дождитесь завершения подключения',
+            'Wait for the current connection to finish'));
+        return;
+      }
+      setState(() => selectedId = profile.id);
+      await _persist();
+      if (backend.state == VpnState.connected &&
+          activeProfileId != profile.id) {
+        await _switchActiveServer();
+      } else if (backend.state == VpnState.disconnected) {
+        await _toggle();
+      }
+      if (!mounted ||
+          backend.state != VpnState.connected ||
+          activeProfileId != profile.id) {
+        _message(_text(
+          'Не удалось подключить ${profile.name} для теста скорости.',
+          'Could not connect to ${profile.name} for the speed test.',
+        ));
+        return;
+      }
+    }
+
     setState(() {
       _speedTestProfiles.add(profile.id);
       _profileDownloadSpeeds.remove(profile.id);
     });
+    final progress = ValueNotifier<_SpeedTestProgress>(
+      const _SpeedTestProgress(stage: _SpeedTestStage.connecting),
+    );
+    final dialogFuture = showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => ValueListenableBuilder<_SpeedTestProgress>(
+        valueListenable: progress,
+        builder: (context, value, _) => AlertDialog(
+          title:
+              Text(_text('Тест · ${profile.name}', 'Test · ${profile.name}')),
+          content: SizedBox(
+            width: 360,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(_speedTestStageLabel(value.stage),
+                    style: TextStyle(color: _muted, fontSize: 12)),
+                const SizedBox(height: 16),
+                Row(children: [
+                  _speedTestMetric(
+                    _text('Пинг', 'Ping'),
+                    value.pingMs == null
+                        ? '—'
+                        : '${value.pingMs} ${english ? 'ms' : 'мс'}',
+                    Icons.network_ping_rounded,
+                  ),
+                  const SizedBox(width: 8),
+                  _speedTestMetric(
+                    _text('Загрузка', 'Download'),
+                    _speedValue(value.downloadMbps),
+                    Icons.download_rounded,
+                  ),
+                  const SizedBox(width: 8),
+                  _speedTestMetric(
+                    _text('Отправка', 'Upload'),
+                    _speedValue(value.uploadMbps),
+                    Icons.upload_rounded,
+                  ),
+                ]),
+                if (value.stage == _SpeedTestStage.downloading ||
+                    value.stage == _SpeedTestStage.uploading) ...[
+                  const SizedBox(height: 16),
+                  LinearProgressIndicator(value: value.fraction),
+                  const SizedBox(height: 8),
+                  Text(
+                    '${_formatBytes(value.transferredBytes)} / ${_formatBytes(value.totalBytes)} · ${value.liveMbps.toStringAsFixed(1)} Mbps',
+                    style: TextStyle(color: _muted, fontSize: 11),
+                  ),
+                ],
+                if (value.error != null) ...[
+                  const SizedBox(height: 12),
+                  Text(value.error!,
+                      style: TextStyle(
+                          color: Theme.of(context).colorScheme.error)),
+                ],
+                const SizedBox(height: 12),
+                Text(
+                  _text('Маршрут: ${profile.name} · Cloudflare Edge',
+                      'Route: ${profile.name} · Cloudflare Edge'),
+                  style: TextStyle(color: _muted, fontSize: 10),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            if (value.stage == _SpeedTestStage.complete ||
+                value.stage == _SpeedTestStage.failed)
+              FilledButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: Text(_text('Готово', 'Done')),
+              )
+            else
+              TextButton(
+                onPressed: null,
+                child: Text(_text('Идёт тест…', 'Testing…')),
+              ),
+          ],
+        ),
+      ),
+    );
     CoreProcessBackend? probeBackend;
     var httpPort = 0;
     try {
-      if (Platform.isAndroid) {
+      if (useAndroidVpn) {
         // Android routes requests through its native VpnService; do not use a
         // loopback proxy port that belongs to the recreated Activity process.
-        if (backend.state != VpnState.connected ||
-            activeProfileId != profile.id) {
-          throw StateError(_text(
-            'Подключитесь к этому серверу перед проверкой скорости на Android.',
-            'Connect to this server before testing its speed on Android.',
-          ));
-        }
         const timeout = Duration(seconds: 35);
         // Android routes the app's sockets through the active VpnService. A
         // loopback proxy port belongs to the Activity process and may be gone
         // after the Activity was recreated (for example, after changing the
         // launcher icon), while the native VPN and its TUN remain alive.
-        final bytes = await _downloadThroughHttpProxy(null, timeout);
-        if (bytes == 0) throw const HttpException('Сервер не передал данные');
-        final speed = bytes / 1024 / 1024;
-        if (mounted) {
-          setState(() => _profileDownloadSpeeds[profile.id] = speed);
-          _message(_text(
-            'Скорость ${profile.name}: ${speed.toStringAsFixed(2)} МБ/с',
-            '${profile.name} speed: ${speed.toStringAsFixed(2)} MB/s',
-          ));
-        }
-        return;
-      }
-      final proxyReservation =
-          await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
-      final proxyPort = proxyReservation.port;
-      await proxyReservation.close();
-      final httpReservation =
-          await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
-      httpPort = httpReservation.port;
-      await httpReservation.close();
+        await _runSpeedMeasurements(null, timeout, progress, profile.id);
+      } else {
+        final proxyReservation =
+            await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+        final proxyPort = proxyReservation.port;
+        await proxyReservation.close();
+        final httpReservation =
+            await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+        httpPort = httpReservation.port;
+        await httpReservation.close();
 
-      final coreName = coreSettings.core == 'xray' ? 'xray' : 'sing-box';
-      probeBackend = CoreProcessBackend(
-        name: coreName,
-        executable: process?.executable ?? coreExecutable(coreName, 'vendor'),
-        configPath: 'vendor/config/$coreName-speed-test.json',
-      )..settings = coreSettings.copyWith(
-          localPort: proxyPort,
-          routing: 'proxy',
-          connectionMode: 'proxy',
-          dnsThroughProxy: true,
+        final coreName = coreSettings.core == 'xray' ? 'xray' : 'sing-box';
+        probeBackend = CoreProcessBackend(
+          name: coreName,
+          executable: process?.executable ?? coreExecutable(coreName, 'vendor'),
+          configPath: 'vendor/config/$coreName-speed-test.json',
+        )..settings = coreSettings.copyWith(
+            localPort: proxyPort,
+            routing: 'proxy',
+            connectionMode: 'proxy',
+            dnsThroughProxy: true,
+          );
+        final probeProfile = ServerProfile(
+          id: profile.id,
+          name: profile.name,
+          protocol: profile.protocol,
+          address: profile.address,
+          port: profile.port,
+          uuid: profile.uuid,
+          network: profile.network,
+          security: profile.security,
+          raw: {...profile.raw, '_ghostboxHttpProbePort': httpPort},
         );
-      final probeProfile = ServerProfile(
-        id: profile.id,
-        name: profile.name,
-        protocol: profile.protocol,
-        address: profile.address,
-        port: profile.port,
-        uuid: profile.uuid,
-        network: profile.network,
-        security: profile.security,
-        raw: {...profile.raw, '_ghostboxHttpProbePort': httpPort},
-      );
-      await probeBackend.connect(jsonEncode(probeProfile.toJson()));
-      const timeout = Duration(seconds: 35);
-      await _waitForProxyListener(httpPort, timeout);
-      final bytes = await _downloadThroughHttpProxy(httpPort, timeout);
-      if (bytes == 0) throw const HttpException('Сервер не передал данные');
-      final speed = bytes / 1024 / 1024;
-      if (mounted) {
-        setState(() => _profileDownloadSpeeds[profile.id] = speed);
-        _message(_text(
-          'Скорость ${profile.name}: ${speed.toStringAsFixed(2)} МБ/с',
-          '${profile.name} speed: ${speed.toStringAsFixed(2)} MB/s',
-        ));
+        await probeBackend.connect(jsonEncode(probeProfile.toJson()));
+        const timeout = Duration(seconds: 35);
+        await _waitForProxyListener(httpPort, timeout);
+        await _runSpeedMeasurements(httpPort, timeout, progress, profile.id);
       }
     } on Object catch (error) {
-      if (mounted) {
-        _message(_text(
-          'Не удалось проверить скорость: $error',
-          'Speed test failed: $error',
-        ));
-      }
+      progress.value = progress.value.copyWith(
+        stage: _SpeedTestStage.failed,
+        error: '$error',
+      );
     } finally {
-      await probeBackend?.disconnect();
+      try {
+        await probeBackend?.disconnect();
+      } on Object catch (error) {
+        _recordAppLog('Не удалось закрыть тестовый маршрут: $error');
+      }
       if (mounted) setState(() => _speedTestProfiles.remove(profile.id));
     }
+    await dialogFuture;
+    progress.dispose();
+  }
+
+  Future<void> _runSpeedMeasurements(
+    int? localPort,
+    Duration timeout,
+    ValueNotifier<_SpeedTestProgress> progress,
+    String profileId,
+  ) async {
+    progress.value = progress.value.copyWith(stage: _SpeedTestStage.pinging);
+    final ping = await _measureSpeedTestPing(localPort, timeout);
+    progress.value = progress.value.copyWith(
+      stage: _SpeedTestStage.downloading,
+      pingMs: ping,
+    );
+    final downloadBytesPerSecond = await _downloadThroughHttpProxy(
+      localPort,
+      timeout,
+      onProgress: (received, total, liveMbps) {
+        progress.value = progress.value.copyWith(
+          transferredBytes: received,
+          totalBytes: total,
+          liveMbps: liveMbps,
+        );
+      },
+    );
+    if (downloadBytesPerSecond <= 0) {
+      throw const HttpException('Cloudflare не передал данные');
+    }
+    final downloadMbps = downloadBytesPerSecond * 8 / 1000000;
+    progress.value = progress.value.copyWith(
+      stage: _SpeedTestStage.uploading,
+      downloadMbps: downloadMbps,
+      transferredBytes: 0,
+      totalBytes: 4000000,
+      liveMbps: 0,
+    );
+    final uploadBytesPerSecond = await _uploadThroughHttpProxy(
+      localPort,
+      timeout,
+      onProgress: (sent, total, liveMbps) {
+        progress.value = progress.value.copyWith(
+          transferredBytes: sent,
+          totalBytes: total,
+          liveMbps: liveMbps,
+        );
+      },
+    );
+    if (uploadBytesPerSecond <= 0) {
+      throw const HttpException('Cloudflare не принял данные');
+    }
+    final uploadMbps = uploadBytesPerSecond * 8 / 1000000;
+    if (mounted) {
+      setState(() => _profileDownloadSpeeds[profileId] = downloadMbps);
+    }
+    progress.value = progress.value.copyWith(
+      stage: _SpeedTestStage.complete,
+      downloadMbps: downloadMbps,
+      uploadMbps: uploadMbps,
+      transferredBytes: 0,
+      totalBytes: 0,
+    );
   }
 
   String _speedTestMenuLabel(String profileId) {
@@ -3051,15 +3226,21 @@ foreach ($route in $routes) {
     if (speed == null) {
       return _text('Проверить скорость соединения', 'Test connection speed');
     }
-    return '${_text('Повторить тест скорости', 'Run speed test again')} · ${speed.toStringAsFixed(2)} ${english ? 'MB/s' : 'МБ/с'}';
+    return '${_text('Повторить тест скорости', 'Run speed test again')} · ${speed.toStringAsFixed(1)} Mbps';
   }
 
   Future<int> _downloadThroughHttpProxy(
-      int? localPort, Duration timeout) async {
+    int? localPort,
+    Duration timeout, {
+    required void Function(int received, int total, double liveMbps) onProgress,
+  }) async {
     // Cloudflare's download endpoint returns a fixed-size payload, so this
     // measures the selected profile's real download throughput, not ping RTT.
-    final uri =
-        Uri.https('speed.cloudflare.com', '/__down', {'bytes': '8000000'});
+    const totalBytes = 8000000;
+    final uri = Uri.https('speed.cloudflare.com', '/__down', {
+      'bytes': '$totalBytes',
+      'measId': '${DateTime.now().millisecondsSinceEpoch}'
+    });
     final client = HttpClient()
       ..connectionTimeout = timeout
       ..idleTimeout = timeout;
@@ -3078,7 +3259,13 @@ foreach ($route in $routes) {
       var received = 0;
       await for (final chunk in response.timeout(timeout)) {
         received += chunk.length;
-        if (received >= 8000000) break;
+        final elapsedMicros = math.max(1, watch.elapsedMicroseconds);
+        onProgress(
+          math.min(received, totalBytes),
+          totalBytes,
+          received * 8 * 1000000 / elapsedMicros,
+        );
+        if (received >= totalBytes) break;
       }
       watch.stop();
       if (watch.elapsedMicroseconds <= 0) return 0;
@@ -3087,6 +3274,139 @@ foreach ($route in $routes) {
       client.close(force: true);
     }
   }
+
+  Future<int> _uploadThroughHttpProxy(
+    int? localPort,
+    Duration timeout, {
+    required void Function(int sent, int total, double liveMbps) onProgress,
+  }) async {
+    const chunkBytes = 1000000;
+    const chunks = 4;
+    const totalBytes = chunkBytes * chunks;
+    final uri = Uri.https('speed.cloudflare.com', '/__up', {
+      'measId': '${DateTime.now().millisecondsSinceEpoch}',
+    });
+    final client = HttpClient()
+      ..connectionTimeout = timeout
+      ..idleTimeout = timeout;
+    if (localPort != null) {
+      client.findProxy = (_) => 'PROXY 127.0.0.1:$localPort';
+    }
+    final random = math.Random.secure();
+    final chunk = List<int>.generate(chunkBytes, (_) => random.nextInt(256));
+    final watch = Stopwatch()..start();
+    try {
+      final request = await client.postUrl(uri).timeout(timeout);
+      request.headers.set(HttpHeaders.userAgentHeader, AppVersion.userAgent);
+      request.headers.set(HttpHeaders.connectionHeader, 'close');
+      request.contentLength = totalBytes;
+      var sent = 0;
+      for (var index = 0; index < chunks; index++) {
+        await request.addStream(Stream<List<int>>.value(chunk));
+        sent += chunkBytes;
+        final elapsedMicros = math.max(1, watch.elapsedMicroseconds);
+        onProgress(
+          sent,
+          totalBytes,
+          sent * 8 * 1000000 / elapsedMicros,
+        );
+      }
+      final response = await request.close().timeout(timeout);
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw HttpException('HTTP ${response.statusCode}', uri: uri);
+      }
+      await response.drain<void>().timeout(timeout);
+      watch.stop();
+      if (watch.elapsedMicroseconds <= 0) return 0;
+      return (totalBytes / (watch.elapsedMicroseconds / 1000000)).round();
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  Future<int> _measureSpeedTestPing(int? localPort, Duration timeout) async {
+    const probes = 3;
+    final samples = <int>[];
+    final client = HttpClient()
+      ..connectionTimeout = timeout
+      ..idleTimeout = timeout;
+    if (localPort != null) {
+      client.findProxy = (_) => 'PROXY 127.0.0.1:$localPort';
+    }
+    try {
+      for (var index = 0; index < probes; index++) {
+        final uri = Uri.https('speed.cloudflare.com', '/__down', {
+          'bytes': '0',
+          'measId': '${DateTime.now().millisecondsSinceEpoch}-$index',
+        });
+        final watch = Stopwatch()..start();
+        final request = await client.getUrl(uri).timeout(timeout);
+        request.headers.set(HttpHeaders.userAgentHeader, AppVersion.userAgent);
+        request.headers.set(HttpHeaders.connectionHeader, 'close');
+        final response = await request.close().timeout(timeout);
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+          throw HttpException('HTTP ${response.statusCode}', uri: uri);
+        }
+        await response.drain<void>().timeout(timeout);
+        watch.stop();
+        samples.add(_elapsedMilliseconds(watch));
+      }
+    } finally {
+      client.close(force: true);
+    }
+    samples.sort();
+    return samples[samples.length ~/ 2];
+  }
+
+  String _speedValue(double? value) =>
+      value == null ? '—' : '${value.toStringAsFixed(1)} Mbps';
+
+  String _speedTestStageLabel(_SpeedTestStage stage) => switch (stage) {
+        _SpeedTestStage.connecting =>
+          _text('Подключаю тестовый маршрут…', 'Connecting test route…'),
+        _SpeedTestStage.pinging =>
+          _text('Измеряю задержку…', 'Measuring latency…'),
+        _SpeedTestStage.downloading =>
+          _text('Проверяю загрузку…', 'Testing download…'),
+        _SpeedTestStage.uploading =>
+          _text('Проверяю отправку…', 'Testing upload…'),
+        _SpeedTestStage.complete => _text('Тест завершён', 'Test complete'),
+        _SpeedTestStage.failed => _text('Тест не завершился', 'Test failed'),
+      };
+
+  Widget _speedTestMetric(String label, String value, IconData icon) =>
+      Expanded(
+        child: Container(
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(
+            color: _accent.withValues(alpha: .07),
+            borderRadius: BorderRadius.circular(13),
+            border: Border.all(color: _accent.withValues(alpha: .14)),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(icon, size: 16, color: _accent),
+              const SizedBox(height: 7),
+              Text(label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(color: _muted, fontSize: 9)),
+              const SizedBox(height: 3),
+              FittedBox(
+                alignment: Alignment.centerLeft,
+                fit: BoxFit.scaleDown,
+                child: Text(value,
+                    style: TextStyle(
+                        color: _foreground,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700,
+                        fontFeatures: const [ui.FontFeature.tabularFigures()])),
+              ),
+            ],
+          ),
+        ),
+      );
 
   int _elapsedMilliseconds(Stopwatch watch) =>
       math.max(1, (watch.elapsedMicroseconds + 999) ~/ 1000).toInt();
@@ -6709,27 +7029,19 @@ foreach ($route in $routes) {
   Widget _subscriptionProviderLinks(SubscriptionMetadata metadata) =>
       Wrap(spacing: 2, runSpacing: 0, children: [
         if (metadata.websiteUrl != null)
-          TextButton.icon(
-              style: TextButton.styleFrom(
-                  minimumSize: Size.zero,
-                  padding: const EdgeInsets.symmetric(horizontal: 6),
-                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                  visualDensity: VisualDensity.compact,
-                  textStyle: const TextStyle(fontSize: 11)),
-              onPressed: () => _openProviderUrl(metadata.websiteUrl),
-              icon: const Icon(Icons.language_rounded, size: 15),
-              label: Text(_localized('Сайт'))),
+          _ProviderLinkButton(
+            icon: Icons.language_rounded,
+            label: _localized('Сайт'),
+            accent: _accent,
+            onPressed: () => _openProviderUrl(metadata.websiteUrl),
+          ),
         if (metadata.supportUrl != null)
-          TextButton.icon(
-              style: TextButton.styleFrom(
-                  minimumSize: Size.zero,
-                  padding: const EdgeInsets.symmetric(horizontal: 6),
-                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                  visualDensity: VisualDensity.compact,
-                  textStyle: const TextStyle(fontSize: 11)),
-              onPressed: () => _openProviderUrl(metadata.supportUrl),
-              icon: const Icon(Icons.support_agent_rounded, size: 15),
-              label: Text(_localized('Поддержка'))),
+          _ProviderLinkButton(
+            icon: Icons.support_agent_rounded,
+            label: _localized('Поддержка'),
+            accent: _accent,
+            onPressed: () => _openProviderUrl(metadata.supportUrl),
+          ),
       ]);
 
   String _updatedLabel(String value) {
@@ -6833,7 +7145,8 @@ foreach ($route in $routes) {
                             GhostMenuEntry(
                                 value: key,
                                 label: key,
-                                selected: key == selectedConfig)
+                                selected: key == selectedConfig,
+                                highlightSelected: true)
                         ],
                         onSelected: (value) => setDialogState(() {
                           selectedConfig = value;
@@ -6960,17 +7273,63 @@ foreach ($route in $routes) {
         child: Padding(
             padding: EdgeInsets.symmetric(vertical: 1),
             child: AnimatedContainer(
-              duration: Duration(milliseconds: 320),
-              curve: Curves.easeOutCubic,
-              margin: EdgeInsets.all(selectedServer ? 5 : 0),
-              padding: const EdgeInsets.fromLTRB(9, 9, 5, 9),
+              duration: _motion(const Duration(milliseconds: 380)),
+              curve: Curves.easeInOutCubicEmphasized,
+              margin: EdgeInsets.symmetric(
+                horizontal: selectedServer ? 5 : 0,
+                vertical: selectedServer ? 3 : 0,
+              ),
+              padding: EdgeInsets.fromLTRB(selectedServer ? 11 : 9, 9, 5, 9),
               decoration: BoxDecoration(
-                  color: selectedServer
-                      ? Color.alphaBlend(
-                          _accent.withValues(alpha: .12), _surface)
-                      : Colors.transparent,
-                  borderRadius: BorderRadius.circular(15)),
+                  color: selectedServer ? null : Colors.transparent,
+                  gradient: selectedServer
+                      ? LinearGradient(
+                          begin: Alignment.centerLeft,
+                          end: Alignment.centerRight,
+                          colors: [
+                            _accent.withValues(alpha: .12),
+                            _accent.withValues(alpha: .035),
+                            Colors.transparent,
+                          ],
+                        )
+                      : null,
+                  borderRadius: BorderRadius.circular(15),
+                  border: Border.all(
+                    color: selectedServer
+                        ? _accent.withValues(alpha: .22)
+                        : Colors.transparent,
+                  ),
+                  boxShadow: selectedServer
+                      ? [
+                          BoxShadow(
+                            color: _accent.withValues(alpha: .07),
+                            blurRadius: 14,
+                            spreadRadius: -5,
+                          )
+                        ]
+                      : const []),
               child: Row(children: [
+                SizedBox(
+                  width: 3,
+                  height: 28,
+                  child: AnimatedContainer(
+                    duration: _motion(const Duration(milliseconds: 360)),
+                    curve: Curves.easeInOutCubicEmphasized,
+                    decoration: BoxDecoration(
+                      color: selectedServer ? _accent : Colors.transparent,
+                      borderRadius: BorderRadius.circular(4),
+                      boxShadow: selectedServer
+                          ? [
+                              BoxShadow(
+                                color: _accent.withValues(alpha: .45),
+                                blurRadius: 8,
+                              ),
+                            ]
+                          : const [],
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 5),
                 _countryBadge(profile),
                 SizedBox(width: 8),
                 Expanded(
@@ -8024,6 +8383,7 @@ foreach ($route in $routes) {
               reverseDuration: _motion(const Duration(milliseconds: 220)),
               switchInCurve: Curves.easeOutCubic,
               switchOutCurve: Curves.easeInCubic,
+              layoutBuilder: _currentChildSwitcherLayout,
               transitionBuilder: _fadeSlideSwap,
               child: KeyedSubtree(
                 key: ValueKey(settingsSubpage ?? 'settings-home'),
@@ -8991,18 +9351,7 @@ foreach ($route in $routes) {
               child: AnimatedSwitcher(
                   duration: const Duration(milliseconds: 260),
                   reverseDuration: const Duration(milliseconds: 210),
-                  layoutBuilder: (currentChild, previousChildren) => ClipRect(
-                        child: Stack(
-                          alignment: Alignment.topCenter,
-                          children: [
-                            for (final previousChild in previousChildren)
-                              Positioned.fill(
-                                child: IgnorePointer(child: previousChild),
-                              ),
-                            if (currentChild != null) currentChild,
-                          ],
-                        ),
-                      ),
+                  layoutBuilder: _currentChildSwitcherLayout,
                   transitionBuilder: _settingsModeTransition,
                   child: KeyedSubtree(
                       key: ValueKey(advanced),
@@ -11433,6 +11782,51 @@ foreach ($route in $routes) {
                   child: Text(label)))));
 }
 
+class _ProviderLinkButton extends StatefulWidget {
+  const _ProviderLinkButton({
+    required this.icon,
+    required this.label,
+    required this.accent,
+    required this.onPressed,
+  });
+
+  final IconData icon;
+  final String label;
+  final Color accent;
+  final VoidCallback onPressed;
+
+  @override
+  State<_ProviderLinkButton> createState() => _ProviderLinkButtonState();
+}
+
+class _ProviderLinkButtonState extends State<_ProviderLinkButton> {
+  bool hovered = false;
+
+  @override
+  Widget build(BuildContext context) => MouseRegion(
+        onEnter: (_) => setState(() => hovered = true),
+        onExit: (_) => setState(() => hovered = false),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 160),
+          curve: Curves.easeOutCubic,
+          padding: EdgeInsets.symmetric(vertical: hovered ? 3 : 0),
+          child: TextButton.icon(
+            style: TextButton.styleFrom(
+              minimumSize: Size.zero,
+              padding: const EdgeInsets.symmetric(horizontal: 6),
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              visualDensity: VisualDensity.compact,
+              foregroundColor: hovered ? widget.accent : null,
+              textStyle: const TextStyle(fontSize: 11),
+            ),
+            onPressed: widget.onPressed,
+            icon: Icon(widget.icon, size: 15),
+            label: Text(widget.label),
+          ),
+        ),
+      );
+}
+
 class _SettingsCategoryCard extends StatefulWidget {
   const _SettingsCategoryCard({
     required this.icon,
@@ -11540,6 +11934,61 @@ class _SettingsCategoryCardState extends State<_SettingsCategoryCard> {
             ),
           ),
         ),
+      );
+}
+
+enum _SpeedTestStage {
+  connecting,
+  pinging,
+  downloading,
+  uploading,
+  complete,
+  failed
+}
+
+class _SpeedTestProgress {
+  const _SpeedTestProgress({
+    required this.stage,
+    this.pingMs,
+    this.downloadMbps,
+    this.uploadMbps,
+    this.transferredBytes = 0,
+    this.totalBytes = 0,
+    this.liveMbps = 0,
+    this.error,
+  });
+
+  final _SpeedTestStage stage;
+  final int? pingMs;
+  final double? downloadMbps;
+  final double? uploadMbps;
+  final int transferredBytes;
+  final int totalBytes;
+  final double liveMbps;
+  final String? error;
+
+  double? get fraction =>
+      totalBytes <= 0 ? null : (transferredBytes / totalBytes).clamp(0.0, 1.0);
+
+  _SpeedTestProgress copyWith({
+    _SpeedTestStage? stage,
+    int? pingMs,
+    double? downloadMbps,
+    double? uploadMbps,
+    int? transferredBytes,
+    int? totalBytes,
+    double? liveMbps,
+    String? error,
+  }) =>
+      _SpeedTestProgress(
+        stage: stage ?? this.stage,
+        pingMs: pingMs ?? this.pingMs,
+        downloadMbps: downloadMbps ?? this.downloadMbps,
+        uploadMbps: uploadMbps ?? this.uploadMbps,
+        transferredBytes: transferredBytes ?? this.transferredBytes,
+        totalBytes: totalBytes ?? this.totalBytes,
+        liveMbps: liveMbps ?? this.liveMbps,
+        error: error ?? this.error,
       );
 }
 

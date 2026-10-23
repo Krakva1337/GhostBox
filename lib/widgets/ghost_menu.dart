@@ -14,6 +14,7 @@ class GhostMenuEntry<T> {
     this.subtitle,
     this.enabled = true,
     this.selected = false,
+    this.highlightSelected = false,
     this.iconColor,
   });
 
@@ -24,6 +25,7 @@ class GhostMenuEntry<T> {
   final String? subtitle;
   final bool enabled;
   final bool selected;
+  final bool highlightSelected;
   final Color? iconColor;
 }
 
@@ -368,9 +370,14 @@ class _GhostMenuRowState<T> extends State<_GhostMenuRow<T>> {
                         ? .18
                         : hovered
                             ? .12
-                            : focused
-                                ? .07
-                                : 0),
+                            : entry.selected && entry.highlightSelected
+                                ? .22
+                                : focused
+                                    ? .07
+                                    : 0),
+            border: entry.selected && entry.highlightSelected
+                ? Border.all(color: colors.primary.withValues(alpha: .48))
+                : null,
           ),
           child: Row(children: [
             if (entry.leading != null || entry.icon != null) ...[
@@ -395,7 +402,9 @@ class _GhostMenuRowState<T> extends State<_GhostMenuRow<T>> {
                       style: TextStyle(
                           color: foreground,
                           fontSize: 13,
-                          fontWeight: FontWeight.w500,
+                          fontWeight: entry.selected && entry.highlightSelected
+                              ? FontWeight.w700
+                              : FontWeight.w500,
                           height: 1.2)),
                   if (entry.subtitle != null) ...[
                     const SizedBox(height: 3),
