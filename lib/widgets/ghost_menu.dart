@@ -294,9 +294,13 @@ class _GhostMenuRoute<T> extends PopupRoute<T> {
     // an offscreen layer and prevents it from sampling the page underneath.
     panel = Opacity(opacity: progress, child: panel);
     if (blurEnabled) {
+      final blurSigma = math.min(10.0, 17 * progress).toDouble();
       panel = BackdropFilter(
-        filter:
-            ui.ImageFilter.blur(sigmaX: 17 * progress, sigmaY: 17 * progress),
+        filter: ui.ImageFilter.blur(
+          sigmaX: blurSigma,
+          sigmaY: blurSigma,
+          tileMode: TileMode.decal,
+        ),
         child: panel,
       );
     }

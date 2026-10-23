@@ -210,9 +210,18 @@ class _HomePageState extends State<HomePage>
 
   Widget _backdropBlur({required double sigma, required Widget child}) {
     if (optimizedMode || sigma <= 0) return child;
-    return BackdropFilter(
-      filter: ui.ImageFilter.blur(sigmaX: sigma, sigmaY: sigma),
-      child: child,
+    // Large blur radii make the GPU sample a much wider area. Keep decorative
+    // glass subtle and constrain the filter to the widget's own paint bounds.
+    final effectiveSigma = sigma.clamp(0.0, 10.0).toDouble();
+    return ClipRect(
+      child: BackdropFilter(
+        filter: ui.ImageFilter.blur(
+          sigmaX: effectiveSigma,
+          sigmaY: effectiveSigma,
+          tileMode: TileMode.decal,
+        ),
+        child: child,
+      ),
     );
   }
 
@@ -8144,34 +8153,57 @@ foreach ($route in $routes) {
       context: context,
       builder: (dialogContext) => AlertDialog(
         title: Text(_text('Карточка GhostBox', 'GhostBox card')),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          maxLength: 24,
-          textCapitalization: TextCapitalization.words,
-          decoration: InputDecoration(
-            labelText: _text('Ник', 'Nickname'),
-            hintText: 'GhostBox',
+        content: SizedBox(
+          width: double.maxFinite,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: controller,
+                autofocus: true,
+                maxLength: 24,
+                textCapitalization: TextCapitalization.words,
+                decoration: InputDecoration(
+                  labelText: _text('Ник', 'Nickname'),
+                  hintText: 'GhostBox',
+                ),
+                onSubmitted: (value) => Navigator.pop(dialogContext,
+                    value.trim().replaceFirst(RegExp(r'^@+'), '')),
+              ),
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: () => Navigator.pop(dialogContext, '\u0000icon'),
+                  icon: const Icon(Icons.palette_outlined, size: 17),
+                  label: Text(_text('Выбрать значок', 'Choose icon')),
+                ),
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: () => Navigator.pop(dialogContext),
+                      child: Text(_text('Отмена', 'Cancel')),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: FilledButton(
+                      onPressed: () => Navigator.pop(
+                        dialogContext,
+                        controller.text.trim().replaceFirst(RegExp(r'^@+'), ''),
+                      ),
+                      child: Text(_text('Сохранить', 'Save')),
+                    ),
+                  ),
+                ],
+              ),
+            ],
           ),
-          onSubmitted: (value) => Navigator.pop(
-              dialogContext, value.trim().replaceFirst(RegExp(r'^@+'), '')),
         ),
-        actions: [
-          TextButton.icon(
-            onPressed: () => Navigator.pop(dialogContext, '\u0000icon'),
-            icon: const Icon(Icons.palette_outlined, size: 17),
-            label: Text(_text('Выбрать значок', 'Choose icon')),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: Text(_text('Отмена', 'Cancel')),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext,
-                controller.text.trim().replaceFirst(RegExp(r'^@+'), '')),
-            child: Text(_text('Сохранить', 'Save')),
-          ),
-        ],
+        actions: const [],
       ),
     );
     controller.dispose();
