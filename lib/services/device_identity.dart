@@ -2,16 +2,18 @@ import 'dart:math';
 import 'dart:ffi' show Abi;
 import 'dart:io';
 
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'app_version.dart';
 
-/// Stable, random per-install identifier for subscription panels that count
-/// devices. This deliberately does not fingerprint physical hardware.
+/// Stable app identity for subscription panels that count devices. Android
+/// migrates existing install IDs and namespaces its OS-scoped ID on new installs.
 class DeviceIdentity {
   DeviceIdentity._();
 
   static const _preferenceKey = 'device.installation_id';
+  static const _androidChannel = MethodChannel('app.ghostbox.ghostbox/vpn');
   static Future<String>? _pending;
 
   static String get architecture => Abi.current().toString().split('.').last;
@@ -53,11 +55,18 @@ class DeviceIdentity {
 
   /// Minimal, non-hardware-fingerprinting client details for the VPN provider.
   static Future<Map<String, String>> get transportHeaders async {
-    final id = await installationId;
+    String? id;
+    try {
+      id = await installationId;
+    } on Object {
+      // Optional device hints must not replace an unavailable saved Android ID
+      // with an ephemeral random identity that registers another device.
+      if (!Platform.isAndroid) rethrow;
+    }
     final model = await deviceModel;
     return {
-      'X-HWID': id,
-      'X-Device-ID': id,
+      if (id != null) 'X-HWID': id,
+      if (id != null) 'X-Device-ID': id,
       'X-Client-Name': 'GhostBox',
       'X-Client-Version': AppVersion.versionAndBuild,
       'X-Device-OS': Platform.operatingSystem,
@@ -73,9 +82,24 @@ class DeviceIdentity {
     };
   }
 
-  static Future<String> get installationId => _pending ??= _loadOrCreate();
+  static Future<String> get installationId =>
+      _pending ??= _loadOrCreate().catchError((Object error, StackTrace stack) {
+        // An engine/plugin startup failure is retryable; do not cache it for
+        // the lifetime of the application process.
+        _pending = null;
+        Error.throwWithStackTrace(error, stack);
+      });
 
   static Future<String> _loadOrCreate() async {
+    if (Platform.isAndroid) {
+      final id = await _androidChannel
+          .invokeMethod<String>('deviceInstallationId')
+          .timeout(const Duration(seconds: 3));
+      if (id == null || id.trim().isEmpty) {
+        throw StateError('The saved Android device identity is unavailable');
+      }
+      return id.trim();
+    }
     final bytes = List<int>.generate(16, (_) => Random.secure().nextInt(256));
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;

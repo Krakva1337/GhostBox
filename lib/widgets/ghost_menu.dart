@@ -53,6 +53,7 @@ Future<T?> showGhostMenu<T>({
   required BuildContext context,
   required List<GhostMenuEntry<T>> entries,
   BuildContext? anchorContext,
+  bool centerOnAnchor = false,
   bool? blurEnabled,
   bool? reduceMotion,
 }) async {
@@ -69,6 +70,7 @@ Future<T?> showGhostMenu<T>({
   final route = _GhostMenuRoute<T>(
     entries: List.unmodifiable(entries),
     anchor: anchorRect,
+    centerOnAnchor: centerOnAnchor,
     themes: InheritedTheme.capture(from: context, to: navigator.context),
     blurEnabled: blurEnabled ?? scope?.blurEnabled ?? true,
     reduceMotion: reduceMotion ??
@@ -92,6 +94,8 @@ class GhostMenuButton<T> extends StatelessWidget {
     this.child,
     this.blurEnabled,
     this.reduceMotion,
+    this.anchorContext,
+    this.centerOnAnchor = false,
   });
 
   final List<GhostMenuEntry<T>> entries;
@@ -101,12 +105,15 @@ class GhostMenuButton<T> extends StatelessWidget {
   final Widget? child;
   final bool? blurEnabled;
   final bool? reduceMotion;
+  final BuildContext? anchorContext;
+  final bool centerOnAnchor;
 
   Future<void> _open(BuildContext context) async {
     final result = await showGhostMenu<T>(
       context: context,
       entries: entries,
-      anchorContext: context,
+      anchorContext: anchorContext ?? context,
+      centerOnAnchor: centerOnAnchor,
       blurEnabled: blurEnabled,
       reduceMotion: reduceMotion,
     );
@@ -137,6 +144,7 @@ class _GhostMenuRoute<T> extends PopupRoute<T> {
   _GhostMenuRoute({
     required this.entries,
     required this.anchor,
+    required this.centerOnAnchor,
     required this.themes,
     required this.blurEnabled,
     required this.reduceMotion,
@@ -145,6 +153,7 @@ class _GhostMenuRoute<T> extends PopupRoute<T> {
 
   final List<GhostMenuEntry<T>> entries;
   final Rect? anchor;
+  final bool centerOnAnchor;
   final CapturedThemes themes;
   final bool blurEnabled;
   final bool reduceMotion;
@@ -195,8 +204,11 @@ class _GhostMenuRoute<T> extends PopupRoute<T> {
           final displayedHeight = height * scale;
           final left = anchor == null
               ? safe.left + (availableWidth - displayedWidth) / 2
-              : (anchor!.right - displayedWidth).clamp(
-                  safe.left, safe.left + availableWidth - displayedWidth);
+              : (centerOnAnchor
+                      ? anchor!.center.dx - displayedWidth / 2
+                      : anchor!.right - displayedWidth)
+                  .clamp(
+                      safe.left, safe.left + availableWidth - displayedWidth);
           final below = (anchor?.bottom ?? safe.top) + 6;
           final desiredTop = anchor == null
               ? safe.top + (availableHeight - displayedHeight) / 2
@@ -336,8 +348,11 @@ class _GhostMenuRowState<T> extends State<_GhostMenuRow<T>> {
   Widget build(BuildContext context) {
     final entry = widget.entry;
     final colors = Theme.of(context).colorScheme;
+    final highlightedSelection = entry.selected && entry.highlightSelected;
     final foreground = entry.enabled
-        ? colors.onSurface
+        ? highlightedSelection
+            ? colors.primary
+            : colors.onSurface
         : colors.onSurface.withValues(alpha: .38);
     final accent = entry.enabled
         ? entry.iconColor ?? colors.primary
@@ -366,17 +381,28 @@ class _GhostMenuRowState<T> extends State<_GhostMenuRow<T>> {
             color: colors.primary.withValues(
                 alpha: !entry.enabled
                     ? 0
-                    : pressed
-                        ? .18
-                        : hovered
-                            ? .12
-                            : entry.selected && entry.highlightSelected
-                                ? .22
+                    : highlightedSelection
+                        ? pressed
+                            ? .38
+                            : .30
+                        : pressed
+                            ? .18
+                            : hovered
+                                ? .12
                                 : focused
                                     ? .07
                                     : 0),
-            border: entry.selected && entry.highlightSelected
-                ? Border.all(color: colors.primary.withValues(alpha: .48))
+            border: highlightedSelection
+                ? Border.all(color: colors.primary.withValues(alpha: .78))
+                : null,
+            boxShadow: highlightedSelection
+                ? [
+                    BoxShadow(
+                      color: colors.primary.withValues(alpha: .14),
+                      blurRadius: 12,
+                      spreadRadius: -4,
+                    ),
+                  ]
                 : null,
           ),
           child: Row(children: [
@@ -402,7 +428,7 @@ class _GhostMenuRowState<T> extends State<_GhostMenuRow<T>> {
                       style: TextStyle(
                           color: foreground,
                           fontSize: 13,
-                          fontWeight: entry.selected && entry.highlightSelected
+                          fontWeight: highlightedSelection
                               ? FontWeight.w700
                               : FontWeight.w500,
                           height: 1.2)),

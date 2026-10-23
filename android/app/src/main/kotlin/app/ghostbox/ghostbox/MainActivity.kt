@@ -48,6 +48,15 @@ class MainActivity : FlutterActivity() {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
+                    "deviceInstallationId" -> {
+                        try {
+                            result.success(DeviceIdentityStore.installationId(this))
+                        } catch (_: Exception) {
+                            // Do not include the identifier or storage contents
+                            // in platform errors or diagnostic logs.
+                            result.error("identity_unavailable", "Unable to load the saved device identity", null)
+                        }
+                    }
                     "startVpn" -> {
                         if (pendingVpnResult != null) {
                             result.error("busy", "VPN permission request is already open", null)

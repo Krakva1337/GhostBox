@@ -37,12 +37,14 @@ import '../../services/dns_ad_blocklist.dart';
 import '../../services/github_updater.dart';
 import '../../services/log_store.dart';
 import '../../services/traffic_stats.dart';
+import '../../services/speed_test_activity.dart';
 import '../../theme/theme_settings_panel.dart';
 import '../../theme/theme_controller.dart';
 import '../../theme/brand_icon.dart';
 import '../../theme/glass_switch.dart';
 import '../../widgets/ghost_notice.dart';
 import '../../widgets/ghost_menu.dart';
+import '../../widgets/smooth_scroll_controller.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -56,9 +58,21 @@ class _HomePageState extends State<HomePage>
       ('AD AE AF AG AI AL AM AO AQ AR AS AT AU AW AX AZ BA BB BD BE BF BG BH BI BJ BL BM BN BO BQ BR BS BT BV BW BY BZ CA CC CD CF CG CH CI CK CL CM CN CO CR CU CV CW CX CY CZ DE DJ DK DM DO DZ EC EE EG EH ER ES ET FI FJ FK FM FO FR GA GB GD GE GF GG GH GI GL GM GN GP GQ GR GS GT GU GW GY HK HM HN HR HT HU ID IE IL IM IN IO IQ IR IS IT JE JM JO JP KE KG KH KI KM KN KP KR KW KY KZ LA LB LC LI LK LR LS LT LU LV LY MA MC MD ME MF MG MH MK ML MM MN MO MP MQ MR MS MT MU MV MW MX MY MZ NA NC NE NF NG NI NL NO NP NR NU NZ OM PA PE PF PG PH PK PL PM PN PR PS PT PW PY QA RE RO RS RU RW SA SB SC SD SE SG SH SI SJ SK SL SM SN SO SR SS ST SV SX SY SZ TC TD TF TG TH TJ TK TL TM TN TO TR TT TV TW TZ UA UG UM US UY UZ VA VC VE VG VI VN VU WF WS YE YT ZA ZM ZW')
           .split(' ')
           .toSet();
-  final homeScroll = ScrollController();
-  final settingsScroll = ScrollController();
-  final routingScroll = ScrollController();
+  late final homeScroll = SmoothScrollController(
+      enabled: () =>
+          !reduceAnimations &&
+          !optimizedMode &&
+          !(MediaQuery.maybeOf(context)?.disableAnimations ?? false));
+  late final settingsScroll = SmoothScrollController(
+      enabled: () =>
+          !reduceAnimations &&
+          !optimizedMode &&
+          !(MediaQuery.maybeOf(context)?.disableAnimations ?? false));
+  late final routingScroll = SmoothScrollController(
+      enabled: () =>
+          !reduceAnimations &&
+          !optimizedMode &&
+          !(MediaQuery.maybeOf(context)?.disableAnimations ?? false));
   final routeListController = TextEditingController();
   final routeDomainController = TextEditingController();
   bool refreshingSubscriptions = false;
@@ -205,6 +219,41 @@ class _HomePageState extends State<HomePage>
 
   ServerProfile? get selected =>
       profiles.where((p) => p.id == selectedId).firstOrNull;
+  Set<String> get _groupedProfileIds => subscriptions
+      .expand((subscription) =>
+          (subscription['ids'] as List? ?? const <String>[]).cast<String>())
+      .toSet();
+  bool get _hasExpandedServerLists {
+    final groupedIds = _groupedProfileIds;
+    final hasVisibleLocalProfiles = !hideProfiles &&
+        profiles.any((profile) => !groupedIds.contains(profile.id));
+    final hasExpandedSubscriptionProfiles = subscriptions.any((subscription) {
+      final url = subscription['url'] as String?;
+      if (url == null || collapsedSubscriptions.contains(url)) return false;
+      final ids = (subscription['ids'] as List? ?? const <String>[])
+          .cast<String>()
+          .toSet();
+      return profiles.any((profile) => ids.contains(profile.id));
+    });
+    return hasVisibleLocalProfiles || hasExpandedSubscriptionProfiles;
+  }
+
+  void _toggleAllServerLists() {
+    final collapse = _hasExpandedServerLists;
+    setState(() {
+      hideProfiles = collapse;
+      for (final subscription in subscriptions) {
+        final url = subscription['url'] as String?;
+        if (url == null) continue;
+        if (collapse) {
+          collapsedSubscriptions.add(url);
+        } else {
+          collapsedSubscriptions.remove(url);
+        }
+      }
+    });
+  }
+
   String _text(String ru, String en) => english ? en : ru;
   String _localized(String value) => _messageText(value);
 
@@ -245,7 +294,10 @@ class _HomePageState extends State<HomePage>
     'Основные': 'Basic',
     'Для профи': 'Advanced',
     'Контакты': 'Contacts',
+    'Пинг': 'Ping',
+    'Расширенные настройки': 'Advanced settings',
     'О релизе': 'About this release',
+    'О приложении': 'About app',
     'О GhostBox': 'About GhostBox',
     'Информация о сборке и устройстве': 'Build and device information',
     'Сведения о сборке, ядрах и устройстве':
@@ -3096,59 +3148,82 @@ foreach ($route in $routes) {
     );
     CoreProcessBackend? probeBackend;
     var httpPort = 0;
+    final activity = SpeedTestActivity();
     try {
-      if (useAndroidVpn) {
-        // Android routes requests through its native VpnService; do not use a
-        // loopback proxy port that belongs to the recreated Activity process.
-        const timeout = Duration(seconds: 35);
-        // Android routes the app's sockets through the active VpnService. A
-        // loopback proxy port belongs to the Activity process and may be gone
-        // after the Activity was recreated (for example, after changing the
-        // launcher icon), while the native VPN and its TUN remain alive.
-        await _runSpeedMeasurements(null, timeout, progress, profile.id);
-      } else {
-        final proxyReservation =
-            await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
-        final proxyPort = proxyReservation.port;
-        await proxyReservation.close();
-        final httpReservation =
-            await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
-        httpPort = httpReservation.port;
-        await httpReservation.close();
+      await activity.run(() async {
+        if (useAndroidVpn) {
+          // Android routes requests through its native VpnService; do not use a
+          // loopback proxy port that belongs to the recreated Activity process.
+          const timeout = Duration(seconds: 35);
+          // Android routes the app's sockets through the active VpnService. A
+          // loopback proxy port belongs to the Activity process and may be gone
+          // after the Activity was recreated (for example, after changing the
+          // launcher icon), while the native VPN and its TUN remain alive.
+          await _runSpeedMeasurements(
+              null, timeout, progress, profile.id, activity);
+        } else {
+          final proxyReservation =
+              await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+          final proxyPort = proxyReservation.port;
+          await proxyReservation.close();
+          final httpReservation =
+              await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+          httpPort = httpReservation.port;
+          await httpReservation.close();
+          activity.throwIfInactive();
 
-        final coreName = coreSettings.core == 'xray' ? 'xray' : 'sing-box';
-        probeBackend = CoreProcessBackend(
-          name: coreName,
-          executable: process?.executable ?? coreExecutable(coreName, 'vendor'),
-          configPath: 'vendor/config/$coreName-speed-test.json',
-        )..settings = coreSettings.copyWith(
-            localPort: proxyPort,
-            routing: 'proxy',
-            connectionMode: 'proxy',
-            dnsThroughProxy: true,
+          final coreName = coreSettings.core == 'xray' ? 'xray' : 'sing-box';
+          probeBackend = CoreProcessBackend(
+            name: coreName,
+            executable:
+                process?.executable ?? coreExecutable(coreName, 'vendor'),
+            configPath: 'vendor/config/$coreName-speed-test.json',
+          )..settings = coreSettings.copyWith(
+              localPort: proxyPort,
+              routing: 'proxy',
+              connectionMode: 'proxy',
+              dnsThroughProxy: true,
+            );
+          final probeProfile = ServerProfile(
+            id: profile.id,
+            name: profile.name,
+            protocol: profile.protocol,
+            address: profile.address,
+            port: profile.port,
+            uuid: profile.uuid,
+            network: profile.network,
+            security: profile.security,
+            raw: {...profile.raw, '_ghostboxHttpProbePort': httpPort},
           );
-        final probeProfile = ServerProfile(
-          id: profile.id,
-          name: profile.name,
-          protocol: profile.protocol,
-          address: profile.address,
-          port: profile.port,
-          uuid: profile.uuid,
-          network: profile.network,
-          security: profile.security,
-          raw: {...profile.raw, '_ghostboxHttpProbePort': httpPort},
-        );
-        await probeBackend.connect(jsonEncode(probeProfile.toJson()));
-        const timeout = Duration(seconds: 35);
-        await _waitForProxyListener(httpPort, timeout);
-        await _runSpeedMeasurements(httpPort, timeout, progress, profile.id);
-      }
+          final testBackend = probeBackend!;
+          final startup =
+              testBackend.connect(jsonEncode(probeProfile.toJson()));
+          // A timed-out startup may still finish asynchronously. Close its core
+          // again if it starts after the test has already failed.
+          unawaited(startup.then<void>((_) async {
+            if (activity.timedOut) await testBackend.disconnect();
+          }).catchError((Object error) {
+            _recordAppLog('Завершение тестового маршрута: $error');
+          }));
+          await startup;
+          activity.recordActivity();
+          const timeout = Duration(seconds: 35);
+          await _waitForProxyListener(httpPort, timeout, activity: activity);
+          activity.recordActivity();
+          await _runSpeedMeasurements(
+              httpPort, timeout, progress, profile.id, activity);
+        }
+      });
     } on Object catch (error) {
       progress.value = progress.value.copyWith(
         stage: _SpeedTestStage.failed,
-        error: '$error',
+        error: activity.timedOut
+            ? _text('Нет передачи данных в течение 5 секунд. Тест остановлен.',
+                'No data transferred for 5 seconds. The test was stopped.')
+            : '$error',
       );
     } finally {
+      activity.dispose();
       try {
         await probeBackend?.disconnect();
       } on Object catch (error) {
@@ -3165,9 +3240,12 @@ foreach ($route in $routes) {
     Duration timeout,
     ValueNotifier<_SpeedTestProgress> progress,
     String profileId,
+    SpeedTestActivity activity,
   ) async {
+    activity.throwIfInactive();
     progress.value = progress.value.copyWith(stage: _SpeedTestStage.pinging);
-    final ping = await _measureSpeedTestPing(localPort, timeout);
+    final ping = await _measureSpeedTestPing(localPort, timeout, activity);
+    activity.throwIfInactive();
     progress.value = progress.value.copyWith(
       stage: _SpeedTestStage.downloading,
       pingMs: ping,
@@ -3175,6 +3253,7 @@ foreach ($route in $routes) {
     final downloadBytesPerSecond = await _downloadThroughHttpProxy(
       localPort,
       timeout,
+      activity: activity,
       onProgress: (received, total, liveMbps) {
         progress.value = progress.value.copyWith(
           transferredBytes: received,
@@ -3183,6 +3262,7 @@ foreach ($route in $routes) {
         );
       },
     );
+    activity.throwIfInactive();
     if (downloadBytesPerSecond <= 0) {
       throw const HttpException('Cloudflare не передал данные');
     }
@@ -3197,6 +3277,7 @@ foreach ($route in $routes) {
     final uploadBytesPerSecond = await _uploadThroughHttpProxy(
       localPort,
       timeout,
+      activity: activity,
       onProgress: (sent, total, liveMbps) {
         progress.value = progress.value.copyWith(
           transferredBytes: sent,
@@ -3205,6 +3286,7 @@ foreach ($route in $routes) {
         );
       },
     );
+    activity.throwIfInactive();
     if (uploadBytesPerSecond <= 0) {
       throw const HttpException('Cloudflare не принял данные');
     }
@@ -3232,6 +3314,7 @@ foreach ($route in $routes) {
   Future<int> _downloadThroughHttpProxy(
     int? localPort,
     Duration timeout, {
+    required SpeedTestActivity activity,
     required void Function(int received, int total, double liveMbps) onProgress,
   }) async {
     // Cloudflare's download endpoint returns a fixed-size payload, so this
@@ -3248,16 +3331,21 @@ foreach ($route in $routes) {
       client.findProxy = (_) => 'PROXY 127.0.0.1:$localPort';
     }
     final watch = Stopwatch()..start();
+    activity.attachClient(client);
     try {
       final request = await client.getUrl(uri).timeout(timeout);
+      activity.throwIfInactive();
       request.headers.set(HttpHeaders.userAgentHeader, AppVersion.userAgent);
       request.headers.set(HttpHeaders.connectionHeader, 'close');
       final response = await request.close().timeout(timeout);
+      activity.recordActivity();
       if (response.statusCode < 200 || response.statusCode >= 300) {
         throw HttpException('HTTP ${response.statusCode}', uri: uri);
       }
       var received = 0;
       await for (final chunk in response.timeout(timeout)) {
+        if (chunk.isEmpty) continue;
+        activity.recordActivity();
         received += chunk.length;
         final elapsedMicros = math.max(1, watch.elapsedMicroseconds);
         onProgress(
@@ -3271,6 +3359,7 @@ foreach ($route in $routes) {
       if (watch.elapsedMicroseconds <= 0) return 0;
       return (received / (watch.elapsedMicroseconds / 1000000)).round();
     } finally {
+      activity.detachClient(client);
       client.close(force: true);
     }
   }
@@ -3278,11 +3367,11 @@ foreach ($route in $routes) {
   Future<int> _uploadThroughHttpProxy(
     int? localPort,
     Duration timeout, {
+    required SpeedTestActivity activity,
     required void Function(int sent, int total, double liveMbps) onProgress,
   }) async {
-    const chunkBytes = 1000000;
-    const chunks = 4;
-    const totalBytes = chunkBytes * chunks;
+    const chunkBytes = 64 * 1024;
+    const totalBytes = 4000000;
     final uri = Uri.https('speed.cloudflare.com', '/__up', {
       'measId': '${DateTime.now().millisecondsSinceEpoch}',
     });
@@ -3295,15 +3384,21 @@ foreach ($route in $routes) {
     final random = math.Random.secure();
     final chunk = List<int>.generate(chunkBytes, (_) => random.nextInt(256));
     final watch = Stopwatch()..start();
+    activity.attachClient(client);
     try {
       final request = await client.postUrl(uri).timeout(timeout);
+      activity.throwIfInactive();
       request.headers.set(HttpHeaders.userAgentHeader, AppVersion.userAgent);
       request.headers.set(HttpHeaders.connectionHeader, 'close');
       request.contentLength = totalBytes;
       var sent = 0;
-      for (var index = 0; index < chunks; index++) {
-        await request.addStream(Stream<List<int>>.value(chunk));
-        sent += chunkBytes;
+      while (sent < totalBytes) {
+        activity.throwIfInactive();
+        final size = math.min(chunkBytes, totalBytes - sent);
+        request.add(size == chunkBytes ? chunk : chunk.sublist(0, size));
+        await request.flush();
+        activity.recordActivity();
+        sent += size;
         final elapsedMicros = math.max(1, watch.elapsedMicroseconds);
         onProgress(
           sent,
@@ -3312,19 +3407,25 @@ foreach ($route in $routes) {
         );
       }
       final response = await request.close().timeout(timeout);
+      activity.recordActivity();
       if (response.statusCode < 200 || response.statusCode >= 300) {
         throw HttpException('HTTP ${response.statusCode}', uri: uri);
       }
-      await response.drain<void>().timeout(timeout);
+      await for (final chunk in response.timeout(timeout)) {
+        if (chunk.isNotEmpty) activity.recordActivity();
+      }
+      activity.throwIfInactive();
       watch.stop();
       if (watch.elapsedMicroseconds <= 0) return 0;
       return (totalBytes / (watch.elapsedMicroseconds / 1000000)).round();
     } finally {
+      activity.detachClient(client);
       client.close(force: true);
     }
   }
 
-  Future<int> _measureSpeedTestPing(int? localPort, Duration timeout) async {
+  Future<int> _measureSpeedTestPing(
+      int? localPort, Duration timeout, SpeedTestActivity activity) async {
     const probes = 3;
     final samples = <int>[];
     final client = HttpClient()
@@ -3333,6 +3434,7 @@ foreach ($route in $routes) {
     if (localPort != null) {
       client.findProxy = (_) => 'PROXY 127.0.0.1:$localPort';
     }
+    activity.attachClient(client);
     try {
       for (var index = 0; index < probes; index++) {
         final uri = Uri.https('speed.cloudflare.com', '/__down', {
@@ -3341,17 +3443,21 @@ foreach ($route in $routes) {
         });
         final watch = Stopwatch()..start();
         final request = await client.getUrl(uri).timeout(timeout);
+        activity.throwIfInactive();
         request.headers.set(HttpHeaders.userAgentHeader, AppVersion.userAgent);
         request.headers.set(HttpHeaders.connectionHeader, 'close');
         final response = await request.close().timeout(timeout);
+        activity.recordActivity();
         if (response.statusCode < 200 || response.statusCode >= 300) {
           throw HttpException('HTTP ${response.statusCode}', uri: uri);
         }
         await response.drain<void>().timeout(timeout);
+        activity.recordActivity();
         watch.stop();
         samples.add(_elapsedMilliseconds(watch));
       }
     } finally {
+      activity.detachClient(client);
       client.close(force: true);
     }
     samples.sort();
@@ -3453,10 +3559,12 @@ foreach ($route in $routes) {
         caseSensitive: false,
       ).hasMatch(name);
 
-  Future<void> _waitForProxyListener(int port, Duration timeout) async {
+  Future<void> _waitForProxyListener(int port, Duration timeout,
+      {SpeedTestActivity? activity}) async {
     final deadline = DateTime.now().add(timeout);
     Object? lastError;
     while (DateTime.now().isBefore(deadline)) {
+      activity?.throwIfInactive();
       try {
         final socket = await Socket.connect(
           InternetAddress.loopbackIPv4,
@@ -5017,55 +5125,63 @@ foreach ($route in $routes) {
                         layoutBuilder: _currentChildSwitcherLayout,
                         transitionBuilder: _fadeSlideSwap,
                         child: routeListOpen || settings || routingTab
-                            ? Text(
-                                key: ValueKey(routeListOpen
-                                    ? 'header-domains'
-                                    : settings
-                                        ? 'header-settings-$settingsSubpage'
-                                        : 'header-routing'),
-                                routeListOpen
-                                    ? _localized('Список доменов')
-                                    : settings
-                                        ? switch (settingsSubpage) {
-                                            'contacts' =>
-                                              _localized('Контакты'),
-                                            'release' => _localized('О релизе'),
-                                            'about' =>
-                                              _localized('О приложении'),
-                                            'appearance' =>
-                                              _localized('Персонализация'),
-                                            'group_connection' =>
-                                              _localized('Соединение'),
-                                            'group_routing' =>
-                                              _localized('Маршрут и DNS'),
-                                            'group_protection' =>
-                                              _localized('Защита'),
-                                            'group_diagnostics' =>
-                                              _localized('Диагностика'),
-                                            'group_ping' => _localized('Пинг'),
-                                            'group_statistics' =>
-                                              _localized('Статистика'),
-                                            'group_debug' =>
-                                              _localized('Дебаг'),
-                                            'group_advanced' => _localized(
-                                                'Расширенные настройки'),
-                                            'group_app' =>
-                                              _localized('Приложение'),
-                                            'group_ghostbox' =>
-                                              _localized('GhostBox'),
-                                            'group_all' =>
-                                              _localized('Все настройки'),
-                                            _ => _localized('Настройки'),
-                                          }
-                                        : _localized('Маршрут'),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                textAlign: TextAlign.center,
-                                style: const TextStyle(
-                                    fontSize: 17,
-                                    fontWeight: FontWeight.w700,
-                                    letterSpacing: .2),
-                              )
+                            ? _TextFadeSlide(
+                                key: const ValueKey('header-title'),
+                                duration:
+                                    _motion(const Duration(milliseconds: 320)),
+                                reduceMotion: reduceAnimations,
+                                alignment: Alignment.center,
+                                child: Text(
+                                  key: ValueKey(routeListOpen
+                                      ? 'header-domains'
+                                      : settings
+                                          ? 'header-settings-$settingsSubpage'
+                                          : 'header-routing'),
+                                  routeListOpen
+                                      ? _localized('Список доменов')
+                                      : settings
+                                          ? switch (settingsSubpage) {
+                                              'contacts' =>
+                                                _localized('Контакты'),
+                                              'release' =>
+                                                _localized('О релизе'),
+                                              'about' =>
+                                                _localized('О приложении'),
+                                              'appearance' =>
+                                                _localized('Персонализация'),
+                                              'group_connection' =>
+                                                _localized('Соединение'),
+                                              'group_routing' =>
+                                                _localized('Маршрут и DNS'),
+                                              'group_protection' =>
+                                                _localized('Защита'),
+                                              'group_diagnostics' =>
+                                                _localized('Диагностика'),
+                                              'group_ping' =>
+                                                _localized('Пинг'),
+                                              'group_statistics' =>
+                                                _localized('Статистика'),
+                                              'group_debug' =>
+                                                _localized('Дебаг'),
+                                              'group_advanced' => _localized(
+                                                  'Расширенные настройки'),
+                                              'group_app' =>
+                                                _localized('Приложение'),
+                                              'group_ghostbox' =>
+                                                _localized('GhostBox'),
+                                              'group_all' =>
+                                                _localized('Все настройки'),
+                                              _ => _localized('Настройки'),
+                                            }
+                                          : _localized('Маршрут'),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  textAlign: TextAlign.center,
+                                  style: const TextStyle(
+                                      fontSize: 17,
+                                      fontWeight: FontWeight.w700,
+                                      letterSpacing: .2),
+                                ))
                             : FittedBox(
                                 key: ValueKey('header-brand-$wideLayout'),
                                 fit: BoxFit.scaleDown,
@@ -5275,20 +5391,24 @@ foreach ($route in $routes) {
           enabled: enabled,
           iconColor: iconColor);
 
-  void _openTab(int index) => setState(() {
-        routeListOpen = false;
-        settingsSubpage = null;
-        settings = index == 2;
-        routingTab = index == 1;
-      });
+  void _openTab(int index) {
+    setState(() {
+      routeListOpen = false;
+      settingsSubpage = null;
+      settings = index == 2;
+      routingTab = index == 1;
+    });
+  }
 
-  void _openSettingsPage(String page) => setState(() {
-        if (settingsScroll.hasClients) settingsScroll.jumpTo(0);
-        settingsSubpage = page;
-        settings = true;
-        routingTab = false;
-        routeListOpen = false;
-      });
+  void _openSettingsPage(String page) {
+    setState(() {
+      if (settingsScroll.hasClients) settingsScroll.jumpTo(0);
+      settingsSubpage = page;
+      settings = true;
+      routingTab = false;
+      routeListOpen = false;
+    });
+  }
 
   void _openReleaseDetails() => _openSettingsPage('release');
 
@@ -5366,61 +5486,94 @@ foreach ($route in $routes) {
         ),
         if (_showTunPermissionHelp) _tunPermissionHint(),
         SizedBox(height: 8),
-        Row(children: [
-          Tooltip(
-              message: _messageText(pingSamples.isEmpty
-                  ? 'Проверка ${coreSettings.pingMode == 'icmp' ? 'ICMP адреса' : coreSettings.pingMode == 'tcp' ? 'TCP порта' : 'HTTP GET через прокси'} выбранного сервера'
-                  : '${coreSettings.pingCount} проб · ${pingSamples.first}–${pingSamples.last} мс · медиана $pingMs мс'),
-              child: TextButton.icon(
-                  onPressed: _checkConnection,
-                  icon: checkingPing ||
-                          (selectedId != null &&
-                              _checkingProfileIds.contains(selectedId))
-                      ? SizedBox(
-                          width: 15,
-                          height: 15,
-                          child: CircularProgressIndicator(
-                              strokeWidth: 2, color: _accent))
-                      : _animatedIconSwap(
-                          pingMs == null
-                              ? Icons.speed_rounded
-                              : Icons.signal_cellular_alt_rounded,
-                          state: pingMs == null ? 'idle' : 'ready',
-                          size: 17),
-                  label: AnimatedSwitcher(
-                      duration: Duration(milliseconds: 260),
-                      child: Text(_localized(_pingLabel()),
-                          key: ValueKey(_pingLabel()))),
-                  style: TextButton.styleFrom(
-                      foregroundColor: _latencyColor(pingMs),
-                      textStyle: TextStyle(fontSize: 12),
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 11, vertical: 8),
-                      backgroundColor: _surface.withValues(alpha: .68),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(15),
-                        side: BorderSide(
-                            color: Colors.white.withValues(alpha: .10)),
-                      )))),
-          Spacer(),
-          if (checkingAll)
-            Text('$pingAllDone/$pingAllTotal',
-                style: TextStyle(color: _muted, fontSize: 11)),
-          TextButton(
-              onPressed: () => setState(() => hideProfiles = !hideProfiles),
-              style: TextButton.styleFrom(
-                  foregroundColor: _muted,
-                  textStyle: TextStyle(fontSize: 12),
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 11, vertical: 8),
-                  backgroundColor: _surface.withValues(alpha: .68),
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(15),
-                      side: BorderSide(
-                          color: Colors.white.withValues(alpha: .10)))),
-              child: Text(_localized(
-                  hideProfiles ? 'Показать серверы' : 'Скрыть серверы')))
-        ]),
+        AnimatedSize(
+          duration: _motion(const Duration(milliseconds: 340)),
+          curve: Curves.easeInOutCubic,
+          alignment: Alignment.topLeft,
+          child: OverflowBar(
+            alignment: MainAxisAlignment.spaceBetween,
+            spacing: 8,
+            overflowAlignment: OverflowBarAlignment.end,
+            overflowSpacing: 4,
+            children: [
+              Tooltip(
+                  message: _messageText(pingSamples.isEmpty
+                      ? 'Проверка ${coreSettings.pingMode == 'icmp' ? 'ICMP адреса' : coreSettings.pingMode == 'tcp' ? 'TCP порта' : 'HTTP GET через прокси'} выбранного сервера'
+                      : '${coreSettings.pingCount} проб · ${pingSamples.first}–${pingSamples.last} мс · медиана $pingMs мс'),
+                  child: TextButton(
+                      onPressed: _checkConnection,
+                      style: TextButton.styleFrom(
+                          foregroundColor: _latencyColor(pingMs),
+                          textStyle: const TextStyle(fontSize: 12),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 11, vertical: 8),
+                          backgroundColor: _surface.withValues(alpha: .68),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(15),
+                            side: BorderSide(
+                                color: Colors.white.withValues(alpha: .10)),
+                          )),
+                      child: Row(mainAxisSize: MainAxisSize.min, children: [
+                        checkingPing ||
+                                (selectedId != null &&
+                                    _checkingProfileIds.contains(selectedId))
+                            ? SizedBox(
+                                width: 15,
+                                height: 15,
+                                child: CircularProgressIndicator(
+                                    strokeWidth: 2, color: _accent))
+                            : _animatedIconSwap(
+                                pingMs == null
+                                    ? Icons.speed_rounded
+                                    : Icons.signal_cellular_alt_rounded,
+                                state: pingMs == null ? 'idle' : 'ready',
+                                size: 17),
+                        const SizedBox(width: 7),
+                        Flexible(
+                          fit: FlexFit.loose,
+                          child: AnimatedSize(
+                            duration:
+                                _motion(const Duration(milliseconds: 340)),
+                            curve: Curves.easeInOutCubic,
+                            alignment: Alignment.centerLeft,
+                            child: _TextFadeSlide(
+                              duration:
+                                  _motion(const Duration(milliseconds: 320)),
+                              reduceMotion: reduceAnimations,
+                              child: Text(
+                                _localized(_pingLabel()),
+                                key: ValueKey(_pingLabel()),
+                                maxLines: 2,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ]))),
+              Row(mainAxisSize: MainAxisSize.min, children: [
+                if (checkingAll) ...[
+                  Text('$pingAllDone/$pingAllTotal',
+                      style: TextStyle(color: _muted, fontSize: 11)),
+                  const SizedBox(width: 6),
+                ],
+                TextButton(
+                    onPressed: _toggleAllServerLists,
+                    style: TextButton.styleFrom(
+                        foregroundColor: _muted,
+                        textStyle: TextStyle(fontSize: 12),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 11, vertical: 8),
+                        backgroundColor: _surface.withValues(alpha: .68),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(15),
+                            side: BorderSide(
+                                color: Colors.white.withValues(alpha: .10)))),
+                    child: Text(_localized(_hasExpandedServerLists
+                        ? 'Скрыть серверы'
+                        : 'Показать серверы'))),
+              ]),
+            ],
+          ),
+        ),
         const SizedBox(height: 12),
         _animatedReconnectBanner(
           visible: pendingReconnect,
@@ -6199,32 +6352,33 @@ foreach ($route in $routes) {
                                     ),
                             ),
                             const SizedBox(height: 7),
-                            AnimatedSwitcher(
-                                duration: const Duration(milliseconds: 200),
-                                reverseDuration:
-                                    const Duration(milliseconds: 150),
-                                transitionBuilder: _fadeSlideSwap,
-                                child: Text(
-                                  key: ValueKey(switchingServer
-                                      ? 'switching'
-                                      : backend.state == VpnState.connected
-                                          ? _connectedLabel()
-                                          : backend.state == VpnState.connecting
-                                              ? 'connecting'
-                                              : 'tap'),
-                                  switchingServer
-                                      ? 'ПЕРЕКЛЮЧАЕМ'
-                                      : backend.state == VpnState.connected
-                                          ? _connectedLabel()
-                                          : backend.state == VpnState.connecting
-                                              ? 'ПОДКЛЮЧАЕМ'
-                                              : 'НАЖМИТЕ',
-                                  style: const TextStyle(
-                                      fontSize: 9,
-                                      color: Colors.white,
-                                      fontWeight: FontWeight.w600,
-                                      letterSpacing: .5),
-                                )),
+                            _TextFadeSlide(
+                              duration:
+                                  _motion(const Duration(milliseconds: 320)),
+                              reduceMotion: reduceAnimations,
+                              alignment: Alignment.center,
+                              child: Text(
+                                key: ValueKey(switchingServer
+                                    ? 'switching'
+                                    : backend.state == VpnState.connected
+                                        ? _connectedLabel()
+                                        : backend.state == VpnState.connecting
+                                            ? 'connecting'
+                                            : 'tap'),
+                                switchingServer
+                                    ? _text('ПЕРЕКЛЮЧАЕМ', 'SWITCHING')
+                                    : backend.state == VpnState.connected
+                                        ? _connectedLabel()
+                                        : backend.state == VpnState.connecting
+                                            ? _text('ПОДКЛЮЧАЕМ', 'CONNECTING')
+                                            : _text('НАЖМИТЕ', 'CONNECT'),
+                                style: const TextStyle(
+                                    fontSize: 9,
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.w600,
+                                    letterSpacing: .5),
+                              ),
+                            ),
                             if (backend.state == VpnState.connected &&
                                 !switchingServer)
                               Text(_uptimeLabel(),
@@ -6241,26 +6395,14 @@ foreach ($route in $routes) {
           ),
         ),
         const SizedBox(height: 8),
-        AnimatedSwitcher(
-            duration: const Duration(milliseconds: 260),
-            switchInCurve: Curves.easeOutCubic,
-            switchOutCurve: Curves.easeInCubic,
-            transitionBuilder: _fadeSlideSwap,
+        _TextFadeSlide(
+            duration: _motion(const Duration(milliseconds: 320)),
+            reduceMotion: reduceAnimations,
+            alignment: Alignment.center,
             child: SizedBox(
-                key: ValueKey(
-                    '${activeProfileId ?? selectedId}:${backend.state}'),
+                key: ValueKey(_serverCaption),
                 width: double.infinity,
-                child: Text(
-                    switchingServer
-                        ? (selected?.name ?? 'Переключение сервера')
-                        : backend.state == VpnState.connected
-                            ? (profiles
-                                    .where((p) => p.id == activeProfileId)
-                                    .firstOrNull
-                                    ?.name ??
-                                selected?.name ??
-                                'Локальный прокси запущен')
-                            : (selected?.name ?? 'Выберите сервер'),
+                child: Text(_serverCaption,
                     textAlign: TextAlign.center,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
@@ -6268,6 +6410,20 @@ foreach ($route in $routes) {
                         fontSize: 15,
                         fontWeight: FontWeight.w600))))
       ]);
+
+  String get _serverCaption {
+    if (switchingServer) {
+      return selected?.name ??
+          _text('Переключение сервера', 'Switching server');
+    }
+    if (backend.state == VpnState.connected) {
+      return profiles.where((p) => p.id == activeProfileId).firstOrNull?.name ??
+          selected?.name ??
+          _text('Локальный прокси запущен', 'Local proxy ready');
+    }
+    return selected?.name ?? _text('Выберите сервер', 'Choose a server');
+  }
+
   String _uptimeLabel() {
     final d = backend is AndroidVpnBackend
         ? (backend as AndroidVpnBackend).uptime
@@ -6375,25 +6531,40 @@ foreach ($route in $routes) {
 
   Widget _connectionDetails() =>
       Column(mainAxisSize: MainAxisSize.min, children: [
-        Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-          _tinyStat('ЯДРО', process?.name ?? coreSettings.core,
-              choices: Platform.isIOS
-                  ? const [('sing-box', 'sing-box')]
-                  : const [('xray', 'Xray'), ('sing-box', 'sing-box')],
-              onSelected: (value) =>
-                  _selectCore(value == 'xray' ? 'Xray' : value)),
-          const SizedBox(width: 8),
-          _tinyStat('РЕЖИМ', _connectionModeLabel(coreSettings.connectionMode),
-              choices: Platform.isAndroid || Platform.isIOS
-                  ? [('tun', Platform.isIOS ? 'iOS VPN' : 'Android VPN')]
-                  : const [
-                      ('proxy', 'Proxy'),
-                      ('system', 'System proxy'),
-                      ('tun', 'TUN'),
-                      ('mixed', 'Mixed'),
-                    ],
-              onSelected: _setConnectionMode),
-        ]),
+        Builder(
+            builder: (controlsContext) => Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    _tinyStat('ЯДРО', process?.name ?? coreSettings.core,
+                        menuAnchorContext: controlsContext,
+                        choices: Platform.isIOS
+                            ? const [('sing-box', 'sing-box')]
+                            : const [
+                                ('xray', 'Xray'),
+                                ('sing-box', 'sing-box')
+                              ],
+                        onSelected: (value) =>
+                            _selectCore(value == 'xray' ? 'Xray' : value)),
+                    const SizedBox(width: 8),
+                    _tinyStat('РЕЖИМ',
+                        _connectionModeLabel(coreSettings.connectionMode),
+                        menuAnchorContext: controlsContext,
+                        choices: Platform.isAndroid || Platform.isIOS
+                            ? [
+                                (
+                                  'tun',
+                                  Platform.isIOS ? 'iOS VPN' : 'Android VPN'
+                                )
+                              ]
+                            : const [
+                                ('proxy', 'Proxy'),
+                                ('system', 'System proxy'),
+                                ('tun', 'TUN'),
+                                ('mixed', 'Mixed'),
+                              ],
+                        onSelected: _setConnectionMode),
+                  ],
+                )),
         if (coreSettings.showRamUsage) ...[
           const SizedBox(height: 7),
           AnimatedSwitcher(
@@ -6479,8 +6650,11 @@ foreach ($route in $routes) {
       };
   Widget _tinyStat(String label, String value,
           {required List<(String, String)> choices,
-          required ValueChanged<String> onSelected}) =>
+          required ValueChanged<String> onSelected,
+          BuildContext? menuAnchorContext}) =>
       GhostMenuButton<String>(
+          anchorContext: menuAnchorContext,
+          centerOnAnchor: menuAnchorContext != null,
           tooltip: _text('Изменить $label', 'Edit $label'),
           onSelected: onSelected,
           entries: [
@@ -6524,9 +6698,7 @@ foreach ($route in $routes) {
             textAlign: TextAlign.center, style: TextStyle(color: _muted)),
       ]));
   List<Widget> _profileSections() {
-    final groupedIds = subscriptions
-        .expand((s) => (s['ids'] as List? ?? []).cast<String>())
-        .toSet();
+    final groupedIds = _groupedProfileIds;
     final widgets = <Widget>[];
     final local = profiles.where((p) => !groupedIds.contains(p.id)).toList();
     if (local.isNotEmpty) {
@@ -6558,7 +6730,7 @@ foreach ($route in $routes) {
               child: Container(
                   margin: EdgeInsets.only(bottom: 12),
                   decoration: BoxDecoration(
-                      color: _surface,
+                      color: _surface.withValues(alpha: .76),
                       borderRadius: BorderRadius.circular(22),
                       border: Border.all(color: Colors.white.withOpacity(.16)),
                       boxShadow: [
@@ -6615,19 +6787,19 @@ foreach ($route in $routes) {
                                             color: _muted, fontSize: 10)),
                                 ]),
                               ])),
-                          Text('${entries.length}',
-                              style: TextStyle(color: _muted, fontSize: 11)),
                           IconButton(
                               tooltip: collapsed
                                   ? 'Показать серверы подписки'
                                   : 'Скрыть серверы подписки',
-                              onPressed: () => setState(() {
-                                    if (collapsed) {
-                                      collapsedSubscriptions.remove(url);
-                                    } else {
-                                      collapsedSubscriptions.add(url);
-                                    }
-                                  }),
+                              onPressed: () {
+                                setState(() {
+                                  if (collapsed) {
+                                    collapsedSubscriptions.remove(url);
+                                  } else {
+                                    collapsedSubscriptions.add(url);
+                                  }
+                                });
+                              },
                               icon: AnimatedRotation(
                                   turns: collapsed ? .5 : 0,
                                   duration: const Duration(milliseconds: 220),
@@ -6645,10 +6817,11 @@ foreach ($route in $routes) {
                         curve: Curves.easeOutCubic,
                         alignment: Alignment.topCenter,
                         child: _subscriptionInfo(sub,
+                            serverCount: entries.length,
                             collapsed:
                                 collapsedSubscriptionInfo.contains(url))),
                     _fadingProfileGroup(
-                        visible: !hideProfiles && !collapsed,
+                        visible: !collapsed,
                         child: Column(
                           children: [
                             _AnimatedProfileList(
@@ -6791,7 +6964,9 @@ foreach ($route in $routes) {
   }
 
   Widget _subscriptionInfo(Map<String, dynamic> sub,
-      {required bool collapsed}) {
+      {required int serverCount, required bool collapsed}) {
+    final serverCountLabel =
+        _text('Серверов: $serverCount', 'Servers: $serverCount');
     final raw = sub['metadata'];
     final metadata = SubscriptionMetadata.fromJson(
         raw is Map ? Map<String, dynamic>.from(raw) : {});
@@ -6855,27 +7030,43 @@ foreach ($route in $routes) {
                       borderRadius: BorderRadius.circular(17),
                       border: Border.all(
                           color: Colors.white.withValues(alpha: .11))),
-                  child: Row(children: [
-                    Icon(Icons.data_usage_rounded, color: _accent, size: 15),
-                    const SizedBox(width: 7),
-                    Expanded(
-                        child: Text(summary,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                                fontSize: 11, fontWeight: FontWeight.w600))),
-                    if (expiryText != null) ...[
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(
+                        child: Wrap(
+                          spacing: 12,
+                          runSpacing: 8,
+                          crossAxisAlignment: WrapCrossAlignment.center,
+                          children: [
+                            Text.rich(
+                              TextSpan(children: [
+                                WidgetSpan(
+                                    alignment: PlaceholderAlignment.middle,
+                                    child: Icon(Icons.data_usage_rounded,
+                                        color: _accent, size: 15)),
+                                TextSpan(text: '  $summary'),
+                              ]),
+                              maxLines: 2,
+                              style: const TextStyle(
+                                  fontSize: 11, fontWeight: FontWeight.w600),
+                            ),
+                            if (expiryText != null)
+                              Text(expiryText,
+                                  maxLines: 2,
+                                  style: TextStyle(
+                                      fontSize: 10,
+                                      color:
+                                          expired ? Colors.redAccent : _muted)),
+                            Text(serverCountLabel,
+                                style: TextStyle(color: _muted, fontSize: 10)),
+                          ],
+                        ),
+                      ),
                       const SizedBox(width: 8),
-                      Text(expiryText,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                              fontSize: 10,
-                              color: expired ? Colors.redAccent : _muted)),
+                      Icon(Icons.expand_more_rounded, color: _muted, size: 20),
                     ],
-                    const SizedBox(width: 5),
-                    Icon(Icons.expand_more_rounded, color: _muted, size: 18),
-                  ]))));
+                  ))));
     }
     return Padding(
         padding: EdgeInsets.fromLTRB(14, 0, 14, 11),
@@ -6888,6 +7079,27 @@ foreach ($route in $routes) {
                 border: Border.all(color: Colors.white.withOpacity(.11))),
             child:
                 Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Row(children: [
+                Icon(Icons.layers_rounded, color: _accent, size: 15),
+                const SizedBox(width: 7),
+                Text(serverCountLabel,
+                    style: TextStyle(
+                        color: _muted,
+                        fontSize: 10,
+                        fontWeight: FontWeight.w600)),
+                const Spacer(),
+                IconButton(
+                    tooltip: _localized('Свернуть детали'),
+                    visualDensity: VisualDensity.compact,
+                    padding: EdgeInsets.zero,
+                    constraints:
+                        const BoxConstraints.tightFor(width: 44, height: 44),
+                    onPressed: () => setState(() =>
+                        collapsedSubscriptionInfo.add(sub['url'] as String)),
+                    icon: Icon(Icons.expand_less_rounded,
+                        size: 19, color: _muted)),
+              ]),
+              const SizedBox(height: 9),
               if (!hasInfo)
                 Text(
                     _text('Провайдер не передал данные о трафике и сроке',
@@ -6919,16 +7131,6 @@ foreach ($route in $routes) {
                     const SizedBox(width: 6),
                     _subscriptionProviderLinks(metadata),
                   ],
-                  IconButton(
-                      tooltip: _localized('Свернуть детали'),
-                      visualDensity: VisualDensity.compact,
-                      padding: EdgeInsets.zero,
-                      constraints:
-                          const BoxConstraints.tightFor(width: 30, height: 30),
-                      onPressed: () => setState(() =>
-                          collapsedSubscriptionInfo.add(sub['url'] as String)),
-                      icon: Icon(Icons.expand_less_rounded,
-                          size: 19, color: _muted)),
                 ]),
                 if (progress != null) ...[
                   SizedBox(height: 9),
@@ -7152,9 +7354,23 @@ foreach ($route in $routes) {
                           selectedConfig = value;
                           json = configText();
                         }),
-                        child: Padding(
+                        child: Container(
                           padding: const EdgeInsets.symmetric(
                               horizontal: 12, vertical: 12),
+                          decoration: BoxDecoration(
+                            color: _accent.withValues(alpha: .10),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(
+                                color: _accent.withValues(alpha: .42)),
+                            gradient: LinearGradient(
+                              begin: Alignment.centerLeft,
+                              end: Alignment.centerRight,
+                              colors: [
+                                _accent.withValues(alpha: .12),
+                                _accent.withValues(alpha: .045),
+                              ],
+                            ),
+                          ),
                           child: Row(children: [
                             Expanded(
                                 child: Text(selectedConfig,
@@ -7274,58 +7490,48 @@ foreach ($route in $routes) {
             padding: EdgeInsets.symmetric(vertical: 1),
             child: AnimatedContainer(
               duration: _motion(const Duration(milliseconds: 380)),
-              curve: Curves.easeInOutCubicEmphasized,
-              margin: EdgeInsets.symmetric(
-                horizontal: selectedServer ? 5 : 0,
-                vertical: selectedServer ? 3 : 0,
-              ),
-              padding: EdgeInsets.fromLTRB(selectedServer ? 11 : 9, 9, 5, 9),
+              curve: Curves.easeInOutCubic,
+              margin: const EdgeInsets.symmetric(horizontal: 5, vertical: 3),
+              padding: const EdgeInsets.fromLTRB(11, 9, 5, 9),
               decoration: BoxDecoration(
-                  color: selectedServer ? null : Colors.transparent,
-                  gradient: selectedServer
-                      ? LinearGradient(
-                          begin: Alignment.centerLeft,
-                          end: Alignment.centerRight,
-                          colors: [
-                            _accent.withValues(alpha: .12),
-                            _accent.withValues(alpha: .035),
-                            Colors.transparent,
-                          ],
-                        )
-                      : null,
+                  gradient: LinearGradient(
+                    begin: Alignment.centerLeft,
+                    end: Alignment.centerRight,
+                    colors: [
+                      _accent.withValues(alpha: selectedServer ? .12 : 0),
+                      _accent.withValues(alpha: selectedServer ? .035 : 0),
+                      Colors.transparent,
+                    ],
+                  ),
                   borderRadius: BorderRadius.circular(15),
                   border: Border.all(
-                    color: selectedServer
-                        ? _accent.withValues(alpha: .22)
-                        : Colors.transparent,
+                    color: _accent.withValues(alpha: selectedServer ? .22 : 0),
                   ),
-                  boxShadow: selectedServer
-                      ? [
-                          BoxShadow(
-                            color: _accent.withValues(alpha: .07),
-                            blurRadius: 14,
-                            spreadRadius: -5,
-                          )
-                        ]
-                      : const []),
+                  boxShadow: [
+                    BoxShadow(
+                      color:
+                          _accent.withValues(alpha: selectedServer ? .07 : 0),
+                      blurRadius: 14,
+                      spreadRadius: -5,
+                    )
+                  ]),
               child: Row(children: [
                 SizedBox(
                   width: 3,
                   height: 28,
                   child: AnimatedContainer(
-                    duration: _motion(const Duration(milliseconds: 360)),
-                    curve: Curves.easeInOutCubicEmphasized,
+                    duration: _motion(const Duration(milliseconds: 380)),
+                    curve: Curves.easeInOutCubic,
                     decoration: BoxDecoration(
-                      color: selectedServer ? _accent : Colors.transparent,
+                      color: _accent.withValues(alpha: selectedServer ? 1 : 0),
                       borderRadius: BorderRadius.circular(4),
-                      boxShadow: selectedServer
-                          ? [
-                              BoxShadow(
-                                color: _accent.withValues(alpha: .45),
-                                blurRadius: 8,
-                              ),
-                            ]
-                          : const [],
+                      boxShadow: [
+                        BoxShadow(
+                          color: _accent.withValues(
+                              alpha: selectedServer ? .45 : 0),
+                          blurRadius: 8,
+                        ),
+                      ],
                     ),
                   ),
                 ),
@@ -7511,18 +7717,14 @@ foreach ($route in $routes) {
             child: _backdropBlur(
                 sigma: 8,
                 child: AnimatedContainer(
-                    duration: Duration(milliseconds: 320),
+                    duration: Duration.zero,
                     curve: Curves.easeOutCubic,
                     margin: EdgeInsets.only(bottom: 7),
                     decoration: BoxDecoration(
-                        color: selectedServer
-                            ? _accent.withValues(alpha: .15)
-                            : _surface,
+                        color: _surface.withValues(alpha: .76),
                         borderRadius: BorderRadius.circular(18),
-                        border: Border.all(
-                            color: selectedServer
-                                ? Color(0xAA8BCBFF)
-                                : Colors.white.withOpacity(.12)),
+                        border:
+                            Border.all(color: Colors.white.withOpacity(.12)),
                         boxShadow: [
                           BoxShadow(
                               color: Colors.black.withOpacity(.1),
@@ -8480,7 +8682,7 @@ foreach ($route in $routes) {
                     const Text('GhostBox',
                         style: TextStyle(
                             fontSize: 17, fontWeight: FontWeight.w700)),
-                    const SizedBox(height: 3),
+                    const SizedBox(height: 1),
                     Text(
                       '@${appNickname.replaceFirst(RegExp(r'^@+'), '')}',
                       style: TextStyle(color: _muted, fontSize: 12),
@@ -9225,6 +9427,15 @@ foreach ($route in $routes) {
                   _text('Примечания и канал обновлений',
                       'Release notes and update channel'),
                   const Icon(Icons.chevron_right_rounded))),
+          InkWell(
+              borderRadius: BorderRadius.circular(16),
+              onTap: _showAbout,
+              child: _row(
+                  Icons.info_outline_rounded,
+                  _text('О приложении', 'About app'),
+                  _text('Версия, устройство и компоненты',
+                      'Version, device and components'),
+                  const Icon(Icons.chevron_right_rounded))),
           const SizedBox(height: 14),
           SizedBox(
               width: double.infinity,
@@ -9463,14 +9674,14 @@ foreach ($route in $routes) {
                   _text('Примечания, канал и подробности версии',
                       'Release notes, channel and version details'),
                   const Icon(Icons.chevron_right_rounded))),
-          InkWell(
-              borderRadius: BorderRadius.circular(16),
-              onTap: _showAbout,
-              child: _row(
-                  Icons.info_outline_rounded,
-                  'О приложении',
-                  'Сборка, ядра и устройство',
-                  const Icon(Icons.chevron_right_rounded))),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: _showAbout,
+              icon: const Icon(Icons.info_outline_rounded, size: 18),
+              label: Text(_localized('О приложении')),
+            ),
+          ),
           InkWell(
               borderRadius: BorderRadius.circular(16),
               onTap: () => _openSettingsPage('contacts'),
@@ -11782,6 +11993,132 @@ foreach ($route in $routes) {
                   child: Text(label)))));
 }
 
+class _TextFadeSlide extends StatefulWidget {
+  const _TextFadeSlide({
+    super.key,
+    required this.child,
+    required this.duration,
+    required this.reduceMotion,
+    this.alignment = Alignment.centerLeft,
+  });
+
+  final Widget child;
+  final Duration duration;
+  final bool reduceMotion;
+  final AlignmentGeometry alignment;
+
+  @override
+  State<_TextFadeSlide> createState() => _TextFadeSlideState();
+}
+
+class _TextFadeSlideState extends State<_TextFadeSlide>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: widget.duration,
+  )..addStatusListener((status) {
+      if (status == AnimationStatus.completed && mounted) {
+        setState(() => _outgoing = null);
+      }
+    });
+  Widget? _outgoing;
+  late Widget _current = widget.child;
+
+  @override
+  void didUpdateWidget(covariant _TextFadeSlide oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _controller.duration = widget.duration;
+    if (widget.child.key == oldWidget.child.key &&
+        widget.child.runtimeType == oldWidget.child.runtimeType) {
+      // Keep language, content and styles current even when the logical label
+      // has not changed (for example, a renamed server with the same ID).
+      _current = widget.child;
+      return;
+    }
+    if (widget.reduceMotion || widget.duration == Duration.zero) {
+      _outgoing = null;
+      _current = widget.child;
+      _controller.value = 1;
+      return;
+    }
+    if (_controller.isAnimating && _controller.value < .52) {
+      // During fade-out the incoming text is still invisible; replace it
+      // directly instead of flashing an intermediate connection status.
+      _current = widget.child;
+      return;
+    }
+    _outgoing = _current;
+    _current = widget.child;
+    _controller.forward(from: 0);
+  }
+
+  Widget _transition(
+    Widget child, {
+    required Animation<double> opacity,
+    required Animation<Offset> position,
+  }) =>
+      FadeTransition(
+        opacity: opacity,
+        child: SlideTransition(position: position, child: child),
+      );
+
+  @override
+  Widget build(BuildContext context) {
+    if (widget.reduceMotion || _outgoing == null) {
+      return Align(
+        alignment: widget.alignment,
+        widthFactor: 1,
+        heightFactor: 1,
+        child: _current,
+      );
+    }
+    final outgoingOpacity = _controller.drive(
+        CurveTween(curve: const Interval(0, .48, curve: Curves.easeInCubic)));
+    final incomingOpacity = _controller.drive(
+        CurveTween(curve: const Interval(.52, 1, curve: Curves.easeOutCubic)));
+    final outgoingPosition = Tween<Offset>(
+      begin: Offset.zero,
+      end: const Offset(0, -.25),
+    ).animate(outgoingOpacity);
+    final incomingPosition = Tween<Offset>(
+      begin: const Offset(0, .25),
+      end: Offset.zero,
+    ).animate(incomingOpacity);
+    return Align(
+      alignment: widget.alignment,
+      widthFactor: 1,
+      heightFactor: 1,
+      child: AnimatedBuilder(
+        animation: _controller,
+        builder: (context, _) => Stack(
+          alignment: widget.alignment,
+          children: [
+            _transition(
+              _current,
+              opacity: Tween<double>(begin: 0, end: 1).animate(incomingOpacity),
+              position: incomingPosition,
+            ),
+            Positioned.fill(
+              child: _transition(
+                _outgoing!,
+                opacity:
+                    Tween<double>(begin: 1, end: 0).animate(outgoingOpacity),
+                position: outgoingPosition,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+}
+
 class _ProviderLinkButton extends StatefulWidget {
   const _ProviderLinkButton({
     required this.icon,
@@ -11806,22 +12143,42 @@ class _ProviderLinkButtonState extends State<_ProviderLinkButton> {
   Widget build(BuildContext context) => MouseRegion(
         onEnter: (_) => setState(() => hovered = true),
         onExit: (_) => setState(() => hovered = false),
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 160),
-          curve: Curves.easeOutCubic,
-          padding: EdgeInsets.symmetric(vertical: hovered ? 3 : 0),
-          child: TextButton.icon(
-            style: TextButton.styleFrom(
-              minimumSize: Size.zero,
-              padding: const EdgeInsets.symmetric(horizontal: 6),
-              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-              visualDensity: VisualDensity.compact,
-              foregroundColor: hovered ? widget.accent : null,
-              textStyle: const TextStyle(fontSize: 11),
-            ),
-            onPressed: widget.onPressed,
-            icon: Icon(widget.icon, size: 15),
-            label: Text(widget.label),
+        child: SizedBox(
+          height: 28,
+          child: Stack(
+            clipBehavior: Clip.none,
+            alignment: Alignment.center,
+            children: [
+              Positioned(
+                left: 0,
+                right: 0,
+                top: hovered ? -3 : 0,
+                bottom: hovered ? -3 : 0,
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 160),
+                  curve: Curves.easeOutCubic,
+                  decoration: BoxDecoration(
+                    color: hovered
+                        ? widget.accent.withValues(alpha: .10)
+                        : Colors.transparent,
+                    borderRadius: BorderRadius.circular(9),
+                  ),
+                ),
+              ),
+              TextButton.icon(
+                style: TextButton.styleFrom(
+                  minimumSize: Size.zero,
+                  padding: const EdgeInsets.symmetric(horizontal: 6),
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  visualDensity: VisualDensity.compact,
+                  foregroundColor: hovered ? widget.accent : null,
+                  textStyle: const TextStyle(fontSize: 11),
+                ),
+                onPressed: widget.onPressed,
+                icon: Icon(widget.icon, size: 15),
+                label: Text(widget.label),
+              ),
+            ],
           ),
         ),
       );
