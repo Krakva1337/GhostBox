@@ -333,6 +333,39 @@ $installDir = Split-Path -Parent $appExe
 $parentDir = Split-Path -Parent $installDir
 $stage = Join-Path $parentDir ".ghostbox-update-$oldPid"
 $backup = Join-Path $parentDir ".ghostbox-old-$oldPid"
+function Update-GhostBoxShortcuts {
+  $newExe = Join-Path $installDir 'GhostBox.exe'
+  $icon = Join-Path $env:LOCALAPPDATA 'GhostBox\ghostbox-current.ico'
+  $shell = New-Object -ComObject WScript.Shell
+  $roots = @(
+    [Environment]::GetFolderPath('Desktop'),
+    [Environment]::GetFolderPath('Programs')
+  ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) }
+  foreach ($root in $roots) {
+    Get-ChildItem -LiteralPath $root -Filter '*.lnk' -File -Recurse -ErrorAction SilentlyContinue |
+      ForEach-Object {
+        try {
+          $shortcut = $shell.CreateShortcut($_.FullName)
+          if ([IO.Path]::GetFileName($shortcut.TargetPath) -ieq 'GhostBox.exe') {
+            $shortcut.TargetPath = $newExe
+            $shortcut.WorkingDirectory = $installDir
+            if (Test-Path -LiteralPath $icon) { $shortcut.IconLocation = "$icon,0" }
+            $shortcut.Save()
+          }
+        } catch { }
+      }
+  }
+  if (-not ('GhostBoxShellNotify' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class GhostBoxShellNotify {
+  [DllImport("shell32.dll")] public static extern void SHChangeNotify(uint eventId, uint flags, IntPtr item1, IntPtr item2);
+}
+'@
+  }
+  [GhostBoxShellNotify]::SHChangeNotify(0x08000000, 0, [IntPtr]::Zero, [IntPtr]::Zero)
+}
 try {
   while (Get-Process -Id $oldPid -ErrorAction SilentlyContinue) {
     Start-Sleep -Milliseconds 400
@@ -349,6 +382,7 @@ try {
     if (Test-Path -LiteralPath $backup) { Move-Item -LiteralPath $backup -Destination $installDir }
     throw
   }
+  try { Update-GhostBoxShortcuts } catch { }
   Start-Process -FilePath (Join-Path $installDir 'GhostBox.exe') -ArgumentList '--ghostbox-updated'
   Start-Sleep -Seconds 3
   Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction SilentlyContinue

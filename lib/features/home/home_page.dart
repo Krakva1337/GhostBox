@@ -79,7 +79,8 @@ class _HomePageState extends State<HomePage>
   bool reduceAnimations = false;
   bool showWelcomeSetup = false;
   bool english = false;
-  double contentTopSpacing = 8;
+  double contentTopSpacing = 55;
+  String appNickname = 'GhostBox';
   String? _draggingProfileId;
   String? _lastReorderedProfileId;
   bool powerHovered = false;
@@ -151,10 +152,12 @@ class _HomePageState extends State<HomePage>
   String? routeListMode;
   bool autoRefreshSubscriptions = true;
   bool autoUpdateApp = false;
+  bool skipUpdateChecks = false;
   bool checkingAppUpdate = false;
   bool installingAppUpdate = false;
   String? appUpdateStatus;
   GhostBoxRelease? availableAppRelease;
+  String? _offeredUpdateTag;
   final GitHubUpdater appUpdater = GitHubUpdater();
   final TrafficStats trafficStats = TrafficStats();
   final Set<String> _speedTestProfiles = <String>{};
@@ -1029,12 +1032,15 @@ class _HomePageState extends State<HomePage>
       reduceAnimations = p.getBool('reduceAnimations') ?? false;
       contentTopSpacing = (p.getDouble('contentTopSpacing') ??
               p.getDouble('mobileTopSpacing') ??
-              8)
+              55)
           .clamp(0, 120)
           .toDouble();
       customDnsBlocklistUrls =
           p.getStringList('customDnsBlocklistUrls') ?? <String>[];
       english = p.getBool('appEnglish') ?? false;
+      appNickname = p.getString('appNickname')?.trim().isNotEmpty == true
+          ? p.getString('appNickname')!.trim()
+          : 'GhostBox';
       profiles = rows;
       final savedHistory = p.getString('connectionHistory');
       if (savedHistory != null) {
@@ -1051,6 +1057,7 @@ class _HomePageState extends State<HomePage>
       }
       autoRefreshSubscriptions = p.getBool('autoRefreshSubscriptions') ?? true;
       autoUpdateApp = p.getBool('autoUpdateApp') ?? true;
+      skipUpdateChecks = p.getBool('skipUpdateChecks') ?? false;
       selectedId = p.getString('selectedProfile') ?? rows.firstOrNull?.id;
       final rawCore = p.getString('coreSettings');
       coreSettings = rawCore == null
@@ -1269,7 +1276,7 @@ class _HomePageState extends State<HomePage>
     // Import protocol links before a possible update exits/restarts the app,
     // then let the updater finish before auto-connect brings the VPN up.
     await _drainPendingAppLinks();
-    if (mounted && autoUpdateApp) {
+    if (mounted && autoUpdateApp && !skipUpdateChecks) {
       await _checkAppUpdate(silent: true);
     }
     if (Platform.isAndroid) {
@@ -1283,9 +1290,6 @@ class _HomePageState extends State<HomePage>
         selected != null &&
         backend.state == VpnState.disconnected) {
       await _toggle();
-    }
-    if (mounted && !autoUpdateApp) {
-      unawaited(_checkAppUpdate(silent: true));
     }
   }
 
@@ -4703,8 +4707,13 @@ foreach ($route in $routes) {
                                               _localized('Защита'),
                                             'group_diagnostics' =>
                                               _localized('Диагностика'),
-                                            'group_advanced' =>
-                                              _localized('Для профи'),
+                                            'group_ping' => _localized('Пинг'),
+                                            'group_statistics' =>
+                                              _localized('Статистика'),
+                                            'group_debug' =>
+                                              _localized('Дебаг'),
+                                            'group_advanced' => _localized(
+                                                'Расширенные настройки'),
                                             'group_app' =>
                                               _localized('Приложение'),
                                             'group_ghostbox' =>
@@ -8024,36 +8033,48 @@ foreach ($route in $routes) {
               maxLines: 1),
           const SizedBox(height: 12),
           _settingsAppInfoCard(),
-          const SizedBox(height: 5),
-          _settingLabel(
-              _text('Выбери раздел — связанные параметры собраны вместе',
-                  'Choose a section; related controls are grouped together'),
-              style: TextStyle(color: _muted, fontSize: 13)),
           const SizedBox(height: 18),
           _settingsCategoryTile(
               Icons.power_settings_new_rounded,
               _text('Соединение', 'Connection'),
-              _text('Ядро, режим, маршрут, DNS и защита',
-                  'Core, mode, routing, DNS and protection'),
+              _text('Ядро, режим, память, маршрут и DNS',
+                  'Core, mode, memory, routing and DNS'),
               'group_connection'),
           _settingsCategoryTile(
-              Icons.monitor_heart_outlined,
-              _text('Дебаг и диагностика', 'Debug and diagnostics'),
-              _text('Пинг, статистика трафика и логи',
-                  'Ping, traffic statistics and logs'),
-              'group_diagnostics'),
+              Icons.speed_rounded,
+              _text('Пинг', 'Ping'),
+              _text('Способ проверки, таймаут и число проб',
+                  'Probe method, timeout and probe count'),
+              'group_ping'),
           _settingsCategoryTile(
               Icons.tune_rounded,
-              _text('Для профи', 'Advanced'),
-              _text('Фрагментация и расширенные параметры ядра',
-                  'Fragmentation and advanced core settings'),
+              _text('Расширенные настройки', 'Advanced settings'),
+              _text('Маршрутизация, защита и тонкая настройка ядра',
+                  'Routing, protection and core tuning'),
               'group_advanced'),
           _settingsCategoryTile(
+              Icons.palette_outlined,
+              _text('Оформление', 'Appearance'),
+              _text('Тема, иконка, язык, отступ и анимации',
+                  'Theme, icon, language, spacing and animation'),
+              'appearance'),
+          _settingsCategoryTile(
+              Icons.insert_chart_outlined_rounded,
+              _text('Статистика', 'Statistics'),
+              _text('Расход и скорость трафика', 'Traffic usage and speed'),
+              'group_statistics'),
+          _settingsCategoryTile(
+              Icons.bug_report_outlined,
+              _text('Дебаг', 'Debug'),
+              _text('Журнал событий и диагностика ядра',
+                  'Event journal and core diagnostics'),
+              'group_debug'),
+          _settingsCategoryTile(
               Icons.apps_rounded,
-              _text('GhostBox', 'GhostBox'),
-              _text('Внешний вид, приложение и ссылки',
-                  'Appearance, app options and links'),
-              'group_ghostbox'),
+              _text('Приложение', 'App'),
+              _text('Обновления, подписки и информация',
+                  'Updates, subscriptions and app information'),
+              'group_app'),
           const SizedBox(height: 12),
         ],
       );
@@ -8061,7 +8082,7 @@ foreach ($route in $routes) {
   Widget _settingsAppInfoCard() => Material(
         color: Colors.transparent,
         child: InkWell(
-          onTap: _openReleaseDetails,
+          onTap: _editGhostBoxProfile,
           borderRadius: BorderRadius.circular(20),
           child: Ink(
             width: double.infinity,
@@ -8081,12 +8102,12 @@ foreach ($route in $routes) {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    const Text('GhostBox',
+                    Text(appNickname,
                         style: TextStyle(
                             fontSize: 17, fontWeight: FontWeight.w700)),
                     const SizedBox(height: 3),
                     Text(
-                      'v${AppVersion.version} · ${_text('сборка', 'build')} ${AppVersion.build}',
+                      _text('Ник и значок приложения', 'Nickname and app icon'),
                       style: TextStyle(color: _muted, fontSize: 12),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
@@ -8094,7 +8115,7 @@ foreach ($route in $routes) {
                   ],
                 ),
               ),
-              Icon(Icons.chevron_right_rounded, color: _muted),
+              Icon(Icons.edit_outlined, color: _muted),
             ]),
           ),
         ),
@@ -8116,12 +8137,59 @@ foreach ($route in $routes) {
         ),
       );
 
+  Future<void> _editGhostBoxProfile() async {
+    final controller = TextEditingController(text: appNickname);
+    final nickname = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(_text('Карточка GhostBox', 'GhostBox card')),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          maxLength: 24,
+          textCapitalization: TextCapitalization.words,
+          decoration: InputDecoration(
+            labelText: _text('Ник', 'Nickname'),
+            hintText: 'GhostBox',
+          ),
+          onSubmitted: (value) => Navigator.pop(dialogContext, value.trim()),
+        ),
+        actions: [
+          TextButton.icon(
+            onPressed: () => Navigator.pop(dialogContext, '\u0000icon'),
+            icon: const Icon(Icons.palette_outlined, size: 17),
+            label: Text(_text('Выбрать значок', 'Choose icon')),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: Text(_text('Отмена', 'Cancel')),
+          ),
+          TextButton(
+            onPressed: () =>
+                Navigator.pop(dialogContext, controller.text.trim()),
+            child: Text(_text('Сохранить', 'Save')),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (nickname == '\u0000icon') {
+      if (mounted) _openSettingsPage('appearance');
+    } else if (nickname != null && nickname.isNotEmpty) {
+      setState(() => appNickname = nickname);
+      await prefs?.setString('appNickname', nickname);
+    }
+  }
+
   Widget _settingsGroupPage() => switch (settingsSubpage) {
         'group_connection' => _connectionGroupSettingsPage(),
         'group_routing' => _routingSettingsPage(),
         'group_protection' => _protectionSettingsPage(),
         'group_diagnostics' => _diagnosticsSettingsPage(),
         'group_advanced' => _advancedSettings(),
+        'group_ping' => _pingSettingsPage(),
+        'group_statistics' => _statisticsSettingsPage(),
+        'group_debug' => _debugSettingsPage(),
         'group_app' => _appSettingsPage(),
         'group_ghostbox' => _ghostBoxSettingsPage(),
         'group_all' => _legacySettingsHomeContent(),
@@ -8140,7 +8208,6 @@ foreach ($route in $routes) {
           const SizedBox(height: 12),
           _connectionSettingsPage(includeIntro: false),
           _routingSettingsPage(includeIntro: false),
-          _protectionSettingsPage(includeIntro: false),
         ],
       );
 
@@ -8268,6 +8335,23 @@ foreach ($route in $routes) {
                       divisions: Platform.isIOS ? 5 : 12,
                       onChanged: (v) => _saveCore(
                           coreSettings.copyWith(memoryMb: v.round()))))),
+          if (Platform.isLinux || Platform.isAndroid)
+            _row(
+                Icons.monitor_heart_rounded,
+                _text('Показывать расход RAM', 'Show RAM usage'),
+                Platform.isAndroid
+                    ? _text('Память приложения на главном экране',
+                        'App memory on the home screen')
+                    : _text('Память Xray / sing-box на главном экране',
+                        'Xray / sing-box memory on the home screen'),
+                _compactSwitch(
+                    value: coreSettings.showRamUsage,
+                    onChanged: (value) {
+                      if (!value) coreMemoryMb = null;
+                      _saveCore(coreSettings.copyWith(showRamUsage: value),
+                          requiresReconnect: false);
+                      if (value) unawaited(_refreshCoreMemoryUsage());
+                    })),
         ],
       );
 
@@ -8482,6 +8566,191 @@ foreach ($route in $routes) {
         ],
       );
 
+  Widget _pingSettingsPage() => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _settingsPageIntro(
+              Icons.speed_rounded,
+              _text('Пинг', 'Ping'),
+              _text('Настрой способ проверки доступности сервера',
+                  'Choose how server reachability is checked')),
+          const SizedBox(height: 14),
+          _section(_text('ПРОВЕРКА СЕРВЕРА', 'SERVER CHECK')),
+          _row(
+              Icons.speed_rounded,
+              _text('Как проверять', 'Probe method'),
+              coreSettings.pingMode.toUpperCase(),
+              _menu(
+                  coreSettings.pingMode,
+                  Platform.isIOS
+                      ? const {'tcp': 'TCP'}
+                      : Platform.isAndroid
+                          ? const {'tcp': 'TCP', 'proxy': 'Proxy GET'}
+                          : const {
+                              'tcp': 'TCP',
+                              'proxy': 'Proxy GET',
+                              'icmp': 'ICMP',
+                            },
+                  (value) => _saveCore(coreSettings.copyWith(pingMode: value),
+                      requiresReconnect: false))),
+          if (coreSettings.pingMode == 'proxy')
+            _row(
+                Icons.link_rounded,
+                _text('Ссылка для GET', 'GET URL'),
+                coreSettings.proxyGetUrl,
+                IconButton(
+                    tooltip: _localized('Изменить ссылку проверки'),
+                    onPressed: _editProxyGetUrl,
+                    icon: const Icon(Icons.edit_outlined))),
+          _row(
+              Icons.timer_outlined,
+              _text('Таймаут', 'Timeout'),
+              _text('${coreSettings.pingTimeoutSeconds} с на пробу',
+                  '${coreSettings.pingTimeoutSeconds} s per probe'),
+              _menu(
+                  '${coreSettings.pingTimeoutSeconds}',
+                  const {'2': '2 секунды', '4': '4 секунды', '8': '8 секунд'},
+                  (value) => _saveCore(
+                      coreSettings.copyWith(
+                          pingTimeoutSeconds: int.parse(value)),
+                      requiresReconnect: false))),
+          _row(
+              Icons.repeat_rounded,
+              _text('Число проб', 'Probe count'),
+              _text('${coreSettings.pingCount} · итог — медиана',
+                  '${coreSettings.pingCount} · median result'),
+              _menu(
+                  '${coreSettings.pingCount}',
+                  const {'1': '1', '3': '3', '5': '5'},
+                  (value) => _saveCore(
+                      coreSettings.copyWith(pingCount: int.parse(value)),
+                      requiresReconnect: false))),
+          _row(
+              Icons.visibility_outlined,
+              _text('Показывать результат', 'Result format'),
+              coreSettings.pingView,
+              _menu(
+                  coreSettings.pingView,
+                  const {
+                    'full': 'Время и оценка',
+                    'number': 'Миллисекунды',
+                    'quality': 'Оценка',
+                  },
+                  (value) => _saveCore(coreSettings.copyWith(pingView: value),
+                      requiresReconnect: false))),
+          _row(
+              Icons.power_off_rounded,
+              _text('Отключать VPN во время пинга',
+                  'Disconnect VPN while pinging'),
+              _text('Для TCP/ICMP проверка идёт напрямую',
+                  'TCP/ICMP probes run directly'),
+              _compactSwitch(
+                  value: coreSettings.disconnectVpnForPing,
+                  onChanged: (value) {
+                    if (value &&
+                        Platform.isAndroid &&
+                        coreSettings.pingMode == 'proxy') {
+                      _message(_text(
+                          'Proxy GET требует активное VPN. Выбери TCP для проверки без VPN.',
+                          'Proxy GET needs an active VPN. Choose TCP to probe without VPN.'));
+                      return;
+                    }
+                    _saveCore(
+                        coreSettings.copyWith(disconnectVpnForPing: value),
+                        requiresReconnect: false);
+                  })),
+        ],
+      );
+
+  Widget _statisticsSettingsPage() => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _settingsPageIntro(
+              Icons.insert_chart_outlined_rounded,
+              _text('Статистика', 'Statistics'),
+              _text('Использование сети за выбранный период',
+                  'Network usage over the selected period')),
+          const SizedBox(height: 14),
+          _trafficStatsPanel(),
+        ],
+      );
+
+  Widget _debugSettingsPage() => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _settingsPageIntro(
+              Icons.bug_report_outlined,
+              _text('Дебаг', 'Debug'),
+              _text('Журнал соединений и диагностика ядра',
+                  'Connection journal and core diagnostics')),
+          const SizedBox(height: 14),
+          _section(_text('ЖУРНАЛ', 'JOURNAL')),
+          _row(
+              Icons.history_rounded,
+              _text('Хранить подключения', 'Retain sessions'),
+              _text('Последние $logRetainedConnections',
+                  'Last $logRetainedConnections'),
+              _menu(
+                  '$logRetainedConnections',
+                  const {
+                    '5': '5 подключений',
+                    '10': '10 подключений',
+                    '25': '25 подключений',
+                    '50': '50 подключений',
+                    '100': '100 подключений',
+                  },
+                  (value) => _setLogRetainedConnections(int.parse(value)))),
+          _row(
+              Icons.storage_rounded,
+              _text('Максимальный размер журнала', 'Maximum journal size'),
+              '$logMaxSizeMb MB',
+              _menu(
+                  '$logMaxSizeMb',
+                  const {
+                    '1': '1 МБ',
+                    '2': '2 МБ',
+                    '5': '5 МБ',
+                    '10': '10 МБ',
+                    '25': '25 МБ',
+                  },
+                  (value) => _setLogMaxSize(int.parse(value)))),
+          _row(
+              Icons.article_outlined,
+              _text('Подробные логи ядра', 'Detailed core logs'),
+              _text('Записывать вывод Xray и sing-box',
+                  'Record Xray and sing-box output'),
+              _compactSwitch(
+                  value: logCoreOutput, onChanged: _setLogCoreOutput)),
+          _row(
+              Icons.notes_rounded,
+              _text('Уровень журнала ядра', 'Core log level'),
+              coreSettings.logLevel,
+              _menu(
+                  coreSettings.logLevel,
+                  const {
+                    'error': 'Ошибки',
+                    'warning': 'Предупреждения',
+                    'info': 'Подробно',
+                  },
+                  (value) =>
+                      _saveCore(coreSettings.copyWith(logLevel: value)))),
+          _row(
+              Icons.delete_sweep_outlined,
+              _text('Очистить журнал', 'Clear journal'),
+              _text('Удалить все записи', 'Delete all entries'),
+              IconButton(
+                  onPressed: _clearJournal,
+                  icon: const Icon(Icons.delete_outline_rounded))),
+          _row(
+              Icons.article_outlined,
+              _text('Открыть журнал соединения', 'Open connection journal'),
+              _text('Текущие и прошлые события', 'Current and past events'),
+              IconButton(
+                  onPressed: _showLogs,
+                  icon: const Icon(Icons.chevron_right_rounded))),
+        ],
+      );
+
   Widget _appSettingsPage() => Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -8519,14 +8788,21 @@ foreach ($route in $routes) {
           _section(_text('ОБНОВЛЕНИЯ', 'UPDATES')),
           _row(
               Icons.system_update_alt_rounded,
-              _text('Автообновление приложения', 'App auto-update'),
+              _text('Проверять при запуске', 'Check at startup'),
               autoUpdateApp
-                  ? _text('Скачать APK и открыть Загрузки',
-                      'Download APK and open Downloads')
-                  : _text('Только сообщать о новой версии',
-                      'Notify when an update is available'),
+                  ? _text('Предложить обновление и спросить подтверждение',
+                      'Offer updates and ask before installing')
+                  : _text('Обновления доступны по кнопке проверки',
+                      'Updates can be checked with the button'),
               _compactSwitch(
                   value: autoUpdateApp, onChanged: _setAutoUpdateApp)),
+          _row(
+              Icons.do_not_disturb_on_outlined,
+              _text('Не проверять обновления', "Don't check for updates"),
+              _text('Отключает проверку при запуске и вручную',
+                  'Disables startup and manual update checks'),
+              _compactSwitch(
+                  value: skipUpdateChecks, onChanged: _setSkipUpdateChecks)),
           _row(
               Icons.cloud_download_outlined,
               _text('Версия приложения', 'App version'),
@@ -8802,6 +9078,15 @@ foreach ($route in $routes) {
                   'О приложении',
                   'Сборка, ядра и устройство',
                   const Icon(Icons.chevron_right_rounded))),
+          InkWell(
+              borderRadius: BorderRadius.circular(16),
+              onTap: () => _openSettingsPage('contacts'),
+              child: _row(
+                  Icons.alternate_email_rounded,
+                  _text('Ссылки и контакты', 'Links and contacts'),
+                  _text('Telegram, сайт и репозиторий',
+                      'Telegram, website and repository'),
+                  const Icon(Icons.chevron_right_rounded))),
           const SizedBox(height: 22),
           SizedBox(
             width: double.infinity,
@@ -8841,6 +9126,9 @@ foreach ($route in $routes) {
         'group_routing' ||
         'group_protection' ||
         'group_diagnostics' ||
+        'group_ping' ||
+        'group_statistics' ||
+        'group_debug' ||
         'group_advanced' ||
         'group_app' ||
         'group_ghostbox' =>
@@ -9279,14 +9567,42 @@ foreach ($route in $routes) {
     setState(() => autoUpdateApp = enabled);
     final storage = prefs ??= await SharedPreferences.getInstance();
     await storage.setBool('autoUpdateApp', enabled);
-    if (enabled && availableAppRelease != null) {
-      if (backend.state == VpnState.disconnected) {
-        await _installAppUpdate();
-      } else {
-        _message(_text('Обновление готово. Отключи VPN, чтобы установить его.',
-            'Update is ready. Disconnect the VPN to install it.'));
-      }
+    if (enabled && !skipUpdateChecks && availableAppRelease != null) {
+      await _offerAppUpdate(availableAppRelease!);
     }
+  }
+
+  Future<void> _setSkipUpdateChecks(bool value) async {
+    setState(() => skipUpdateChecks = value);
+    final storage = prefs ??= await SharedPreferences.getInstance();
+    await storage.setBool('skipUpdateChecks', value);
+  }
+
+  Future<void> _offerAppUpdate(GhostBoxRelease release) async {
+    if (!mounted || _offeredUpdateTag == release.tagName) return;
+    _offeredUpdateTag = release.tagName;
+    final accepted = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(_text('Доступно обновление', 'Update available')),
+        content: Text(_text(
+          'GhostBox ${GitHubUpdater.displayVersion(release.version)} доступен. Обновить приложение сейчас?',
+          'GhostBox ${GitHubUpdater.displayVersion(release.version)} is available. Update now?',
+        )),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: Text(_text('Позже', 'Later')),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            icon: const Icon(Icons.download_rounded),
+            label: Text(_text('Обновить', 'Update')),
+          ),
+        ],
+      ),
+    );
+    if (accepted == true && mounted) await _installAppUpdate();
   }
 
   Future<void> _setLogRetainedConnections(int value) async {
@@ -9342,6 +9658,13 @@ foreach ($route in $routes) {
   Future<void> _checkAppUpdate(
       {bool silent = false, bool forceLatest = false}) async {
     if (checkingAppUpdate || installingAppUpdate) return;
+    if (skipUpdateChecks) {
+      if (!silent) {
+        _message(_text('Проверка обновлений отключена в настройках.',
+            'Update checks are disabled in settings.'));
+      }
+      return;
+    }
     setState(() => checkingAppUpdate = true);
     try {
       final release = await appUpdater.check(includeCurrent: forceLatest);
@@ -9360,13 +9683,8 @@ foreach ($route in $routes) {
         if (!silent)
           _message(_text(
               'Установлена последняя версия', 'You have the latest version'));
-      } else if ((forceLatest || autoUpdateApp) &&
-          backend.state == VpnState.disconnected) {
-        await _installAppUpdate();
-      } else if (!silent) {
-        _message(_text(
-            'Доступно обновление GhostBox ${GitHubUpdater.displayVersion(release.version)}',
-            'GhostBox ${GitHubUpdater.displayVersion(release.version)} is available'));
+      } else {
+        await _offerAppUpdate(release);
       }
     } on Object catch (error) {
       if (mounted) {
@@ -9955,441 +10273,146 @@ foreach ($route in $routes) {
           ]);
 
   Widget _advancedSettings() => Column(
-          key: ValueKey('advanced'),
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            _settingsPageIntro(
+        key: const ValueKey('advanced-settings-page'),
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _settingsPageIntro(
               Icons.tune_rounded,
-              _text('Параметры для профи', 'Advanced configuration'),
-              _text('Тонкая настройка ядра и сетевого поведения',
-                  'Fine tune the core and network behavior'),
-            ),
-            const SizedBox(height: 14),
-            _section('ЯДРО'),
-            Row(children: [
-              _choice('sing-box', coreSettings.core == 'sing-box',
-                  () => _selectCore('sing-box')),
-              if (!Platform.isIOS)
-                _choice('Xray', coreSettings.core == 'xray',
-                    () => _selectCore('Xray')),
-            ]),
-            SizedBox(height: 12),
-            _section('XHTTP · ДЛЯ ПРОФИ'),
+              _text('Расширенные настройки', 'Advanced settings'),
+              _text('Дополнительные сетевые параметры и настройки ядра',
+                  'Additional network and core options')),
+          const SizedBox(height: 14),
+          _protectionSettingsPage(includeIntro: false),
+          const SizedBox(height: 10),
+          _section(_text('XHTTP', 'XHTTP')),
+          _row(
+              Icons.cleaning_services_rounded,
+              _text('Быстрее закрывать соединения', 'Aggressive XHTTP cleanup'),
+              _text('Раньше очищает простаивающие сессии',
+                  'Closes idle sessions sooner'),
+              _compactSwitch(
+                  value: coreSettings.aggressiveXhttpCleanup,
+                  onChanged: (value) => _saveCore(
+                      coreSettings.copyWith(aggressiveXhttpCleanup: value)))),
+          const SizedBox(height: 10),
+          _section(_text('ПАРАМЕТРЫ ЯДРА', 'CORE OPTIONS')),
+          _row(
+              Icons.travel_explore_rounded,
+              _text('Анализ протоколов', 'Protocol sniffing'),
+              _text('Используется для доменных правил',
+                  'Used by domain routing rules'),
+              _compactSwitch(
+                  value: coreSettings.sniffingEnabled,
+                  onChanged: (value) => _saveCore(
+                      coreSettings.copyWith(sniffingEnabled: value)))),
+          _row(
+              Icons.bolt_rounded,
+              'TCP Fast Open',
+              _text('Если поддерживается операционной системой',
+                  'When supported by the operating system'),
+              _compactSwitch(
+                  value: coreSettings.tcpFastOpen,
+                  onChanged: (value) =>
+                      _saveCore(coreSettings.copyWith(tcpFastOpen: value)))),
+          _row(
+              Icons.data_usage_rounded,
+              _text('Фрагментация UDP', 'UDP fragmentation'),
+              _text('Доступность зависит от ядра и ОС',
+                  'Availability depends on core and OS'),
+              _compactSwitch(
+                  value: coreSettings.udpFragment,
+                  onChanged: coreSettings.core == 'sing-box'
+                      ? (value) =>
+                          _saveCore(coreSettings.copyWith(udpFragment: value))
+                      : null)),
+          const SizedBox(height: 10),
+          _section(_text('ФРАГМЕНТАЦИЯ TLS', 'TLS FRAGMENTATION')),
+          _row(
+              Icons.call_split_rounded,
+              _text('Фрагментация TLS ClientHello',
+                  'TLS ClientHello fragmentation'),
+              coreSettings.tlsFragmentEnabled
+                  ? _text('Включена', 'Enabled')
+                  : _text('Выключена', 'Disabled'),
+              _compactSwitch(
+                  value: coreSettings.tlsFragmentEnabled,
+                  onChanged: (value) => _saveCore(
+                      coreSettings.copyWith(tlsFragmentEnabled: value)))),
+          if (coreSettings.tlsFragmentEnabled &&
+              coreSettings.core == 'xray') ...[
             _row(
-                Icons.cleaning_services_rounded,
-                'Быстрее закрывать соединения',
-                'Раньше очищает простаивающие XHTTP-сессии; может увеличить переподключения и расход батареи.',
-                _compactSwitch(
-                    value: coreSettings.aggressiveXhttpCleanup,
-                    onChanged: (v) => _saveCore(
-                        coreSettings.copyWith(aggressiveXhttpCleanup: v)))),
-            _row(
-                Icons.memory_rounded,
-                'Память ядра',
-                '${coreSettings.memoryMb} МБ · ${Platform.isIOS ? "25–50" : "64–256"} МБ',
-                SizedBox(
-                    width: 180,
-                    child: _compactSlider(
-                        value: coreSettings.memoryMb.toDouble(),
-                        min: Platform.isIOS ? 25 : 64,
-                        max: Platform.isIOS ? 50 : 256,
-                        divisions: Platform.isIOS ? 5 : 12,
-                        onChanged: (v) => _saveCore(
-                            coreSettings.copyWith(memoryMb: v.round()))))),
-            _row(
-                Icons.notes_rounded,
-                'Уровень журнала',
-                'Диагностика ядра',
+                Icons.tune_rounded,
+                _text('Тип фрагментации', 'Fragment type'),
+                coreSettings.fragmentPackets,
                 _menu(
-                    coreSettings.logLevel,
-                    {
-                      'error': 'Ошибки',
-                      'warning': 'Предупреждения',
-                      'info': 'Подробно'
-                    },
-                    (v) => _saveCore(coreSettings.copyWith(logLevel: v)))),
-            SizedBox(height: 15),
-            _section('ФРАГМЕНТАЦИЯ TLS'),
+                    coreSettings.fragmentPackets,
+                    const {'tlshello': 'TLS hello', '1-3': 'Первые 3 отправки'},
+                    (value) => _saveCore(
+                        coreSettings.copyWith(fragmentPackets: value)))),
             _row(
-                Icons.call_split_rounded,
-                'Фрагментация TLS ClientHello',
-                coreSettings.tlsFragmentEnabled
-                    ? 'Разбивать TLS handshake на части'
-                    : 'Фрагментация отключена',
-                _compactSwitch(
-                    value: coreSettings.tlsFragmentEnabled,
-                    onChanged: (v) => _saveCore(
-                        coreSettings.copyWith(tlsFragmentEnabled: v)))),
-            if (coreSettings.tlsFragmentEnabled &&
-                coreSettings.core == 'xray') ...[
-              _row(
-                  Icons.tune_rounded,
-                  'Тип фрагментации',
-                  'TLS hello или первые TCP отправки',
-                  _menu(
-                      coreSettings.fragmentPackets,
-                      const {
-                        'tlshello': 'TLS hello',
-                        '1-3': 'Первые 3 отправки',
-                      },
-                      (v) => _saveCore(
-                          coreSettings.copyWith(fragmentPackets: v)))),
-              _row(
-                  Icons.view_week_outlined,
-                  'Размер фрагментов',
-                  'В байтах · Xray',
-                  _menu(
-                      coreSettings.fragmentLength,
-                      const {
-                        '50-100': '50–100',
-                        '100-200': '100–200',
-                        '200-300': '200–300',
-                      },
-                      (v) =>
-                          _saveCore(coreSettings.copyWith(fragmentLength: v)))),
-              _row(
-                  Icons.timer_outlined,
-                  'Интервал между частями',
-                  'В миллисекундах · Xray',
-                  _menu(
-                      coreSettings.fragmentInterval,
-                      const {
-                        '0-0': '0',
-                        '5-10': '5–10',
-                        '10-20': '10–20',
-                        '20-30': '20–30',
-                      },
-                      (v) => _saveCore(
-                          coreSettings.copyWith(fragmentInterval: v)))),
-            ],
-            if (coreSettings.core == 'sing-box') ...[
-              _row(
-                  Icons.data_array_rounded,
-                  'Фрагментация TLS-записей',
-                  'Sing-box · другая стратегия разделения',
-                  _compactSwitch(
-                      value: coreSettings.fragmentRecord,
-                      onChanged: (v) =>
-                          _saveCore(coreSettings.copyWith(fragmentRecord: v)))),
-              if (coreSettings.tlsFragmentEnabled ||
-                  coreSettings.fragmentRecord)
-                _row(
-                    Icons.hourglass_bottom_rounded,
-                    'Резервная задержка',
-                    '${coreSettings.fragmentFallbackDelayMs} мс · sing-box',
-                    _menu(
-                        '${coreSettings.fragmentFallbackDelayMs}',
-                        const {
-                          '200': '200 мс',
-                          '500': '500 мс',
-                          '1000': '1000 мс',
-                        },
-                        (v) => _saveCore(coreSettings.copyWith(
-                            fragmentFallbackDelayMs: int.parse(v))))),
-            ],
-            SizedBox(height: 15),
-            _section('РАСШИРЕННЫЕ ПАРАМЕТРЫ ЯДРА'),
-            _row(
-                Icons.travel_explore_rounded,
-                'Анализ протоколов',
-                'Нужен для доменных правил маршрутизации',
-                _compactSwitch(
-                    value: coreSettings.sniffingEnabled,
-                    onChanged: (v) =>
-                        _saveCore(coreSettings.copyWith(sniffingEnabled: v)))),
-            _row(
-                Icons.bolt_rounded,
-                'TCP Fast Open',
-                'Ускоряет TCP handshake, если поддерживается ОС',
-                _compactSwitch(
-                    value: coreSettings.tcpFastOpen,
-                    onChanged: (v) =>
-                        _saveCore(coreSettings.copyWith(tcpFastOpen: v)))),
-            _row(
-                Icons.data_usage_rounded,
-                'Фрагментация UDP',
-                'Может помочь с крупными UDP-пакетами; зависит от ядра и ОС',
-                _compactSwitch(
-                    value: coreSettings.udpFragment,
-                    onChanged: coreSettings.core == 'sing-box'
-                        ? (v) =>
-                            _saveCore(coreSettings.copyWith(udpFragment: v))
-                        : null)),
-            _row(
-                Icons.lan_rounded,
-                'Локальный порт',
-                coreSettings.autoLocalPort
-                    ? 'Автовыбор · ${activeLocalPort ?? "при подключении"}'
-                    : '127.0.0.1:${coreSettings.localPort}',
-                Row(mainAxisSize: MainAxisSize.min, children: [
-                  _menu(
-                      coreSettings.autoLocalPort ? 'auto' : 'manual',
-                      const {'auto': 'Автовыбор', 'manual': 'Вручную'},
-                      (value) => _saveCore(coreSettings.copyWith(
-                          autoLocalPort: value == 'auto'))),
-                  if (!coreSettings.autoLocalPort)
-                    IconButton(
-                        tooltip: _localized('Изменить порт'),
-                        onPressed: _editPort,
-                        icon: const Icon(Icons.edit_outlined)),
-                ])),
-            SizedBox(height: 15),
-            _section('ПРАВИЛА МАРШРУТИЗАЦИИ'),
-            _row(
-                Icons.alt_route_rounded,
-                'Режим',
-                _routingLabel(),
+                Icons.view_week_outlined,
+                _text('Размер фрагментов', 'Fragment size'),
+                coreSettings.fragmentLength,
                 _menu(
-                    coreSettings.routing,
-                    {
-                      'proxy': 'Всё через VPN',
-                      'rules': 'Только из списка',
-                      'exclude': 'Всё, кроме списка'
-                    },
-                    (v) => _applyRoutingSettings(
-                        coreSettings.copyWith(routing: v)))),
-            _row(
-                coreSettings.routing == 'rules'
-                    ? Icons.shield_outlined
-                    : Icons.public_rounded,
-                coreSettings.routing == 'rules'
-                    ? 'Сайты через VPN'
-                    : 'Исключения из VPN',
-                '${(coreSettings.routing == 'rules' ? coreSettings.proxyDomains : coreSettings.directDomains).length} правил',
-                IconButton(
-                    onPressed: () {
-                      _openTab(1);
-                      _openRouteList(coreSettings.routing == 'rules'
-                          ? 'rules'
-                          : 'exclude');
-                    },
-                    icon: const Icon(Icons.chevron_right_rounded))),
-            SizedBox(height: 15),
-            _section('DNS И ФИЛЬТРАЦИЯ'),
-            _row(
-                Icons.dns_rounded,
-                'Резолвер',
-                _dnsLabel(),
-                _menu(
-                    coreSettings.dns,
-                    {
-                      'system': 'Системный',
-                      'cloudflare': 'Cloudflare DoH',
-                      'google': 'Google DoH',
-                      'combined': 'Cloudflare + Google',
-                      'custom': 'Свой резолвер',
-                    },
-                    _selectDnsResolver)),
-            if (coreSettings.dns == 'custom')
-              _row(
-                  Icons.dns_outlined,
-                  'Адрес резолвера',
-                  coreSettings.customDnsResolver,
-                  IconButton(
-                      tooltip: _localized('Изменить DNS-резолвер'),
-                      onPressed: () => _selectDnsResolver('custom'),
-                      icon: const Icon(Icons.edit_outlined))),
-            _row(
-                Icons.lock_outline_rounded,
-                'DoH через прокси',
-                'Использовать прокси для DNS-запросов',
-                _compactSwitch(
-                    value: coreSettings.dnsThroughProxy,
-                    onChanged: coreSettings.dns == 'system'
-                        ? null
-                        : (v) => _saveCore(
-                            coreSettings.copyWith(dnsThroughProxy: v)))),
-            _row(
-                Icons.shield_outlined,
-                'DNS blacklist',
-                _dnsBlacklistLabel(),
-                _menu(
-                    coreSettings.dnsBlacklistMode,
+                    coreSettings.fragmentLength,
                     const {
-                      'none': 'Нет',
-                      'ads': 'Блок рекламы',
-                      'custom': 'Кастом',
+                      '50-100': '50–100',
+                      '100-200': '100–200',
+                      '200-300': '200–300',
                     },
-                    _setDnsBlacklistMode)),
-            if (coreSettings.dnsBlacklistMode == 'custom')
-              _row(
-                  Icons.block_rounded,
-                  'Заблокированные домены',
-                  '${coreSettings.blockedDomains.length} доменов',
-                  IconButton(
-                      tooltip: _localized('Изменить список'),
-                      onPressed: () => _editDomains(
-                          'Домены для блокировки',
-                          coreSettings.blockedDomains,
-                          (v) => coreSettings.copyWith(blockedDomains: v)),
-                      icon: const Icon(Icons.chevron_right_rounded))),
-            if (coreSettings.dnsBlacklistMode == 'ads')
-              _row(
-                  Icons.ads_click_rounded,
-                  'Список рекламы',
-                  loadingAdBlocklist
-                      ? 'Обновляется…'
-                      : '${coreSettings.adBlockDomains.length} доменов · HaGeZi',
-                  IconButton(
-                      tooltip: _localized('Обновить список рекламы'),
-                      onPressed: loadingAdBlocklist
-                          ? null
-                          : () => _refreshAdBlocklist(),
-                      icon: loadingAdBlocklist
-                          ? const SizedBox(
-                              width: 18,
-                              height: 18,
-                              child: CircularProgressIndicator(strokeWidth: 2))
-                          : const Icon(Icons.refresh_rounded))),
-            _dnsBlocklistSourcesRow(),
-            SizedBox(height: 15),
-            _section('ПРОВЕРКА ЗАДЕРЖКИ'),
-            _row(
-                Icons.speed_rounded,
-                'Тип проверки',
-                switch (coreSettings.pingMode) {
-                  'icmp' => 'ICMP · проверка адреса',
-                  'tcp' => 'TCP · проверка порта',
-                  _ => 'Proxy GET · ответ через туннель',
-                },
-                _menu(
-                    coreSettings.pingMode,
-                    Platform.isIOS
-                        ? const {'tcp': 'TCP'}
-                        : Platform.isAndroid
-                            ? const {'proxy': 'Proxy GET', 'tcp': 'TCP'}
-                            : const {
-                                'proxy': 'Proxy GET',
-                                'tcp': 'TCP',
-                                'icmp': 'ICMP',
-                              },
-                    (v) => _saveCore(coreSettings.copyWith(pingMode: v),
-                        requiresReconnect: false))),
-            if (coreSettings.pingMode == 'proxy')
-              _row(
-                  Icons.link_rounded,
-                  'Ссылка для GET',
-                  coreSettings.proxyGetUrl,
-                  IconButton(
-                      tooltip: _localized('Изменить ссылку проверки'),
-                      onPressed: _editProxyGetUrl,
-                      icon: const Icon(Icons.edit_outlined))),
+                    (value) => _saveCore(
+                        coreSettings.copyWith(fragmentLength: value)))),
             _row(
                 Icons.timer_outlined,
-                'Таймаут',
-                '${coreSettings.pingTimeoutSeconds} секунды на пробу',
+                _text('Интервал между частями', 'Fragment interval'),
+                coreSettings.fragmentInterval,
                 _menu(
-                    '${coreSettings.pingTimeoutSeconds}',
-                    {'2': '2 секунды', '4': '4 секунды', '8': '8 секунд'},
-                    (v) => _saveCore(
-                        coreSettings.copyWith(pingTimeoutSeconds: int.parse(v)),
-                        requiresReconnect: false))),
+                    coreSettings.fragmentInterval,
+                    const {
+                      '0-0': '0',
+                      '5-10': '5–10',
+                      '10-20': '10–20',
+                      '20-30': '20–30',
+                    },
+                    (value) => _saveCore(
+                        coreSettings.copyWith(fragmentInterval: value)))),
+          ],
+          if (coreSettings.core == 'sing-box') ...[
             _row(
-                Icons.power_off_rounded,
-                'Отключать VPN во время пинга',
-                'Проверка TCP/ICMP идёт напрямую, после неё сервер включится снова',
+                Icons.data_array_rounded,
+                _text('Фрагментация TLS-записей', 'TLS record fragmentation'),
+                _text('Стратегия sing-box', 'sing-box strategy'),
                 _compactSwitch(
-                    value: coreSettings.disconnectVpnForPing,
-                    onChanged: (value) {
-                      if (value &&
-                          Platform.isAndroid &&
-                          coreSettings.pingMode == 'proxy') {
-                        _message(
-                            'На Android Proxy GET требует активное VPN. Выберите TCP для проверки без VPN.');
-                        return;
-                      }
-                      _saveCore(
-                          coreSettings.copyWith(disconnectVpnForPing: value),
-                          requiresReconnect: false);
-                    })),
-            _row(
-                Icons.repeat_rounded,
-                'Число проб',
-                '${coreSettings.pingCount} · медианное значение',
-                _menu(
-                    '${coreSettings.pingCount}',
-                    {'1': '1', '3': '3', '5': '5'},
-                    (v) => _saveCore(
-                        coreSettings.copyWith(pingCount: int.parse(v)),
-                        requiresReconnect: false))),
-            SizedBox(height: 15),
-            _section('ДАННЫЕ ПРИЛОЖЕНИЯ'),
-            _row(
-                Icons.data_object_rounded,
-                'JSON настроек ядра',
-                'Посмотреть или изменить полный набор параметров',
-                IconButton(
-                    tooltip: _localized('Открыть JSON'),
-                    onPressed: _editCoreSettingsJson,
-                    icon: const Icon(Icons.chevron_right_rounded))),
-            _row(
-                Icons.restart_alt_rounded,
-                'Сбросить настройки',
-                'Сбросить ядро, тему и поведение приложения',
-                IconButton(
-                    tooltip: _localized('Сбросить настройки'),
-                    onPressed: _resetCoreSettings,
-                    icon: const Icon(Icons.restart_alt_rounded))),
-            SizedBox(height: 15),
-            _section('ДИАГНОСТИКА'),
-            Container(
-                width: double.infinity,
-                padding: EdgeInsets.all(18),
-                decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(.055),
-                    borderRadius: BorderRadius.circular(20),
-                    border: Border.all(color: Colors.white.withOpacity(.1))),
-                child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                          Platform.isAndroid
-                              ? _text('● Android-ядра встроены',
-                                  '● Android cores are bundled')
-                              : process?.executableAvailable == true
-                                  ? '● Ядро найдено'
-                                  : '● Ядро не найдено',
-                          style: TextStyle(
-                              color: Platform.isAndroid ||
-                                      process?.executableAvailable == true
-                                  ? _mint
-                                  : Colors.orangeAccent,
-                              fontSize: 12)),
-                      SizedBox(height: 8),
-                      Text(
-                          Platform.isAndroid
-                              ? _text(
-                                  'Xray и sing-box запускаются как встроенные Android VPN-службы.',
-                                  'Xray and sing-box run as bundled Android VPN services.')
-                              : process?.lastError ??
-                                  'Локальный SOCKS/HTTP прокси. Системный TUN не включён.',
-                          style: TextStyle(color: _muted, fontSize: 11)),
-                      const SizedBox(height: 8),
-                      Row(children: [
-                        TextButton.icon(
-                            onPressed: _showConnectionHistory,
-                            icon: const Icon(Icons.history_rounded, size: 16),
-                            label: Text(
-                                'Подключения ${connectionHistory.length}/$logRetainedConnections')),
-                        const Spacer(),
-                        TextButton.icon(
-                            onPressed: _showLogs,
-                            icon: const Icon(Icons.article_outlined, size: 16),
-                            label: Text(_localized('Файл журнала'))),
-                      ]),
-                      if (process?.logs.isNotEmpty == true) ...[
-                        SizedBox(height: 12),
-                        for (final line in process!.logs.reversed.take(5))
-                          Padding(
-                              padding: EdgeInsets.only(bottom: 4),
-                              child: Text(line,
-                                  maxLines: 3,
-                                  overflow: TextOverflow.ellipsis,
-                                  style:
-                                      TextStyle(color: _muted, fontSize: 10))),
-                      ],
-                    ])),
-          ]);
+                    value: coreSettings.fragmentRecord,
+                    onChanged: (value) => _saveCore(
+                        coreSettings.copyWith(fragmentRecord: value)))),
+            if (coreSettings.tlsFragmentEnabled || coreSettings.fragmentRecord)
+              _row(
+                  Icons.hourglass_bottom_rounded,
+                  _text('Резервная задержка', 'Fallback delay'),
+                  '${coreSettings.fragmentFallbackDelayMs} ms',
+                  _menu(
+                      '${coreSettings.fragmentFallbackDelayMs}',
+                      const {
+                        '200': '200 мс',
+                        '500': '500 мс',
+                        '1000': '1000 мс'
+                      },
+                      (value) => _saveCore(coreSettings.copyWith(
+                          fragmentFallbackDelayMs: int.parse(value))))),
+          ],
+          const SizedBox(height: 10),
+          _section(_text('КОНФИГУРАЦИЯ', 'CONFIGURATION')),
+          _row(
+              Icons.data_object_rounded,
+              _text('JSON настроек ядра', 'Core settings JSON'),
+              _text('Полный набор параметров', 'Full set of options'),
+              IconButton(
+                  tooltip: _localized('Открыть JSON'),
+                  onPressed: _editCoreSettingsJson,
+                  icon: const Icon(Icons.chevron_right_rounded))),
+        ],
+      );
 
   Future<void> _editCoreSettingsJson() async {
     final controller = TextEditingController(
@@ -10550,12 +10573,14 @@ foreach ($route in $routes) {
     await storage.setBool('animatedBackground', true);
     await storage.setBool('autoRefreshSubscriptions', true);
     await storage.setBool('autoUpdateApp', true);
+    await storage.setBool('skipUpdateChecks', false);
     if (mounted) {
       setState(() {
         english = false;
         animatedBackground = true;
         autoRefreshSubscriptions = true;
         autoUpdateApp = true;
+        skipUpdateChecks = false;
       });
       ambientMotion.repeat();
     }
