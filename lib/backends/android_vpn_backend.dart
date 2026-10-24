@@ -37,6 +37,7 @@ class AndroidVpnBackend implements VpnBackend {
   CoreSettings settings = const CoreSettings();
   int _readLogCount = 0;
   DateTime? _connectedAt;
+  bool _hasRecentNativeStopAcknowledgement = false;
 
   Duration get uptime {
     final startedAt = _connectedAt;
@@ -138,15 +139,21 @@ class AndroidVpnBackend implements VpnBackend {
   @override
   Future<void> connect(String profileJson) async {
     if (state == VpnState.connected || state == VpnState.connecting) return;
+    // Consume this exactly once. A newly created backend, or a previous stop
+    // without a complete native acknowledgement, still performs orphan cleanup.
+    final skipCleanup = _hasRecentNativeStopAcknowledgement;
+    _hasRecentNativeStopAcknowledgement = false;
     state = VpnState.connecting;
     lastError = null;
     try {
       final profile = ServerProfile.fromJson(
         _stringKeyedMap(jsonDecode(profileJson)),
       );
-      await _channel
-          .invokeMethod<void>('cleanupVpnBeforeConnect')
-          .timeout(const Duration(seconds: 9));
+      if (!skipCleanup) {
+        await _channel
+            .invokeMethod<void>('cleanupVpnBeforeConnect')
+            .timeout(const Duration(seconds: 9));
+      }
       final coreName = settings.core == 'xray' ? 'xray' : 'sing-box';
       if (coreName == 'xray') {
         await _connectXrayThroughSingBox(profile);
@@ -403,14 +410,16 @@ class AndroidVpnBackend implements VpnBackend {
 
   @override
   Future<void> disconnect() async {
-    await _stopVpnBestEffort();
+    await _stopVpnBestEffort(recordReconnectAcknowledgement: true);
     state = VpnState.disconnected;
     lastError = null;
     _connectedAt = null;
     _readLogCount = 0;
   }
 
-  Future<void> _stopVpnBestEffort() async {
+  Future<void> _stopVpnBestEffort(
+      {bool recordReconnectAcknowledgement = false}) async {
+    var fullyAcknowledged = false;
     try {
       await _channel
           .invokeMethod<void>('stopVpn')
@@ -431,6 +440,7 @@ class AndroidVpnBackend implements VpnBackend {
           if (stopComplete &&
               nativeState == 'disconnected' &&
               xrayState == 'disconnected') {
+            fullyAcknowledged = true;
             break;
           }
         } on Object {
@@ -443,6 +453,9 @@ class AndroidVpnBackend implements VpnBackend {
       // Always clear the local spinner even if Android does not acknowledge
       // service shutdown; the native service has its own stop cleanup path.
     } finally {
+      if (recordReconnectAcknowledgement) {
+        _hasRecentNativeStopAcknowledgement = fullyAcknowledged;
+      }
       if (state != VpnState.connected) state = VpnState.disconnected;
       _connectedAt = null;
       _readLogCount = 0;

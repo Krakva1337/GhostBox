@@ -6395,26 +6395,35 @@ foreach ($route in $routes) {
           ),
         ),
         const SizedBox(height: 8),
-        _TextFadeSlide(
-            duration: _motion(const Duration(milliseconds: 320)),
-            reduceMotion: reduceAnimations,
-            alignment: Alignment.center,
-            child: SizedBox(
-                key: ValueKey(_serverCaption),
-                width: double.infinity,
-                child: Text(_serverCaption,
-                    textAlign: TextAlign.center,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                        color: _foreground,
-                        fontSize: 15,
-                        fontWeight: FontWeight.w600))))
+        SizedBox(
+          width: double.infinity,
+          child: AnimatedSwitcher(
+            duration: _motion(const Duration(milliseconds: 420)),
+            reverseDuration: _motion(const Duration(milliseconds: 280)),
+            switchInCurve: Curves.easeOutCubic,
+            switchOutCurve: Curves.easeInCubic,
+            transitionBuilder: (child, animation) => FadeTransition(
+              opacity: animation,
+              child: child,
+            ),
+            child: Text(
+              _serverCaption,
+              key: ValueKey(_serverCaption),
+              textAlign: TextAlign.center,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: _foreground,
+                fontSize: 15,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+        )
       ]);
 
   String get _serverCaption {
     if (switchingServer) {
-      return selected?.name ??
-          _text('Переключение сервера', 'Switching server');
+      return _text('Переключение сервера', 'Switching server');
     }
     if (backend.state == VpnState.connected) {
       return profiles.where((p) => p.id == activeProfileId).firstOrNull?.name ??
