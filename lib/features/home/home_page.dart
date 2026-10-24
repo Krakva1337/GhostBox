@@ -56,6 +56,8 @@ class _HomePageState extends State<HomePage>
     with TickerProviderStateMixin, WidgetsBindingObserver {
   static const MethodChannel _systemTrayChannel =
       MethodChannel('app.ghostbox.ghostbox/system_tray');
+  bool? _lastMacTrayConnected;
+  bool? _lastMacTrayConnecting;
   static final Set<String> _countryFlagCodes =
       ('AD AE AF AG AI AL AM AO AQ AR AS AT AU AW AX AZ BA BB BD BE BF BG BH BI BJ BL BM BN BO BQ BR BS BT BV BW BY BZ CA CC CD CF CG CH CI CK CL CM CN CO CR CU CV CW CX CY CZ DE DJ DK DM DO DZ EC EE EG EH ER ES ET FI FJ FK FM FO FR GA GB GD GE GF GG GH GI GL GM GN GP GQ GR GS GT GU GW GY HK HM HN HR HT HU ID IE IL IM IN IO IQ IR IS IT JE JM JO JP KE KG KH KI KM KN KP KR KW KY KZ LA LB LC LI LK LR LS LT LU LV LY MA MC MD ME MF MG MH MK ML MM MN MO MP MQ MR MS MT MU MV MW MX MY MZ NA NC NE NF NG NI NL NO NP NR NU NZ OM PA PE PF PG PH PK PL PM PN PR PS PT PW PY QA RE RO RS RU RW SA SB SC SD SE SG SH SI SJ SK SL SM SN SO SR SS ST SV SX SY SZ TC TD TF TG TH TJ TK TL TM TN TO TR TT TV TW TZ UA UG UM US UY UZ VA VC VE VG VI VN VU WF WS YE YT ZA ZM ZW')
           .split(' ')
@@ -914,7 +916,20 @@ class _HomePageState extends State<HomePage>
     WidgetsBinding.instance.addObserver(this);
     if (Platform.isMacOS || Platform.isWindows) {
       _systemTrayChannel.setMethodCallHandler((call) async {
-        if (call.method == 'toggleConnection') await _toggle();
+        switch (call.method) {
+          case 'toggleConnection':
+            await _toggle();
+            break;
+          case 'connect':
+            if (backend.state != VpnState.connected &&
+                backend.state != VpnState.connecting) {
+              await _toggle();
+            }
+            break;
+          case 'disconnect':
+            if (backend.state == VpnState.connected) await _toggle();
+            break;
+        }
       });
     }
     glow = AnimationController(
@@ -1374,6 +1389,7 @@ class _HomePageState extends State<HomePage>
     if (Platform.isIOS) {
       await _restoreIosVpnSession(p);
     }
+    _syncMacTrayConnectionState();
     if (mounted &&
         (coreSettings.autoConnect || resumeAfterElevation) &&
         selected != null &&
@@ -1664,6 +1680,7 @@ class _HomePageState extends State<HomePage>
                 ? const Duration(seconds: 120)
                 : const Duration(seconds: 90));
         if (mounted) setState(() {});
+        _syncMacTrayConnectionState();
         await connection;
         await _collectAndroidCoreLogs();
         _recordAppLog(
@@ -1746,7 +1763,29 @@ class _HomePageState extends State<HomePage>
       _message('Сначала добавьте и выберите сервер');
     }
     if (mounted) setState(() {});
+    _syncMacTrayConnectionState();
     _startConnectedMonitoring();
+  }
+
+  void _syncMacTrayConnectionState() {
+    if (!Platform.isMacOS) return;
+    final bridgeState = tunnelBridgeBackend?.state;
+    final connected = backend.state == VpnState.connected &&
+        (bridgeState == null || bridgeState == VpnState.connected);
+    final connecting = !connected &&
+        (backend.state == VpnState.connecting ||
+            bridgeState == VpnState.connecting ||
+            switchingServer);
+    if (_lastMacTrayConnected == connected &&
+        _lastMacTrayConnecting == connecting) {
+      return;
+    }
+    _lastMacTrayConnected = connected;
+    _lastMacTrayConnecting = connecting;
+    unawaited(_systemTrayChannel.invokeMethod<void>('setConnectionState', {
+      'connected': connected,
+      'connecting': connecting,
+    }).catchError((Object _) {}));
   }
 
   Future<void> _restoreAndroidVpnSession(SharedPreferences storage) async {
@@ -1810,6 +1849,7 @@ class _HomePageState extends State<HomePage>
 
   void _startConnectedMonitoring() {
     uptimeTicker?.cancel();
+    _syncMacTrayConnectionState();
     final connected = backend.state == VpnState.connected;
     if (connected || backend.state == VpnState.connecting) {
       if (connected && !glow.isAnimating) glow.forward(from: 0);
@@ -1854,6 +1894,7 @@ class _HomePageState extends State<HomePage>
         if (backend is AndroidVpnBackend) {
           unawaited(_collectAndroidCoreLogs());
         }
+        _syncMacTrayConnectionState();
         setState(() {});
       });
     } else {
@@ -2398,10 +2439,11 @@ exit 1
     }
     if (Platform.isMacOS) {
       for (var attempt = 0; attempt < 80; attempt++) {
+        final ghostBoxInterface =
+            tunnelBridgeBackend?.macTunInterface ?? process?.macTunInterface;
         final current = await _listMacUtunInterfaces();
-        final created = current.difference(_macUtunInterfacesBeforeConnect);
-        if (created.isNotEmpty) {
-          _activeMacUtunInterface = created.last;
+        if (ghostBoxInterface != null && current.contains(ghostBoxInterface)) {
+          _activeMacUtunInterface = ghostBoxInterface;
           _recordAppLog(
               'macOS создала интерфейс GhostBox TUN: $_activeMacUtunInterface');
           return;
@@ -2881,6 +2923,7 @@ foreach ($route in $routes) {
     connectionIssue = null;
     _recordAppLog('Переключаю сервер на ${target.name}');
     if (mounted) setState(() {});
+    _syncMacTrayConnectionState();
     try {
       final androidBackend = backend;
       if (Platform.isAndroid &&
@@ -2945,6 +2988,7 @@ foreach ($route in $routes) {
     } finally {
       switchingServer = false;
       pendingReconnect = false;
+      _syncMacTrayConnectionState();
       if (mounted) setState(() {});
     }
   }
@@ -6525,7 +6569,7 @@ foreach ($route in $routes) {
                                       color: Colors.white)
                                   : Icon(
                                       backend.state == VpnState.connected
-                                          ? Icons.check_rounded
+                                          ? Icons.power_off_rounded
                                           : Icons.power_settings_new_rounded,
                                       key: ValueKey(backend.state),
                                       size: 31,
@@ -6542,22 +6586,27 @@ foreach ($route in $routes) {
                                 key: ValueKey(switchingServer
                                     ? 'switching'
                                     : backend.state == VpnState.connected
-                                        ? _connectedLabel()
+                                        ? 'disconnect'
                                         : backend.state == VpnState.connecting
                                             ? 'connecting'
-                                            : 'tap'),
+                                            : backend.state == VpnState.error
+                                                ? 'retry'
+                                                : 'connect'),
                                 switchingServer
                                     ? _text('ПЕРЕКЛЮЧАЕМ', 'SWITCHING')
                                     : backend.state == VpnState.connected
-                                        ? _connectedLabel()
+                                        ? _text('ОТКЛЮЧИТЬСЯ', 'DISCONNECT')
                                         : backend.state == VpnState.connecting
                                             ? _text('ПОДКЛЮЧАЕМ', 'CONNECTING')
-                                            : _text('НАЖМИТЕ', 'CONNECT'),
+                                            : backend.state == VpnState.error
+                                                ? _text('ПОВТОРИТЬ', 'RETRY')
+                                                : _text(
+                                                    'ПОДКЛЮЧИТЬСЯ', 'CONNECT'),
                                 style: const TextStyle(
-                                    fontSize: 9,
+                                    fontSize: 8.5,
                                     color: Colors.white,
                                     fontWeight: FontWeight.w600,
-                                    letterSpacing: .5),
+                                    letterSpacing: .3),
                               ),
                             ),
                             if (backend.state == VpnState.connected &&
@@ -6621,16 +6670,6 @@ foreach ($route in $routes) {
             ? (backend as IosVpnBackend).uptime
             : process?.uptime ?? Duration.zero;
     return '${d.inHours.toString().padLeft(2, '0')}:${(d.inMinutes % 60).toString().padLeft(2, '0')}:${(d.inSeconds % 60).toString().padLeft(2, '0')}';
-  }
-
-  String _connectedLabel() {
-    return switch (coreSettings.connectionMode) {
-      'proxy' => _text('ПРОКСИ ГОТОВ', 'PROXY READY'),
-      'system' => _text('СИСТЕМНЫЙ ПРОКСИ', 'SYSTEM PROXY'),
-      'tun' => _text('TUN АКТИВЕН', 'TUN ACTIVE'),
-      'mixed' => _text('MIXED АКТИВЕН', 'MIXED ACTIVE'),
-      _ => _text('ПОДКЛЮЧЕНО', 'CONNECTED'),
-    };
   }
 
   Widget _fadeSlideSwap(Widget child, Animation<double> animation) {

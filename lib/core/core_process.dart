@@ -36,6 +36,9 @@ class CoreProcessBackend implements VpnBackend {
   int? _macElevatedPid;
   File? _macElevatedLog;
   Timer? _macElevatedMonitor;
+  String? _macPreviousRouteInterface;
+  String? _macTunnelInterface;
+  Set<String> _macPreviousTunInterfaces = <String>{};
   int _macLogLineCount = 0;
   int _restartCount = 0;
   CoreSettings settings = const CoreSettings();
@@ -49,6 +52,7 @@ class CoreProcessBackend implements VpnBackend {
   VpnState get state => _state;
   DateTime? get startedAt => _startedAt;
   int? get pid => _process?.pid ?? _macElevatedPid;
+  String? get macTunInterface => Platform.isMacOS ? _macTunnelInterface : null;
   String? get lastError => _lastError;
   List<String> get logs => List.unmodifiable(_logs);
   Future<void> flushLogs() => _coreLogWriteQueue;
@@ -71,7 +75,21 @@ class CoreProcessBackend implements VpnBackend {
           : 'iOS cores must run through the native VPN extension backend.';
       throw UnsupportedError(_lastError!);
     }
-    if (_process != null || _state == VpnState.connecting) return;
+    if (_process != null ||
+        _state == VpnState.connecting ||
+        _state == VpnState.connected) {
+      return;
+    }
+    if (Platform.isMacOS &&
+        (_macElevatedPid != null || _macTunnelInterface != null)) {
+      try {
+        await _rollbackMacElevatedStart();
+      } on Object catch (error) {
+        _state = VpnState.error;
+        _lastError = 'Не удалось очистить предыдущий macOS TUN: $error';
+        throw StateError(_lastError!);
+      }
+    }
     _shouldStayConnected = true;
     _initializing = true;
     _recoveryInProgress = false;
@@ -88,6 +106,13 @@ class CoreProcessBackend implements VpnBackend {
       } on Object catch (error) {
         lastError = error;
         _process = null;
+        try {
+          await _rollbackMacElevatedStart();
+        } on Object catch (rollbackError) {
+          lastError =
+              StateError('$error; macOS TUN rollback failed: $rollbackError');
+          break;
+        }
         await _cleanupConfig();
         final retryable = error is ProcessException ||
             (error is FormatException &&
@@ -249,6 +274,9 @@ class CoreProcessBackend implements VpnBackend {
         '< /dev/null & echo ${String.fromCharCode(36)}!';
     final script = 'do shell script ${_appleScriptQuote(command)} '
         'with administrator privileges';
+    _macPreviousRouteInterface = await _macRouteInterface('1.1.1.1');
+    _macPreviousTunInterfaces = await _macGhostBoxTunInterfaces();
+    _macTunnelInterface = null;
     final launched = await Process.run('osascript', ['-e', script])
         .timeout(const Duration(minutes: 3));
     if (launched.exitCode != 0) {
@@ -267,11 +295,11 @@ class CoreProcessBackend implements VpnBackend {
     await Future<void>.delayed(const Duration(milliseconds: 500));
     await _readMacElevatedLog(profile);
     if (!await _macElevatedProcessAlive(pid)) {
-      _macElevatedPid = null;
       throw FormatException(
         'Ядро TUN завершилось сразу после запуска: ${_logs.isEmpty ? 'см. журнал' : _logs.last}',
       );
     }
+    await _waitForMacGhostBoxRoute();
     _state = VpnState.connected;
     _lastError = null;
     _restartCount = 0;
@@ -280,6 +308,149 @@ class CoreProcessBackend implements VpnBackend {
         Timer.periodic(const Duration(milliseconds: 600), (_) {
       unawaited(_monitorMacElevatedProcess(profile, pid));
     });
+  }
+
+  Future<String?> _macRouteInterface(String destination) async {
+    try {
+      final result = await Process.run(
+        '/sbin/route',
+        ['-n', 'get', destination],
+      ).timeout(const Duration(seconds: 2));
+      if (result.exitCode != 0) return null;
+      return RegExp(r'^\s*interface:\s*(\S+)', multiLine: true)
+          .firstMatch(result.stdout.toString())
+          ?.group(1);
+    } on Object {
+      return null;
+    }
+  }
+
+  Future<Set<String>> _macGhostBoxTunInterfaces() async {
+    try {
+      final result = await Process.run('/sbin/ifconfig', ['-a'])
+          .timeout(const Duration(seconds: 2));
+      if (result.exitCode != 0) return <String>{};
+      final interfaces = <String>{};
+      var interfaceName = '';
+      for (final line in result.stdout.toString().split('\n')) {
+        final header = RegExp(r'^([A-Za-z0-9_.:-]+):').firstMatch(line);
+        if (header != null) interfaceName = header.group(1)!;
+        if (interfaceName.startsWith('utun') &&
+            RegExp(r'^\s*inet\s+172\.19\.0\.1(?:\s|$)').hasMatch(line)) {
+          interfaces.add(interfaceName);
+        }
+      }
+      return interfaces;
+    } on Object {
+      return <String>{};
+    }
+  }
+
+  Future<void> _waitForMacGhostBoxRoute() async {
+    final deadline = DateTime.now().add(const Duration(seconds: 8));
+    while (DateTime.now().isBefore(deadline)) {
+      final pid = _macElevatedPid;
+      if (pid == null || !await _macElevatedProcessAlive(pid)) {
+        throw FormatException(
+          'Привилегированное ядро завершилось до установки маршрута GhostBox TUN.',
+        );
+      }
+      final currentInterfaces = await _macGhostBoxTunInterfaces();
+      final newInterfaces =
+          currentInterfaces.difference(_macPreviousTunInterfaces);
+      if (newInterfaces.length == 1) {
+        final tunInterface = newInterfaces.single;
+        // Retain the interface even if route verification fails, so rollback
+        // can verify that this newly-created tunnel was removed.
+        _macTunnelInterface = tunInterface;
+        final routeInterface = await _macRouteInterface('1.1.1.1');
+        if (routeInterface == tunInterface) {
+          return;
+        }
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+    }
+    final currentInterfaces = await _macGhostBoxTunInterfaces();
+    final newInterfaces =
+        currentInterfaces.difference(_macPreviousTunInterfaces);
+    final tunInterface =
+        newInterfaces.length == 1 ? newInterfaces.single : null;
+    _macTunnelInterface = tunInterface;
+    final routeInterface = await _macRouteInterface('1.1.1.1');
+    throw FormatException(
+      'Маршрут macOS не идёт через GhostBox TUN'
+      '${tunInterface == null ? '' : ' ($tunInterface)'}'
+      '${routeInterface == null ? '' : '; сейчас используется $routeInterface'}.',
+    );
+  }
+
+  Future<void> _rollbackMacElevatedStart() async {
+    final pid = _macElevatedPid;
+    if (!Platform.isMacOS) return;
+    if (pid == null) {
+      final routeInterface = await _macRouteInterface('1.1.1.1');
+      final remainingInterfaces = await _macGhostBoxTunInterfaces();
+      final staleInterfaces =
+          remainingInterfaces.difference(_macPreviousTunInterfaces);
+      if ((_macTunnelInterface != null &&
+              (routeInterface == _macTunnelInterface ||
+                  remainingInterfaces.contains(_macTunnelInterface))) ||
+          staleInterfaces.isNotEmpty) {
+        throw StateError(
+          'Предыдущий GhostBox TUN интерфейс остался активен'
+          '${_macTunnelInterface == null ? '' : ' ($_macTunnelInterface)'}; '
+          'маршрут не будет изменён, пока не завершится его очистка.',
+        );
+      }
+      final previousInterface = _macPreviousRouteInterface;
+      if (previousInterface != null && routeInterface != previousInterface) {
+        throw StateError(
+          'Исходный маршрут через $previousInterface не восстановился'
+          '${routeInterface == null ? '' : ' (сейчас $routeInterface)'}.',
+        );
+      }
+      _macPreviousRouteInterface = null;
+      _macTunnelInterface = null;
+      _macPreviousTunInterfaces.clear();
+      return;
+    }
+
+    _macElevatedMonitor?.cancel();
+    _macElevatedMonitor = null;
+    await _stopMacElevated(pid);
+    for (var attempt = 0; attempt < 50; attempt++) {
+      if (!await _macElevatedProcessAlive(pid)) break;
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    }
+    if (await _macElevatedProcessAlive(pid)) {
+      throw StateError(
+          'Привилегированное ядро $pid осталось запущено после очистки.');
+    }
+
+    _macElevatedPid = null;
+    _startedAt = null;
+    final routeInterface = await _macRouteInterface('1.1.1.1');
+    final ghostBoxInterface = _macTunnelInterface;
+    final remainingInterfaces = await _macGhostBoxTunInterfaces();
+    if ((ghostBoxInterface != null &&
+            (routeInterface == ghostBoxInterface ||
+                remainingInterfaces.contains(ghostBoxInterface))) ||
+        remainingInterfaces.difference(_macPreviousTunInterfaces).isNotEmpty) {
+      throw StateError(
+        'После остановки ядра маршрут или интерфейс GhostBox TUN всё ещё активен'
+        '${ghostBoxInterface == null ? '' : ' ($ghostBoxInterface)'}.',
+      );
+    }
+    final previousInterface = _macPreviousRouteInterface;
+    if (previousInterface != null && routeInterface != previousInterface) {
+      throw StateError(
+        'Исходный маршрут через $previousInterface не восстановился'
+        '${routeInterface == null ? '' : ' (сейчас $routeInterface)'}.',
+      );
+    }
+    _macPreviousRouteInterface = null;
+    _macTunnelInterface = null;
+    _macPreviousTunInterfaces.clear();
   }
 
   Future<void> _monitorMacElevatedProcess(
@@ -430,9 +601,14 @@ class CoreProcessBackend implements VpnBackend {
         return -1;
       });
     final elevatedPid = _macElevatedPid;
-    _macElevatedPid = null;
     if (Platform.isMacOS && elevatedPid != null) {
-      await _stopMacElevated(elevatedPid);
+      try {
+        await _stopMacElevated(elevatedPid);
+      } on Object catch (error) {
+        _state = VpnState.error;
+        _lastError = 'Не удалось остановить macOS TUN: $error';
+        rethrow;
+      }
       for (var attempt = 0; attempt < 10; attempt++) {
         if (!await _macElevatedProcessAlive(elevatedPid)) break;
         await Future<void>.delayed(const Duration(milliseconds: 100));
@@ -444,11 +620,37 @@ class CoreProcessBackend implements VpnBackend {
             'macOS не завершила ядро TUN. Подтвердите остановку с правами администратора.';
         throw StateError(_lastError!);
       }
+      _macElevatedPid = null;
+    }
+    final stoppedTunnelInterface = _macTunnelInterface;
+    if (Platform.isMacOS && stoppedTunnelInterface != null) {
+      final routeInterface = await _macRouteInterface('1.1.1.1');
+      final remainingTunnelInterfaces = await _macGhostBoxTunInterfaces();
+      if (routeInterface == stoppedTunnelInterface ||
+          remainingTunnelInterfaces.contains(stoppedTunnelInterface)) {
+        _state = VpnState.error;
+        _lastError =
+            'После остановки VPN маршрут или интерфейс GhostBox TUN остался активен ($stoppedTunnelInterface).';
+        throw StateError(_lastError!);
+      }
+    }
+    final previousRouteInterface = _macPreviousRouteInterface;
+    if (Platform.isMacOS && previousRouteInterface != null) {
+      final routeInterface = await _macRouteInterface('1.1.1.1');
+      if (routeInterface != previousRouteInterface) {
+        _state = VpnState.error;
+        _lastError =
+            'Исходный маршрут macOS через $previousRouteInterface не восстановился${routeInterface == null ? '' : ' (сейчас $routeInterface)'}.';
+        throw StateError(_lastError!);
+      }
     }
     await _cleanupConfig();
     _startedAt = null;
     _state = VpnState.disconnected;
     _recoveryInProgress = false;
+    _macPreviousRouteInterface = null;
+    _macTunnelInterface = null;
+    _macPreviousTunInterfaces.clear();
   }
 
   Future<void> _stopMacElevated(int pid) async {
@@ -478,6 +680,7 @@ class CoreProcessBackend implements VpnBackend {
     } on Object catch (error) {
       _writeLifecycleLog(
           'Не удалось остановить привилегированное ядро TUN: $error');
+      rethrow;
     }
   }
 
