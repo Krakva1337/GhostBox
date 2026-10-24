@@ -185,19 +185,9 @@ Win32Window::MessageHandler(HWND hwnd,
     case WM_CLOSE: {
       // Keep the VPN core and its TUN/proxy state alive when the user closes
       // the window. The tray menu still offers an explicit Exit command.
-      NOTIFYICONDATAW tray{};
-      tray.cbSize = sizeof(tray);
-      tray.hWnd = hwnd;
-      tray.uID = kTrayIconId;
-      tray.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
-      tray.uCallbackMessage = kTrayMessage;
-      tray.hIcon = LoadIcon(GetModuleHandle(nullptr),
-                            MAKEINTRESOURCE(IDI_APP_ICON));
-      wcscpy_s(tray.szTip, L"GhostBox is running");
-      if (!Shell_NotifyIconW(NIM_ADD, &tray)) {
+      if (!EnsureTrayIcon()) {
         return DefWindowProc(hwnd, message, wparam, lparam);
       }
-      tray_icon_added_ = true;
       ShowWindow(hwnd, SW_HIDE);
       return 0;
     }
@@ -212,8 +202,9 @@ Win32Window::MessageHandler(HWND hwnd,
         GetCursorPos(&point);
         HMENU menu = CreatePopupMenu();
         AppendMenuW(menu, MF_STRING, 1, L"Open GhostBox");
+        AppendMenuW(menu, MF_STRING, 2, L"Connect / Disconnect");
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(menu, MF_STRING, 2, L"Exit");
+        AppendMenuW(menu, MF_STRING, 3, L"Exit");
         SetForegroundWindow(hwnd);
         const UINT selected = TrackPopupMenu(
             menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, point.x, point.y, 0, hwnd,
@@ -223,6 +214,8 @@ Win32Window::MessageHandler(HWND hwnd,
           ShowWindow(hwnd, SW_RESTORE);
           SetForegroundWindow(hwnd);
         } else if (selected == 2) {
+          if (tray_toggle_callback_) tray_toggle_callback_();
+        } else if (selected == 3) {
           if (tray_icon_added_) {
             NOTIFYICONDATAW tray{};
             tray.cbSize = sizeof(tray);
@@ -326,6 +319,26 @@ HWND Win32Window::GetHandle() {
 
 void Win32Window::SetQuitOnClose(bool quit_on_close) {
   quit_on_close_ = quit_on_close;
+}
+
+bool Win32Window::EnsureTrayIcon() {
+  if (tray_icon_added_) return true;
+  if (!window_handle_) return false;
+
+  NOTIFYICONDATAW tray{};
+  tray.cbSize = sizeof(tray);
+  tray.hWnd = window_handle_;
+  tray.uID = kTrayIconId;
+  tray.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+  tray.uCallbackMessage = kTrayMessage;
+  tray.hIcon = LoadIcon(GetModuleHandle(nullptr), MAKEINTRESOURCE(IDI_APP_ICON));
+  wcscpy_s(tray.szTip, L"GhostBox");
+  tray_icon_added_ = Shell_NotifyIconW(NIM_ADD, &tray) != FALSE;
+  return tray_icon_added_;
+}
+
+void Win32Window::SetTrayToggleCallback(std::function<void()> callback) {
+  tray_toggle_callback_ = callback;
 }
 
 bool Win32Window::OnCreate() {

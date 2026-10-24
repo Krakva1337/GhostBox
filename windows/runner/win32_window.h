@@ -52,6 +52,11 @@ class Win32Window {
   // If true, closing this window will quit the application.
   void SetQuitOnClose(bool quit_on_close);
 
+  // Keep an always-available notification area icon and connect its command
+  // menu to the app's platform channel.
+  bool EnsureTrayIcon();
+  void SetTrayToggleCallback(std::function<void()> callback);
+
   // Return a RECT representing the bounds of the current client area.
   RECT GetClientArea();
 
@@ -92,6 +97,7 @@ class Win32Window {
 
   bool quit_on_close_ = false;
   bool tray_icon_added_ = false;
+  std::function<void()> tray_toggle_callback_;
 
   // window handle for top level window.
   HWND window_handle_ = nullptr;

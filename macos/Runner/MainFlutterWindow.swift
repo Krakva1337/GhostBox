@@ -1,7 +1,7 @@
 import Cocoa
 import FlutterMacOS
 
-class MainFlutterWindow: NSWindow {
+class MainFlutterWindow: NSWindow, NSWindowDelegate {
   override func awakeFromNib() {
     let flutterViewController = FlutterViewController()
     self.contentViewController = flutterViewController
@@ -14,10 +14,20 @@ class MainFlutterWindow: NSWindow {
     self.contentMinSize = NSSize(width: 420, height: 640)
     self.setFrame(NSRect(origin: .zero, size: windowSize), display: true)
     self.center()
+    self.delegate = self
 
     // Keep the bundle's static AppIcon. macOS applies the user's Dock icon
     // appearance itself; overriding NSApp.applicationIconImage bypasses it.
     RegisterGeneratedPlugins(registry: flutterViewController)
+    (NSApp.delegate as? AppDelegate)?.installMenuBarItem(
+      messenger: flutterViewController.engine.binaryMessenger
+    )
     super.awakeFromNib()
+  }
+
+  func windowShouldClose(_ sender: NSWindow) -> Bool {
+    if (NSApp.delegate as? AppDelegate)?.isQuitting == true { return true }
+    sender.orderOut(nil)
+    return false
   }
 }

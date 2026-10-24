@@ -5,6 +5,35 @@ HERE="$(dirname "$(readlink -f "$0")")"
 DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
 VENDOR_DIR="$DATA_HOME/ghostbox-appimage/vendor"
 
+# Auto-updates replace the extracted AppDir, but older installed updater
+# scripts may not refresh desktop metadata. Repair the launcher on every start
+# of an installed release so Rofi never keeps a versioned/stale application
+# name after updating.
+case "$HERE/" in
+  "$HOME/.local/opt/ghostbox/releases/"*)
+    DESKTOP_DIR="$DATA_HOME/applications"
+    LAUNCHER="$HOME/.local/bin/ghostbox"
+    mkdir -p "$DESKTOP_DIR"
+    cat > "$DESKTOP_DIR/ghostbox.desktop" <<EOF
+[Desktop Entry]
+Name=GhostBox Alpha
+Comment=Linux VPN client powered by Xray and sing-box
+Exec="$LAUNCHER" %U
+TryExec=$LAUNCHER
+Icon=ghostbox
+Terminal=false
+Type=Application
+Categories=Network;Security;
+MimeType=x-scheme-handler/ghostbox;
+StartupWMClass=ghostbox
+EOF
+    chmod 0644 "$DESKTOP_DIR/ghostbox.desktop"
+    if command -v update-desktop-database >/dev/null 2>&1; then
+      update-desktop-database "$DESKTOP_DIR" >/dev/null 2>&1 || true
+    fi
+    ;;
+esac
+
 # AppImages are mounted read-only. Keep the active core in a user-owned
 # directory so CAP_NET_ADMIN can be granted to either core with setcap.
 mkdir -p "$VENDOR_DIR/bin"

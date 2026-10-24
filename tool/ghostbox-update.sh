@@ -13,6 +13,7 @@ APP_PATH="$APP_DIR/GhostBox.AppImage"
 RELEASES_DIR="$APP_DIR/releases"
 LAUNCHER="${HOME}/.local/bin/ghostbox"
 DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
+DESKTOP_DIR="$DATA_HOME/applications"
 VENDOR_DIR="$DATA_HOME/ghostbox-appimage/vendor/bin"
 ICON_DIR="$DATA_HOME/icons/hicolor/scalable/apps"
 APP_RUN_SOURCE="${GHOSTBOX_APP_RUN_SOURCE:-}"
@@ -79,6 +80,27 @@ fi
 if [[ -f "$NEW_RELEASE/ghostbox.svg" ]]; then
   mkdir -p "$ICON_DIR"
   install -m 0644 "$NEW_RELEASE/ghostbox.svg" "$ICON_DIR/ghostbox.svg"
+fi
+
+# Refresh the launcher metadata on every application update so Rofi and other
+# desktop launchers don't keep an old versioned Name from an earlier install.
+mkdir -p "$DESKTOP_DIR"
+cat > "$DESKTOP_DIR/ghostbox.desktop" <<EOF
+[Desktop Entry]
+Name=GhostBox Alpha
+Comment=Linux VPN client powered by Xray and sing-box
+Exec="$LAUNCHER" %U
+TryExec=$LAUNCHER
+Icon=ghostbox
+Terminal=false
+Type=Application
+Categories=Network;Security;
+MimeType=x-scheme-handler/ghostbox;
+StartupWMClass=ghostbox
+EOF
+chmod 0644 "$DESKTOP_DIR/ghostbox.desktop"
+if command -v update-desktop-database >/dev/null 2>&1; then
+  update-desktop-database "$DESKTOP_DIR" >/dev/null 2>&1 || true
 fi
 
 # The old process has exited and AppDir now points at the verified new bundle.

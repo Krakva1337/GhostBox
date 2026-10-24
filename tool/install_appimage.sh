@@ -63,7 +63,7 @@ chmod 0755 "$LAUNCHER"
 
 cat > "$DESKTOP_DIR/ghostbox.desktop" <<EOF
 [Desktop Entry]
-Name=GhostBox v$APP_VERSION
+Name=GhostBox Alpha
 Comment=Linux VPN client powered by Xray and sing-box
 Exec="$LAUNCHER" %U
 TryExec=$LAUNCHER

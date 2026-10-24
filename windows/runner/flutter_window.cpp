@@ -276,6 +276,17 @@ bool FlutterWindow::OnCreate() {
         PersistLauncherIcon(launcher_icon);
         result->Success(flutter::EncodableValue(true));
       });
+  system_tray_channel_ = std::make_unique<
+      flutter::MethodChannel<flutter::EncodableValue>>(
+      flutter_controller_->engine()->messenger(),
+      "app.ghostbox.ghostbox/system_tray",
+      &flutter::StandardMethodCodec::GetInstance());
+  SetTrayToggleCallback([this]() {
+    if (system_tray_channel_) {
+      system_tray_channel_->InvokeMethod("toggleConnection", nullptr);
+    }
+  });
+  EnsureTrayIcon();
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
@@ -291,6 +302,8 @@ bool FlutterWindow::OnCreate() {
 }
 
 void FlutterWindow::OnDestroy() {
+  SetTrayToggleCallback({});
+  system_tray_channel_.reset();
   core_lifecycle_.reset();
   if (flutter_controller_) {
     flutter_controller_ = nullptr;

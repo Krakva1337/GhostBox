@@ -1,5 +1,5 @@
 [Desktop Entry]
-Name=GhostBox
+Name=GhostBox Alpha
 Comment=Cross-platform VPN client powered by Xray and sing-box
 Exec=AppRun %U
 Icon=ghostbox
