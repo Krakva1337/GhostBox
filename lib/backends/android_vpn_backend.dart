@@ -38,6 +38,10 @@ class AndroidVpnBackend implements VpnBackend {
   int _readLogCount = 0;
   DateTime? _connectedAt;
   bool _hasRecentNativeStopAcknowledgement = false;
+  int? _xrayBridgeSocksPort;
+  ServerProfile? _activeXrayBridgeProfile;
+  String? _activeXrayConfig;
+  List<String> _activeXrayEndpointExclusions = const [];
 
   Duration get uptime {
     final startedAt = _connectedAt;
@@ -218,41 +222,173 @@ class AndroidVpnBackend implements VpnBackend {
       state = VpnState.error;
       _connectedAt = null;
       await _stopVpnBestEffort();
+      _clearXrayBridgeSession();
       rethrow;
     } on Object catch (error) {
       lastError = error.toString();
       state = VpnState.error;
       _connectedAt = null;
       await _stopVpnBestEffort();
+      _clearXrayBridgeSession();
       rethrow;
     }
   }
 
+  bool get canSwitchServerInPlace =>
+      state == VpnState.connected &&
+      settings.core == 'xray' &&
+      _xrayBridgeSocksPort != null &&
+      _activeXrayBridgeProfile != null &&
+      _activeXrayConfig != null;
+
+  /// Switch an active Android Xray + sing-box bridge without stopping its VPN
+  /// service. sing-box keeps the local SOCKS route/TUN alive while Xray swaps
+  /// the upstream core instance inside its existing :xray process.
+  Future<void> switchServer(String profileJson) async {
+    if (!canSwitchServerInPlace) {
+      throw StateError(
+          'Android Xray bridge is not ready for in-place switching');
+    }
+
+    final socksPort = _xrayBridgeSocksPort!;
+    final previousProfile = _activeXrayBridgeProfile!;
+    final previousXrayConfig = _activeXrayConfig!;
+    final previousExclusions = _activeXrayEndpointExclusions;
+    final target = ServerProfile.fromJson(
+      _stringKeyedMap(jsonDecode(profileJson)),
+    );
+    final exclusions = await _resolveXrayEndpointExclusions(target);
+    final nextXrayConfig = const JsonEncoder.withIndent('  ')
+        .convert(_buildXrayProxyConfig(target, socksPort));
+    final previousConnectedAt = _connectedAt;
+    var singBoxReloadAttempted = false;
+    var xrayReloadAttempted = false;
+
+    try {
+      singBoxReloadAttempted = true;
+      await _reloadXrayBridgeTun(
+        target,
+        socksPort: socksPort,
+        endpointExclusions: exclusions,
+        waitTimeout: const Duration(seconds: 12),
+      );
+
+      xrayReloadAttempted = true;
+      await _queueXrayProxyReload(nextXrayConfig, target.name);
+      await _waitForXrayProxy(timeout: const Duration(seconds: 12));
+
+      _activeXrayBridgeProfile = target;
+      _activeXrayConfig = nextXrayConfig;
+      _activeXrayEndpointExclusions = exclusions;
+      state = VpnState.connected;
+      lastError = null;
+    } on Object catch (error, stackTrace) {
+      final rollbackErrors = <Object>[];
+      if (xrayReloadAttempted) {
+        try {
+          await _queueXrayProxyReload(previousXrayConfig, previousProfile.name);
+          await _waitForXrayProxy(timeout: const Duration(seconds: 12));
+        } on Object catch (rollbackError) {
+          rollbackErrors.add(rollbackError);
+        }
+      }
+      if (singBoxReloadAttempted) {
+        try {
+          await _reloadXrayBridgeTun(
+            previousProfile,
+            socksPort: socksPort,
+            endpointExclusions: previousExclusions,
+            waitTimeout: const Duration(seconds: 12),
+          );
+        } on Object catch (rollbackError) {
+          rollbackErrors.add(rollbackError);
+        }
+      }
+
+      if (rollbackErrors.isEmpty) {
+        state = VpnState.connected;
+        _connectedAt = previousConnectedAt;
+        lastError = error.toString();
+      } else {
+        state = VpnState.error;
+        _connectedAt = null;
+        lastError = '$error; Android switch rollback failed: '
+            '${rollbackErrors.join(' | ')}';
+      }
+      Error.throwWithStackTrace(error, stackTrace);
+    }
+  }
+
   Future<void> _connectXrayThroughSingBox(ServerProfile profile) async {
-    // Resolve the upstream before Android installs the full-device route.
-    // The sing-box router must bypass the Xray server itself or Xray's
-    // outbound connection can be captured by the TUN and loop back into its
-    // own SOCKS inbound. Keep the original hostname in the Xray profile for
-    // SNI/Host handling; only add resolved addresses to the TUN exclusions.
+    final endpointExclusions = await _resolveXrayEndpointExclusions(profile);
+    final socksPort = await _ensureXrayBridgeSocksPort();
+    final xrayConfig = _buildXrayProxyConfig(profile, socksPort);
+
+    try {
+      await _channel.invokeMethod<void>('startVpn', {
+        'config': const JsonEncoder.withIndent('  ').convert(xrayConfig),
+        'profileName': profile.name,
+        'memoryMb': settings.memoryMb,
+        'core': 'xray',
+        'proxyOnly': true,
+      }).timeout(const Duration(seconds: 20));
+      await _waitForXrayProxy();
+
+      final singBoxConfig = _buildXrayBridgeTunConfig(
+        profile,
+        socksPort: socksPort,
+        endpointExclusions: endpointExclusions,
+      );
+      await _channel.invokeMethod<void>('startVpn', {
+        'config': const JsonEncoder.withIndent('  ').convert(singBoxConfig),
+        'profileName': profile.name,
+        'memoryMb': settings.memoryMb,
+        'core': 'sing-box',
+        'keepXray': true,
+      }).timeout(const Duration(seconds: 20));
+      await _waitForSingBoxTun();
+      _activeXrayBridgeProfile = profile;
+      _activeXrayConfig =
+          const JsonEncoder.withIndent('  ').convert(xrayConfig);
+      _activeXrayEndpointExclusions = endpointExclusions;
+    } on Object {
+      await _stopVpnBestEffort();
+      rethrow;
+    }
+  }
+
+  Future<List<String>> _resolveXrayEndpointExclusions(
+      ServerProfile profile) async {
+    // Resolve before replacing the Xray outbound so the TUN router can bypass
+    // its current/new server endpoints without changing Xray's SNI hostname.
     final endpointAddresses = await InternetAddress.lookup(profile.address)
-        .timeout(const Duration(seconds: 8));
+        .timeout(const Duration(seconds: 4));
     if (endpointAddresses.isEmpty) {
       throw SocketException(
           'Could not resolve Xray server ${profile.address} before enabling Android TUN');
     }
-    final endpointExclusions = {
+    return {
       if (profile.raw['_tunExcludeAddresses'] is List)
         ...(profile.raw['_tunExcludeAddresses'] as List)
             .map((value) => value.toString()),
       ...endpointAddresses.map((address) =>
           '${address.address}/${address.type == InternetAddressType.IPv4 ? 32 : 128}'),
     }.toList();
+  }
 
-    final socksReservation =
+  Future<int> _ensureXrayBridgeSocksPort() async {
+    final activePort = _xrayBridgeSocksPort;
+    if (activePort != null) return activePort;
+    final reservation =
         await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
-    final socksPort = socksReservation.port;
-    await socksReservation.close();
+    final port = reservation.port;
+    await reservation.close();
+    _xrayBridgeSocksPort = port;
+    return port;
+  }
 
+  Map<String, dynamic> _buildXrayProxyConfig(
+      ServerProfile profile, int socksPort) {
     final xrayBuilder = CoreProcessBackend(
       name: 'xray',
       executable: '',
@@ -270,20 +406,20 @@ class AndroidVpnBackend implements VpnBackend {
         proxyApps: const [],
         localPort: settings.localPort,
       );
-    final xrayConfig = xrayBuilder.makeConfig(profile);
-    final xrayInbounds = _configObjects(xrayConfig['inbounds']);
-    xrayConfig['inbounds'] = xrayInbounds;
-    final localInbound = xrayInbounds.firstWhere(
+    final config = xrayBuilder.makeConfig(profile);
+    final inbounds = _configObjects(config['inbounds']);
+    config['inbounds'] = inbounds;
+    final localInbound = inbounds.firstWhere(
       (inbound) => inbound['tag'] == 'local',
       orElse: () => throw const FormatException(
         'Xray config is missing its local proxy inbound',
       ),
     );
-    // Keep the HTTP listener used by Android Proxy GET and add a separate
-    // SOCKS listener for the sing-box TUN router.
+    // Keep the HTTP listener used by Android Proxy GET and use a stable SOCKS
+    // port so the live sing-box bridge does not have to change inbounds.
     localInbound['protocol'] = 'http';
     localInbound['settings'] = {'allowTransparent': false};
-    xrayInbounds.add({
+    inbounds.add({
       'tag': 'tun-bridge-socks',
       'listen': '127.0.0.1',
       'port': socksPort,
@@ -295,69 +431,78 @@ class AndroidVpnBackend implements VpnBackend {
         'routeOnly': true,
       },
     });
-
-    try {
-      await _channel.invokeMethod<void>('startVpn', {
-        'config': const JsonEncoder.withIndent('  ').convert(xrayConfig),
-        'profileName': profile.name,
-        'memoryMb': settings.memoryMb,
-        'core': 'xray',
-        'proxyOnly': true,
-      }).timeout(const Duration(seconds: 20));
-      await _waitForXrayProxy();
-
-      final bridgeProfile = ServerProfile(
-        id: 'ghostbox-android-xray-bridge',
-        name: 'GhostBox Xray upstream',
-        protocol: 'socks',
-        address: '127.0.0.1',
-        port: socksPort,
-        raw: const {'_tunBridge': true},
-      );
-      final routedBridgeProfile = ServerProfile(
-        id: bridgeProfile.id,
-        name: bridgeProfile.name,
-        protocol: bridgeProfile.protocol,
-        address: bridgeProfile.address,
-        port: bridgeProfile.port,
-        raw: {
-          ...bridgeProfile.raw,
-          '_tunExcludeAddresses': endpointExclusions,
-        },
-      );
-      final singBoxBuilder = CoreProcessBackend(
-        name: 'sing-box',
-        executable: '',
-        configPath: 'vendor/config/sing-box-android-tun.json',
-      )..settings = settings.copyWith(
-          core: 'sing-box',
-          connectionMode: 'tun',
-        );
-      final singBoxConfig = singBoxBuilder.makeConfig(routedBridgeProfile);
-      final routeValue = singBoxConfig['route'];
-      if (routeValue is Map) {
-        singBoxConfig['route'] = _stringKeyedMap(routeValue)
-          ..remove('auto_detect_interface');
-      }
-      await _channel.invokeMethod<void>('startVpn', {
-        'config': const JsonEncoder.withIndent('  ').convert(singBoxConfig),
-        'profileName': profile.name,
-        'memoryMb': settings.memoryMb,
-        'core': 'sing-box',
-        'keepXray': true,
-      }).timeout(const Duration(seconds: 20));
-      await _waitForSingBoxTun();
-    } on Object {
-      await _stopVpnBestEffort();
-      rethrow;
-    }
+    return config;
   }
 
-  Future<void> _waitForXrayProxy() async {
-    for (var attempt = 0; attempt < 150; attempt++) {
+  Map<String, dynamic> _buildXrayBridgeTunConfig(
+    ServerProfile profile, {
+    required int socksPort,
+    required List<String> endpointExclusions,
+  }) {
+    final bridgeProfile = ServerProfile(
+      id: 'ghostbox-android-xray-bridge',
+      name: 'GhostBox Xray upstream',
+      protocol: 'socks',
+      address: '127.0.0.1',
+      port: socksPort,
+      raw: {
+        '_tunBridge': true,
+        '_tunExcludeAddresses': endpointExclusions,
+      },
+    );
+    final singBoxBuilder = CoreProcessBackend(
+      name: 'sing-box',
+      executable: '',
+      configPath: 'vendor/config/sing-box-android-tun.json',
+    )..settings = settings.copyWith(
+        core: 'sing-box',
+        connectionMode: 'tun',
+      );
+    final config = singBoxBuilder.makeConfig(bridgeProfile);
+    final routeValue = config['route'];
+    if (routeValue is Map) {
+      config['route'] = _stringKeyedMap(routeValue)
+        ..remove('auto_detect_interface');
+    }
+    return config;
+  }
+
+  Future<void> _reloadXrayBridgeTun(
+    ServerProfile profile, {
+    required int socksPort,
+    required List<String> endpointExclusions,
+    Duration waitTimeout = const Duration(seconds: 30),
+  }) async {
+    final config = _buildXrayBridgeTunConfig(
+      profile,
+      socksPort: socksPort,
+      endpointExclusions: endpointExclusions,
+    );
+    await _channel.invokeMethod<void>('startVpn', {
+      'config': const JsonEncoder.withIndent('  ').convert(config),
+      'profileName': profile.name,
+      'memoryMb': settings.memoryMb,
+      'core': 'sing-box',
+      'keepXray': true,
+    }).timeout(const Duration(seconds: 20));
+    await _waitForSingBoxTun(timeout: waitTimeout);
+  }
+
+  Future<void> _queueXrayProxyReload(String config, String profileName) async {
+    await _channel.invokeMethod<void>('reloadXrayProxy', {
+      'config': config,
+      'profileName': profileName,
+      'memoryMb': settings.memoryMb,
+    }).timeout(const Duration(seconds: 10));
+  }
+
+  Future<void> _waitForXrayProxy(
+      {Duration timeout = const Duration(seconds: 30)}) async {
+    final stopwatch = Stopwatch()..start();
+    while (stopwatch.elapsed < timeout) {
       final nativeState = await _channel
           .invokeMethod<String>('xrayProxyState')
-          .timeout(const Duration(seconds: 3));
+          .timeout(const Duration(seconds: 1));
       if (nativeState == 'connected') return;
       if (nativeState == 'error') {
         throw PlatformException(
@@ -368,19 +513,22 @@ class AndroidVpnBackend implements VpnBackend {
               'Xray could not start the Android upstream proxy',
         );
       }
-      await Future<void>.delayed(const Duration(milliseconds: 200));
+      await Future<void>.delayed(const Duration(milliseconds: 100));
     }
     throw PlatformException(
       code: 'xray_start_timeout',
-      message: 'Xray upstream did not start within 30 seconds',
+      message:
+          'Xray upstream did not start within ${timeout.inSeconds} seconds',
     );
   }
 
-  Future<void> _waitForSingBoxTun() async {
-    for (var attempt = 0; attempt < 150; attempt++) {
+  Future<void> _waitForSingBoxTun(
+      {Duration timeout = const Duration(seconds: 30)}) async {
+    final stopwatch = Stopwatch()..start();
+    while (stopwatch.elapsed < timeout) {
       final nativeState = await _channel
           .invokeMethod<String>('vpnState')
-          .timeout(const Duration(seconds: 3));
+          .timeout(const Duration(seconds: 1));
       if (nativeState == 'connected') {
         state = VpnState.connected;
         final timestamp = await _channel
@@ -400,11 +548,12 @@ class AndroidVpnBackend implements VpnBackend {
               'sing-box could not start the Android TUN router',
         );
       }
-      await Future<void>.delayed(const Duration(milliseconds: 200));
+      await Future<void>.delayed(const Duration(milliseconds: 100));
     }
     throw PlatformException(
       code: 'start_timeout',
-      message: 'sing-box did not start the Android TUN within 30 seconds',
+      message:
+          'sing-box did not start the Android TUN within ${timeout.inSeconds} seconds',
     );
   }
 
@@ -415,6 +564,14 @@ class AndroidVpnBackend implements VpnBackend {
     lastError = null;
     _connectedAt = null;
     _readLogCount = 0;
+    _clearXrayBridgeSession();
+  }
+
+  void _clearXrayBridgeSession() {
+    _xrayBridgeSocksPort = null;
+    _activeXrayBridgeProfile = null;
+    _activeXrayConfig = null;
+    _activeXrayEndpointExclusions = const [];
   }
 
   Future<void> _stopVpnBestEffort(

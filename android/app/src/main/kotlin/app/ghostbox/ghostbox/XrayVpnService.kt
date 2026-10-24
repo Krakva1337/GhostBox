@@ -14,6 +14,7 @@ import org.json.JSONObject
 import java.io.File
 import java.lang.reflect.Proxy
 import java.lang.reflect.InvocationTargetException
+import java.util.concurrent.Executors
 import java.util.zip.ZipFile
 
 /** Xray owns its Go runtime in :xray, separate from sing-box's :singbox process. */
@@ -22,6 +23,8 @@ class XrayVpnService : VpnService() {
         const val EXTRA_CONFIG = "ghostbox.xray.config"
         const val EXTRA_PROFILE = "ghostbox.xray.profile"
         const val EXTRA_PROXY_ONLY = "ghostbox.xray.proxy_only"
+        const val EXTRA_MEMORY = "ghostbox.xray.memory_mb"
+        const val ACTION_RELOAD_PROXY = "app.ghostbox.RELOAD_XRAY_PROXY"
         private const val TAG = "GhostBoxXray"
         private const val CHANNEL_ID = "ghostbox_vpn"
         private const val VPN_NOTIFICATION_ID = 731
@@ -37,12 +40,68 @@ class XrayVpnService : VpnService() {
     @Volatile private var proxyOnlyMode = false
     @Volatile private var stopping = false
     @Volatile private var explicitStopRequested = false
+    private val coreLifecycleLock = Any()
+    private val coreWorker = Executors.newSingleThreadExecutor { task ->
+        Thread(task, "GhostBox-xray-core").apply { isDaemon = true }
+    }
+    @Volatile private var proxyReloadQueued = false
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         recordAndroidVpnPolicy()
         if (intent?.action == "app.ghostbox.STOP_VPN") {
             explicitStopRequested = true
             stopXray()
+            return START_NOT_STICKY
+        }
+        if (intent?.action == ACTION_RELOAD_PROXY) {
+            val config = intent.getStringExtra(EXTRA_CONFIG)
+            val profileName = intent.getStringExtra(EXTRA_PROFILE)
+            val memoryMb = intent.getIntExtra(EXTRA_MEMORY, 128).coerceIn(64, 256)
+            if (config.isNullOrBlank() || profileName.isNullOrBlank()) {
+                VpnStateStore.update(this) {
+                    it.put("xrayProxyState", "error")
+                        .put("xrayProxyError", "Xray reload config or profile name is empty")
+                }
+                return START_NOT_STICKY
+            }
+            synchronized(coreLifecycleLock) {
+                if (proxyReloadQueued) {
+                    // MainActivity already marks the first request as
+                    // connecting. Ignore duplicate intents rather than
+                    // running overlapping stop/run calls against libXray.
+                    return START_NOT_STICKY
+                }
+                proxyReloadQueued = true
+            }
+            coreWorker.execute {
+                try {
+                    synchronized(coreLifecycleLock) {
+                        if (explicitStopRequested) return@synchronized
+                        if (!proxyOnlyMode || tun != null) {
+                            error("The running Xray instance cannot be reloaded as a proxy")
+                        }
+                        VpnStateStore.update(this) {
+                            it.put("xrayProxyState", "connecting")
+                                .put("xrayMemoryMb", memoryMb)
+                                .remove("xrayProxyError")
+                        }
+                        replaceProxyCore(config, profileName)
+                    }
+                } catch (error: Throwable) {
+                    Log.e(TAG, "Xray proxy reload failed", error)
+                    VpnStateStore.update(this) {
+                        it.put("xrayProxyState", "error")
+                            .put("xrayProxyError", shortFailure("reloading the Xray proxy", error))
+                    }
+                    VpnStateStore.appendLog(
+                        this,
+                        "Xray proxy reload failed: ${shortFailure("reloading the Xray proxy", error)}",
+                    )
+                    VpnStateStore.appendLog(this, Log.getStackTraceString(error))
+                } finally {
+                    proxyReloadQueued = false
+                }
+            }
             return START_NOT_STICKY
         }
         stopping = false
@@ -55,8 +114,28 @@ class XrayVpnService : VpnService() {
         }
         val profileName = intent.getStringExtra(EXTRA_PROFILE) ?: "GhostBox"
         startForeground(notificationId(), createNotification(profileName, false))
-        Thread({ startCore(config, profileName) }, "GhostBox-xray-start").start()
+        coreWorker.execute {
+            synchronized(coreLifecycleLock) {
+                if (!explicitStopRequested) startCore(config, profileName)
+            }
+        }
         return START_NOT_STICKY
+    }
+
+    /** Replace only the managed Xray instance; the VPN service and its TUN stay alive. */
+    private fun replaceProxyCore(rawConfig: String, profileName: String) {
+        stopping = true
+        try {
+            val response = invoke("stopXray", JSONObject())
+            if (!response.optBoolean("success")) {
+                error(response.optString("error", "Xray did not stop for proxy reload"))
+            }
+            runCatching { loadXrayApi().getMethod("resetDNS").invoke(null) }
+            stopping = false
+            startCore(rawConfig, profileName, keepServiceOnFailure = true)
+        } finally {
+            stopping = false
+        }
     }
 
     private fun recordAndroidVpnPolicy() {
@@ -70,7 +149,11 @@ class XrayVpnService : VpnService() {
         }
     }
 
-    private fun startCore(rawConfig: String, profileName: String) {
+    private fun startCore(
+        rawConfig: String,
+        profileName: String,
+        keepServiceOnFailure: Boolean = false,
+    ) {
         var phase = "checking Android VPN permission"
         try {
             if (!proxyOnlyMode && VpnService.prepare(this) != null) {
@@ -160,7 +243,15 @@ class XrayVpnService : VpnService() {
             }
             VpnStateStore.appendLog(this, detail)
             VpnStateStore.appendLog(this, Log.getStackTraceString(error))
-            stopXray()
+            if (keepServiceOnFailure) {
+                stopping = true
+                runCatching { invoke("stopXray", JSONObject()) }
+                    .onFailure { Log.w(TAG, "Could not clean failed reloaded Xray instance", it) }
+                runCatching { loadXrayApi().getMethod("resetDNS").invoke(null) }
+                stopping = false
+            } else {
+                stopXray()
+            }
         }
     }
 
@@ -365,43 +456,45 @@ class XrayVpnService : VpnService() {
         if (proxyOnlyMode) UPSTREAM_NOTIFICATION_ID else VPN_NOTIFICATION_ID
 
     private fun stopXray() {
-        stopping = true
-        runCatching { invoke("stopXray", JSONObject()) }
-            .onFailure { Log.w(TAG, "Error while stopping Xray", it) }
-        runCatching {
-            loadXrayApi().getMethod("resetDNS").invoke(null)
-        }
-        runCatching { tun?.close() }
-        tun = null
-        if (proxyOnlyMode) {
-            VpnStateStore.update(this) {
-                if (it.optString("xrayProxyState") != "error" || explicitStopRequested) {
-                    it.put("xrayProxyState", "disconnected")
-                }
-                if (it.optString("state") == "stopping") {
-                    it.put("state", "disconnected").remove("connectedAtMs")
-                    it.remove("startedAtMs")
-                }
-                if (explicitStopRequested) it.put("xrayStopComplete", true)
+        synchronized(coreLifecycleLock) {
+            stopping = true
+            runCatching { invoke("stopXray", JSONObject()) }
+                .onFailure { Log.w(TAG, "Error while stopping Xray", it) }
+            runCatching {
+                loadXrayApi().getMethod("resetDNS").invoke(null)
             }
-        } else if (VpnStateStore.state(this) != "error" || explicitStopRequested) {
-            VpnStateStore.updateForCore(this, "xray") {
-                it.put("state", "disconnected").remove("connectedAtMs")
-                it.remove("startedAtMs")
-            }
-            if (explicitStopRequested) {
+            runCatching { tun?.close() }
+            tun = null
+            if (proxyOnlyMode) {
                 VpnStateStore.update(this) {
-                    it.put("xrayProxyState", "disconnected")
-                    it.put("xrayStopComplete", true)
+                    if (it.optString("xrayProxyState") != "error" || explicitStopRequested) {
+                        it.put("xrayProxyState", "disconnected")
+                    }
                     if (it.optString("state") == "stopping") {
                         it.put("state", "disconnected").remove("connectedAtMs")
                         it.remove("startedAtMs")
                     }
+                    if (explicitStopRequested) it.put("xrayStopComplete", true)
+                }
+            } else if (VpnStateStore.state(this) != "error" || explicitStopRequested) {
+                VpnStateStore.updateForCore(this, "xray") {
+                    it.put("state", "disconnected").remove("connectedAtMs")
+                    it.remove("startedAtMs")
+                }
+                if (explicitStopRequested) {
+                    VpnStateStore.update(this) {
+                        it.put("xrayProxyState", "disconnected")
+                        it.put("xrayStopComplete", true)
+                        if (it.optString("state") == "stopping") {
+                            it.put("state", "disconnected").remove("connectedAtMs")
+                            it.remove("startedAtMs")
+                        }
+                    }
                 }
             }
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
         }
-        stopForeground(STOP_FOREGROUND_REMOVE)
-        stopSelf()
     }
 
     override fun onDestroy() {

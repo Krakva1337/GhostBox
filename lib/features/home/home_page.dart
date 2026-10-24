@@ -2804,16 +2804,42 @@ foreach ($route in $routes) {
 
   Future<void> _switchActiveServer() async {
     final target = selected;
+    final previousActiveProfileId = activeProfileId;
     if (switchingServer ||
         backend.state != VpnState.connected ||
         target == null ||
         activeProfileId == target.id) return;
+    var androidInPlaceSwitch = false;
+    var androidSwitchCommitted = false;
     switchingServer = true;
     pendingReconnect = false;
     connectionIssue = null;
     _recordAppLog('Переключаю сервер на ${target.name}');
     if (mounted) setState(() {});
     try {
+      final androidBackend = backend;
+      if (Platform.isAndroid &&
+          androidBackend is AndroidVpnBackend &&
+          androidBackend.canSwitchServerInPlace) {
+        androidInPlaceSwitch = true;
+        final started = DateTime.now();
+        final runtimeProfile = await _withDeviceMetadata(target);
+        await androidBackend.switchServer(jsonEncode(runtimeProfile.toJson()));
+        activeProfileId = target.id;
+        androidSwitchCommitted = true;
+        await prefs?.setString('activeProfileId', target.id);
+        connectionIssue = null;
+        _recordAppLog('Переключено на ${target.name} · Xray · Android TUN');
+        await _collectAndroidCoreLogs();
+        await _saveConnectionAttempt(
+            profile: target.name,
+            core: 'xray',
+            mode: 'tun',
+            started: started,
+            success: true,
+            message: 'Подключено после переключения сервера');
+        return;
+      }
       if ((Platform.isLinux || Platform.isWindows) &&
           coreSettings.killSwitchEnabled) {
         final endpoint = await _armKillSwitchForProfile(target,
@@ -2834,6 +2860,21 @@ foreach ($route in $routes) {
       if (mounted) setState(() {});
       await _toggle(allowDuringSwitch: true);
     } on Object catch (error) {
+      if (androidInPlaceSwitch && !androidSwitchCommitted) {
+        if (backend.state == VpnState.connected &&
+            previousActiveProfileId != null) {
+          selectedId = previousActiveProfileId;
+          await _persist();
+        } else {
+          try {
+            await _disconnectActive();
+          } on Object {
+            // Keep surfacing the switch failure if cleanup also fails.
+          }
+          activeProfileId = null;
+          await prefs?.remove('activeProfileId');
+        }
+      }
       _recordAppLog('Не удалось переключить сервер: $error');
       _message('Не удалось переключить сервер: $error');
     } finally {

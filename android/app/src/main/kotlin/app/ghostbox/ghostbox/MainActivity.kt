@@ -83,6 +83,7 @@ class MainActivity : FlutterActivity() {
                             requestVpnPermission(result)
                         }
                     }
+                    "reloadXrayProxy" -> reloadXrayProxy(call, result)
                     "stopVpn" -> {
                         try {
                             // Ask both native services to close their VPN file
@@ -924,6 +925,67 @@ class MainActivity : FlutterActivity() {
         pendingProfileName = null
         pendingProxyOnly = false
         pendingKeepXray = false
+    }
+
+    /**
+     * Reload only the existing Android Xray proxy. The sing-box service owns
+     * the device TUN and stays active while Xray replaces its upstream.
+     */
+    private fun reloadXrayProxy(
+        call: io.flutter.plugin.common.MethodCall,
+        result: MethodChannel.Result,
+    ) {
+        val config = call.argument<String>("config")
+            ?.takeIf(String::isNotBlank)
+        val profileName = call.argument<String>("profileName")
+            ?.takeIf(String::isNotBlank)
+        val memoryMb = call.argument<Int>("memoryMb")
+        if (config == null || profileName == null || memoryMb == null || memoryMb <= 0) {
+            result.error("invalid_reload", "Xray config, profile name and memory are required", null)
+            return
+        }
+
+        val proxyState = VpnStateStore.xrayProxyState(this)
+        if (proxyState != "connected" && proxyState != "error") {
+            result.error("xray_not_running", "The Android Xray proxy is not active", null)
+            return
+        }
+        val processName = "$packageName:xray"
+        val xrayProcessRunning = getSystemService(android.app.ActivityManager::class.java)
+            .runningAppProcesses
+            ?.any { it.processName == processName && it.pid != android.os.Process.myPid() }
+            ?: false
+        if (!xrayProcessRunning) {
+            result.error("xray_not_running", "The Android Xray service process is not active", null)
+            return
+        }
+
+        // Claim the state before enqueueing the service intent so a second
+        // rapid profile tap cannot queue another reload over the first one.
+        VpnStateStore.update(this) {
+            it.put("xrayProxyState", "connecting")
+                .put("xrayMemoryMb", memoryMb.coerceIn(64, 256))
+                .remove("xrayProxyError")
+        }
+        val intent = Intent(this, XrayVpnService::class.java)
+            .setAction(XrayVpnService.ACTION_RELOAD_PROXY)
+            .putExtra(XrayVpnService.EXTRA_CONFIG, config)
+            .putExtra(XrayVpnService.EXTRA_PROFILE, profileName)
+            .putExtra(XrayVpnService.EXTRA_MEMORY, memoryMb.coerceIn(64, 256))
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(intent)
+            } else {
+                startService(intent)
+            }
+            result.success(null)
+        } catch (error: Exception) {
+            VpnStateStore.update(this) {
+                it.put("xrayProxyState", "error")
+                    .put("xrayProxyError", error.message ?: error.toString())
+            }
+            result.error("xray_reload_failed", error.message ?: error.toString(), null)
+        }
     }
 
     private fun recentVpnServiceExit(core: String): String? {
