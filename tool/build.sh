@@ -177,7 +177,7 @@ case "$target" in
     "$project_dir/tool/build_desktop_cores.sh" macos "$arch"
     cd "$project_dir"
     swift "$project_dir/tool/generate_macos_app_icon.swift" \
-      "$project_dir/assets/icons/aurora.png" \
+      "$project_dir/assets/icons/midnight.png" \
       "$project_dir/macos/Runner/Assets.xcassets/AppIcon.appiconset"
     flutter pub get
     ghostbox_version="$(awk '/^version:/ {split($2,v,"+"); print v[1]}' pubspec.yaml)"

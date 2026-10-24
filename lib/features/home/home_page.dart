@@ -91,6 +91,7 @@ class _HomePageState extends State<HomePage>
   bool animatedBackground = true;
   bool optimizedMode = false;
   bool reduceAnimations = false;
+  bool showScrollIndicators = true;
   bool showWelcomeSetup = false;
   bool english = false;
   double contentTopSpacing = 55;
@@ -111,6 +112,8 @@ class _HomePageState extends State<HomePage>
           : XrayBackend();
   CoreProcessBackend? tunnelBridgeBackend;
   bool xrayTunnelBridgeActive = false;
+  final Set<String> _macUtunInterfacesBeforeConnect = <String>{};
+  String? _activeMacUtunInterface;
   int? activeLocalPort;
   SharedPreferences? prefs;
   List<ServerProfile> profiles = [];
@@ -132,7 +135,7 @@ class _HomePageState extends State<HomePage>
           ? 1
           : 0;
   CoreSettings coreSettings = CoreSettings(
-    memoryMb: Platform.isIOS ? 32 : 128,
+    memoryMb: Platform.isIOS ? 25 : 128,
     pingMode: Platform.isAndroid || Platform.isIOS ? 'tcp' : 'proxy',
   );
   final DnsAdBlocklist dnsAdBlocklist = DnsAdBlocklist();
@@ -717,8 +720,8 @@ class _HomePageState extends State<HomePage>
     'Проверка через прокси не прошла': 'Proxy check failed',
     'занят. Смените порт в расширенных настройках.':
         'is in use. Choose another port in Advanced settings.',
-    'Эта сборка sing-box не приняла XHTTP. Нужна сборка с тегом with_xhttp; штатная сборка GhostBox этот транспорт не содержит. Пока выберите Xray.':
-        'This sing-box build rejected XHTTP. A build with the with_xhttp tag is required. Select Xray for now.',
+    'Эта сборка sing-box не приняла XHTTP. Нужна сборка sing-box-lx с тегом with_xhttp.':
+        'This sing-box build rejected XHTTP. It needs the sing-box-lx build with the with_xhttp tag.',
     'Это ядро sing-box собрано без uTLS. Для REALITY выберите Xray.':
         'This sing-box build has no uTLS support. Select Xray for REALITY.',
     'Эта сборка sing-box не поддерживает uTLS. Отпечаток браузера не применяется; для него выберите Xray.':
@@ -778,8 +781,8 @@ class _HomePageState extends State<HomePage>
     'Срок истёк': 'Expired',
     'На мобильных устройствах VPN-режим использует sing-box':
         'VPN mode on mobile devices uses sing-box',
-    'Для iOS требуются sing-box, системный VPN (TUN) и TCP-проверка задержки.':
-        'iOS requires sing-box, the system VPN (TUN), and TCP latency checks.',
+    'Для iOS требуются Xray или sing-box, системный VPN (TUN) и TCP-проверка задержки.':
+        'iOS requires Xray or sing-box, the system VPN (TUN), and TCP latency checks.',
     'На macOS доступны локальный прокси и системный прокси':
         'Local proxy and system proxy modes are available on macOS',
     'DNS-список не содержит доменов': 'The DNS list contains no domains',
@@ -1085,6 +1088,11 @@ class _HomePageState extends State<HomePage>
         Platform.isAndroid && p.getBool('androidXrayDefaultMigrated') != true;
     final migrateAndroidTcpPingDefault = Platform.isAndroid &&
         p.getBool('androidTcpPingDefaultMigrated') != true;
+    final migrateIosMemoryBudget =
+        Platform.isIOS && p.getBool('iosMemoryBudgetMigrated') != true;
+    if (migrateIosMemoryBudget) {
+      await p.setBool('iosMemoryBudgetMigrated', true);
+    }
     final isFirstLaunch = saved == null && p.getString('coreSettings') == null;
     setState(() {
       prefs = p;
@@ -1096,6 +1104,7 @@ class _HomePageState extends State<HomePage>
       animatedBackground = p.getBool('animatedBackground') ?? true;
       optimizedMode = p.getBool('optimizedMode') ?? false;
       reduceAnimations = p.getBool('reduceAnimations') ?? false;
+      showScrollIndicators = p.getBool('showScrollIndicators') ?? true;
       contentTopSpacing = (p.getDouble('contentTopSpacing') ??
               p.getDouble('mobileTopSpacing') ??
               55)
@@ -1130,9 +1139,9 @@ class _HomePageState extends State<HomePage>
       coreSettings = rawCore == null
           ? CoreSettings(
               memoryMb: CoreSettings.clampMemoryMb(
-                  p.getInt('memoryMb') ?? (Platform.isIOS ? 32 : 128)),
+                  p.getInt('memoryMb') ?? (Platform.isIOS ? 25 : 128)),
               autoConnect: p.getBool('autoConnect') ?? false,
-              pingMode: Platform.isAndroid ? 'tcp' : 'proxy')
+              pingMode: Platform.isAndroid || Platform.isIOS ? 'tcp' : 'proxy')
           : CoreSettings.fromJson(
               Map<String, dynamic>.from(jsonDecode(rawCore) as Map));
       if (migrateDnsDefault && coreSettings.dns == 'system') {
@@ -1147,11 +1156,17 @@ class _HomePageState extends State<HomePage>
       }
       if (Platform.isAndroid || Platform.isIOS) {
         coreSettings = coreSettings.copyWith(
-          core: Platform.isAndroid && coreSettings.core == 'xray'
-              ? 'xray'
-              : 'sing-box',
+          core: coreSettings.core == 'xray' ? 'xray' : 'sing-box',
           connectionMode: 'tun',
         );
+      }
+      if (Platform.isIOS && coreSettings.pingMode != 'tcp') {
+        coreSettings = coreSettings.copyWith(pingMode: 'tcp');
+      }
+      if (migrateIosMemoryBudget) {
+        if (coreSettings.memoryMb == 32) {
+          coreSettings = coreSettings.copyWith(memoryMb: 25);
+        }
       }
       if (p.getBool('tunDefaultMigrated') != true) {
         coreSettings = coreSettings.copyWith(connectionMode: 'tun');
@@ -1185,7 +1200,7 @@ class _HomePageState extends State<HomePage>
       }
       if (backend is IosVpnBackend) {
         (backend as IosVpnBackend).settings = coreSettings.copyWith(
-          core: 'sing-box',
+          core: coreSettings.core,
           connectionMode: 'tun',
         );
       }
@@ -1526,6 +1541,15 @@ class _HomePageState extends State<HomePage>
         await _cleanupWindowsCoreProcesses();
         final runtimeLocalPort = await _chooseLocalPort();
         activeLocalPort = runtimeLocalPort;
+        if (Platform.isMacOS &&
+            (attemptMode == 'tun' || attemptMode == 'mixed')) {
+          _macUtunInterfacesBeforeConnect
+            ..clear()
+            ..addAll(await _listMacUtunInterfaces());
+          _activeMacUtunInterface = null;
+          _recordAppLog(
+              'macOS utun до запуска: ${_macUtunInterfacesBeforeConnect.isEmpty ? 'нет' : _macUtunInterfacesBeforeConnect.join(', ')}');
+        }
         if (coreSettings.autoLocalPort) {
           _recordAppLog(
               'Автоматически выбран локальный порт $runtimeLocalPort');
@@ -1563,7 +1587,7 @@ class _HomePageState extends State<HomePage>
         }
         if (backend is IosVpnBackend) {
           (backend as IosVpnBackend).settings = runtimeRouting.copyWith(
-            core: 'sing-box',
+            core: attemptCore,
             connectionMode: 'tun',
             localPort: runtimeLocalPort,
           );
@@ -2364,10 +2388,12 @@ exit 1
     }
     if (Platform.isMacOS) {
       for (var attempt = 0; attempt < 80; attempt++) {
-        final result = await Process.run('/sbin/ifconfig', ['-l']);
-        if (result.exitCode == 0 &&
-            RegExp(r'\butun\d+\b').hasMatch('${result.stdout}')) {
-          _recordAppLog('macOS utun интерфейс поднят');
+        final current = await _listMacUtunInterfaces();
+        final created = current.difference(_macUtunInterfacesBeforeConnect);
+        if (created.isNotEmpty) {
+          _activeMacUtunInterface = created.last;
+          _recordAppLog(
+              'macOS создала интерфейс GhostBox TUN: $_activeMacUtunInterface');
           return;
         }
         if (process?.state != VpnState.connected) break;
@@ -2393,6 +2419,16 @@ exit 1
         ? 'Нужны права CAP_NET_ADMIN для $tunCore.'
         : 'Выдайте CAP_NET_ADMIN файлу "$vendorDir/bin/$tunCore".';
     throw FormatException('Ядро не подняло TUN-интерфейс. $permissionHint');
+  }
+
+  Future<Set<String>> _listMacUtunInterfaces() async {
+    final result = await Process.run('/sbin/ifconfig', ['-l'])
+        .timeout(const Duration(seconds: 4));
+    if (result.exitCode != 0) return <String>{};
+    return RegExp(r'\butun\d+\b')
+        .allMatches('${result.stdout}')
+        .map((match) => match.group(0)!)
+        .toSet();
   }
 
   Future<List<InternetAddress>> _lookupHost(String host) async {
@@ -2550,11 +2586,16 @@ foreach ($route in $routes) {
     if (Platform.isMacOS) {
       final result = await Process.run('/sbin/route', ['-n', 'get', probeIp])
           .timeout(const Duration(seconds: 4));
+      final routeInterface =
+          RegExp(r'^\s*interface:\s*(utun\d+)', multiLine: true)
+              .firstMatch('${result.stdout}')
+              ?.group(1);
       if (result.exitCode != 0 ||
-          !RegExp(r'^\s*interface:\s*utun\d+', multiLine: true)
-              .hasMatch('${result.stdout}')) {
+          routeInterface == null ||
+          (_activeMacUtunInterface != null &&
+              routeInterface != _activeMacUtunInterface)) {
         throw const FormatException(
-            'Интерфейс utun запущен, но маршрут macOS не идёт через VPN.');
+            'Маршрут macOS не идёт через новый TUN-интерфейс GhostBox. Если работает другая VPN, её маршрут не засчитывается как маршрут GhostBox.');
       }
       _recordAppLog(
           'Маршрут macOS через TUN: ${result.stdout.toString().trim()}');
@@ -2610,6 +2651,14 @@ foreach ($route in $routes) {
 
   String _connectionError(Object error) {
     if (error is FormatException) return error.message;
+    if (error is PlatformException &&
+        error.code == 'vpn_preferences_failed' &&
+        (error.message?.contains('iOS denied the VPN configuration') ??
+            false)) {
+      return _text(
+          'iOS отклонила настройку VPN. Профиль подписи приложения и Packet Tunnel должен разрешать Network Extension и общую App Group.',
+          'iOS denied the VPN configuration. The app and Packet Tunnel provisioning profiles must authorize Network Extension and the shared App Group.');
+    }
     if (error is SocketException &&
         (error.message.contains('HTTPS/TLS') ||
             error.message.contains('HTTPS '))) {
@@ -2634,6 +2683,8 @@ foreach ($route in $routes) {
     if (bridge != null) await bridge.disconnect();
     await backend.disconnect();
     await systemProxy.restore();
+    _activeMacUtunInterface = null;
+    _macUtunInterfacesBeforeConnect.clear();
     activeLocalPort = null;
   }
 
@@ -3705,7 +3756,13 @@ foreach ($route in $routes) {
   }
 
   Future<T> _withVpnDisconnectedForPing<T>(Future<T> Function() action) async {
-    if (!coreSettings.disconnectVpnForPing) return action();
+    // iOS has no raw-socket bypass for a Packet Tunnel. Always pause an
+    // existing tunnel for its TCP probe so this measures the server directly.
+    final mustPauseTunnelForProbe = Platform.isIOS ||
+        (Platform.isMacOS && coreSettings.pingMode == 'proxy');
+    if (!mustPauseTunnelForProbe && !coreSettings.disconnectVpnForPing) {
+      return action();
+    }
     if (backend.state == VpnState.connecting) {
       throw const SocketException(
           'Дождитесь завершения подключения перед проверкой задержки.');
@@ -4368,7 +4425,10 @@ foreach ($route in $routes) {
   }
 
   String _messageText(String text) {
-    if (!english) return text;
+    if (!english) {
+      return text.replaceAll(
+          'iOS denied the VPN configuration.', 'iOS отклонила настройку VPN.');
+    }
     final exact = _englishLabels[text];
     if (exact != null) return exact;
     var translated = text;
@@ -4653,10 +4713,6 @@ foreach ($route in $routes) {
   }
 
   Future<void> _selectCore(String value) async {
-    if (Platform.isIOS && value == 'Xray') {
-      _message('На iOS VPN-режим использует sing-box');
-      return;
-    }
     final next = value == 'Xray' ? 'xray' : 'sing-box';
     if (coreSettings.core == next) return;
     if (backend.state == VpnState.connecting) {
@@ -4678,7 +4734,7 @@ foreach ($route in $routes) {
       _configureCoreLifecycle(backend);
       if (backend is IosVpnBackend) {
         (backend as IosVpnBackend).settings = coreSettings.copyWith(
-          core: 'sing-box',
+          core: coreSettings.core,
           connectionMode: 'tun',
         );
       }
@@ -4821,11 +4877,27 @@ foreach ($route in $routes) {
                             },
                           ),
                         ),
+                        _row(
+                          Icons.swap_vert_rounded,
+                          _text('Индикатор прокрутки', 'Scroll indicator'),
+                          showScrollIndicators
+                              ? _text('Показывать на главной', 'Show on home')
+                              : _text('Скрыт на главной', 'Hidden on home'),
+                          _compactSwitch(
+                            value: showScrollIndicators,
+                            onChanged: (value) async {
+                              setState(() => showScrollIndicators = value);
+                              await prefs?.setBool(
+                                  'showScrollIndicators', value);
+                            },
+                          ),
+                        ),
                       ],
                     ),
                   ),
                   Padding(
-                    padding: const EdgeInsets.fromLTRB(20, 8, 20, 16),
+                    padding:
+                        EdgeInsets.fromLTRB(20, 8, 20, Platform.isIOS ? 0 : 16),
                     child: SizedBox(
                       width: double.infinity,
                       child: FilledButton.icon(
@@ -4910,7 +4982,7 @@ foreach ($route in $routes) {
                                   ? MediaQuery.paddingOf(context).top + 4
                                   : 16,
                               5,
-                              12),
+                              Platform.isIOS ? 0 : 12),
                           child: LayoutBuilder(builder: (context, bounds) {
                             final wideLayout = bounds.maxWidth >= 800;
                             final page = ClipRRect(
@@ -4980,7 +5052,7 @@ foreach ($route in $routes) {
                                     Positioned(
                                       left: 10,
                                       right: 10,
-                                      bottom: 8,
+                                      bottom: 0,
                                       child: RepaintBoundary(child: _nav()),
                                     ),
                                   ]);
@@ -5004,16 +5076,18 @@ foreach ($route in $routes) {
               scrollbars: false,
               physics: const BouncingScrollPhysics(
                   parent: AlwaysScrollableScrollPhysics())),
-          child: Scrollbar(
-              controller: controller,
-              thumbVisibility: true,
-              thickness: 3,
-              radius: Radius.circular(8),
-              child: Padding(
-                  // Horizontal inset only: each page owns its leading scroll spacer,
-                  // so content can pass beneath the floating islands.
-                  padding: const EdgeInsets.fromLTRB(5, 0, 9, 0),
-                  child: child)));
+          child: Padding(
+              // Horizontal inset only: each page owns its leading scroll spacer,
+              // so content can pass beneath the floating islands.
+              padding: const EdgeInsets.fromLTRB(5, 0, 9, 0),
+              child: showScrollIndicators
+                  ? Scrollbar(
+                      controller: controller,
+                      thumbVisibility: true,
+                      thickness: 3,
+                      radius: const Radius.circular(8),
+                      child: child)
+                  : child));
 
   Future<void> _openActionsMenu(BuildContext anchorContext) async {
     final action = await _showListMenu([
@@ -5715,7 +5789,7 @@ foreach ($route in $routes) {
                 icon: Icon(Icons.add_rounded, size: 23),
                 label: Text(_localized('Добавить подписку или сервер'),
                     style: TextStyle(fontSize: 12)))),
-        SizedBox(height: 112),
+        SizedBox(height: 12),
       ]));
 
   Widget _routingPage() => routeListOpen
@@ -5723,7 +5797,7 @@ foreach ($route in $routes) {
       : ListView(
           controller: routingScroll,
           key: const PageStorageKey('routing'),
-          padding: EdgeInsets.only(top: contentTopSpacing + 14, bottom: 120),
+          padding: EdgeInsets.only(top: contentTopSpacing + 14, bottom: 100),
           children: [
             Text(_text('Как пускать трафик', 'Traffic routing'),
                 textAlign: TextAlign.center,
@@ -6024,7 +6098,7 @@ foreach ($route in $routes) {
   Widget _routeListEditor() => ListView(
         controller: routingScroll,
         key: const PageStorageKey('routing-domains'),
-        padding: EdgeInsets.only(top: contentTopSpacing + 14, bottom: 120),
+        padding: EdgeInsets.only(top: contentTopSpacing + 14, bottom: 100),
         children: [
           Text(
               routeListMode == 'rules'
@@ -6644,7 +6718,7 @@ foreach ($route in $routes) {
                     _tinyStat('ЯДРО', process?.name ?? coreSettings.core,
                         menuAnchorContext: controlsContext,
                         choices: Platform.isIOS
-                            ? const [('sing-box', 'sing-box')]
+                            ? const [('xray', 'Xray'), ('sing-box', 'sing-box')]
                             : const [
                                 ('xray', 'Xray'),
                                 ('sing-box', 'sing-box')
@@ -7366,13 +7440,16 @@ foreach ($route in $routes) {
       ]);
 
   Future<void> _showProfileJson(ServerProfile profile) async {
-    final isXrayTun =
+    final usesXrayTunnelBridge =
         (Platform.isLinux || Platform.isWindows || Platform.isMacOS) &&
             coreSettings.core == 'xray' &&
             (coreSettings.connectionMode == 'tun' ||
                 coreSettings.connectionMode == 'mixed');
+    final usesNativeIosXrayTunnel =
+        Platform.isIOS && coreSettings.core == 'xray';
+    final isXrayTun = usesXrayTunnelBridge || usesNativeIosXrayTunnel;
     var runtimeProfile = profile;
-    if (isXrayTun) {
+    if (usesXrayTunnelBridge) {
       try {
         runtimeProfile = await _resolveXrayTunnelProfile(profile);
       } on Object catch (error) {
@@ -7384,9 +7461,7 @@ foreach ($route in $routes) {
     final runtimePort = activeLocalPort ?? coreSettings.localPort;
     final xraySettings = coreSettings.copyWith(
         connectionMode:
-            (Platform.isLinux || Platform.isWindows || Platform.isMacOS)
-                ? 'proxy'
-                : coreSettings.connectionMode,
+            usesXrayTunnelBridge ? 'proxy' : coreSettings.connectionMode,
         localPort: runtimePort);
     final xrayBackend =
         CoreProcessBackend(name: 'xray', executable: '', configPath: '')
@@ -7399,12 +7474,24 @@ foreach ($route in $routes) {
         profile.network == 'xhttp' || profile.network == 'splithttp'
             ? 'sing-box · требуется with_xhttp'
             : 'sing-box · полный конфиг';
+    final xrayConfig = xrayBackend.makeConfig(runtimeProfile);
+    if (usesNativeIosXrayTunnel) {
+      final inbounds = (xrayConfig['inbounds'] as List? ?? const [])
+          .whereType<Map>()
+          .map((item) => Map<String, dynamic>.from(item))
+          .toList();
+      final tun = inbounds.where((item) => item['tag'] == 'tun-in');
+      if (tun.isNotEmpty) {
+        tun.first['settings'] = {'name': 'utun', 'MTU': 1500};
+        xrayConfig['inbounds'] = inbounds;
+      }
+    }
     final configs = <String, Map<String, dynamic>>{
       'Профиль': profile.toJson(),
-      'Xray · полный конфиг': xrayBackend.makeConfig(runtimeProfile),
+      'Xray · полный конфиг': xrayConfig,
       singBoxLabel: singBoxBackend.makeConfig(runtimeProfile),
     };
-    if (isXrayTun) {
+    if (usesXrayTunnelBridge) {
       final bridgeProfile = ServerProfile(
         id: 'ghostbox-xray-tun-bridge',
         name: 'GhostBox TUN bridge',
@@ -7491,7 +7578,8 @@ foreach ($route in $routes) {
                         Text(
                             'Это краткая карточка сервера для хранения и обмена. Для запуска ядру нужен полный конфиг ниже.',
                             style: TextStyle(color: _muted, fontSize: 11)),
-                      if (isXrayTun && selectedConfig == 'Xray · полный конфиг')
+                      if (usesXrayTunnelBridge &&
+                          selectedConfig == 'Xray · полный конфиг')
                         Text(
                             'Xray обслуживает прокси; Linux TUN-маршрут находится во вкладке sing-box ниже.',
                             style: TextStyle(color: _muted, fontSize: 11)),
@@ -8680,7 +8768,7 @@ foreach ($route in $routes) {
   Widget _settings() => ListView(
         controller: settingsScroll,
         key: const PageStorageKey('settings'),
-        padding: EdgeInsets.only(top: contentTopSpacing, bottom: 120),
+        padding: EdgeInsets.only(top: contentTopSpacing, bottom: 100),
         children: [
           AnimatedSize(
             duration: _motion(const Duration(milliseconds: 320)),
@@ -9345,27 +9433,36 @@ foreach ($route in $routes) {
                   },
                   (value) => _saveCore(coreSettings.copyWith(pingView: value),
                       requiresReconnect: false))),
-          _row(
-              Icons.power_off_rounded,
-              _text('Отключать VPN во время пинга',
-                  'Disconnect VPN while pinging'),
-              _text('Для TCP/ICMP проверка идёт напрямую',
-                  'TCP/ICMP probes run directly'),
-              _compactSwitch(
-                  value: coreSettings.disconnectVpnForPing,
-                  onChanged: (value) {
-                    if (value &&
-                        Platform.isAndroid &&
-                        coreSettings.pingMode == 'proxy') {
-                      _message(_text(
-                          'Proxy GET требует активное VPN. Выбери TCP для проверки без VPN.',
-                          'Proxy GET needs an active VPN. Choose TCP to probe without VPN.'));
-                      return;
-                    }
-                    _saveCore(
-                        coreSettings.copyWith(disconnectVpnForPing: value),
-                        requiresReconnect: false);
-                  })),
+          if (Platform.isIOS)
+            _row(
+                Icons.power_off_rounded,
+                _text('Проверка iOS', 'iOS probe'),
+                _text(
+                    'Для прямого TCP-пинга VPN временно выключается и включается снова',
+                    'The VPN briefly stops and reconnects so TCP ping measures the server directly'),
+                const Icon(Icons.check_circle_outline_rounded))
+          else
+            _row(
+                Icons.power_off_rounded,
+                _text('Отключать VPN во время пинга',
+                    'Disconnect VPN while pinging'),
+                _text('Для TCP/ICMP проверка идёт напрямую',
+                    'TCP/ICMP probes run directly'),
+                _compactSwitch(
+                    value: coreSettings.disconnectVpnForPing,
+                    onChanged: (value) {
+                      if (value &&
+                          Platform.isAndroid &&
+                          coreSettings.pingMode == 'proxy') {
+                        _message(_text(
+                            'Proxy GET требует активное VPN. Выбери TCP для проверки без VPN.',
+                            'Proxy GET needs an active VPN. Choose TCP to probe without VPN.'));
+                        return;
+                      }
+                      _saveCore(
+                          coreSettings.copyWith(disconnectVpnForPing: value),
+                          requiresReconnect: false);
+                    })),
         ],
       );
 
@@ -9934,6 +10031,19 @@ foreach ($route in $routes) {
                       ambientMotion.repeat();
                     }
                     await prefs?.setBool('reduceAnimations', value);
+                  })),
+          _row(
+              Icons.swap_vert_rounded,
+              _text('Индикатор прокрутки', 'Scroll indicator'),
+              showScrollIndicators
+                  ? _text('Показывать на главной', 'Show on home')
+                  : _text('Скрыт на главной', 'Hidden on home'),
+              _compactSwitch(
+                  value: showScrollIndicators,
+                  onChanged: (value) async {
+                    if (value == showScrollIndicators) return;
+                    setState(() => showScrollIndicators = value);
+                    await prefs?.setBool('showScrollIndicators', value);
                   })),
           const SizedBox(height: 10),
           AnimatedSize(
@@ -10745,6 +10855,15 @@ foreach ($route in $routes) {
         xray = 'Не удалось проверить APK · $error';
         singBox = 'Не удалось проверить APK · $error';
       }
+    } else if (Platform.isIOS) {
+      // Both cores are embedded in the Packet Tunnel framework; iOS does not
+      // spawn vendor/bin executables.
+      xray = english
+          ? 'Embedded · Xray Packet Tunnel'
+          : 'Встроен · Xray Packet Tunnel';
+      singBox = english
+          ? 'Embedded · sing-box-lx Packet Tunnel'
+          : 'Встроен · sing-box-lx Packet Tunnel';
     } else {
       xray = await _coreVersion('xray');
       singBox = await _coreVersion('sing-box');
@@ -11356,11 +11475,11 @@ foreach ($route in $routes) {
       final data = Map<String, dynamic>.from(jsonDecode(accepted) as Map);
       var updated = CoreSettings.fromJson(data);
       if (Platform.isIOS &&
-          (updated.core != 'sing-box' ||
+          (!['sing-box', 'xray'].contains(updated.core) ||
               updated.connectionMode != 'tun' ||
               updated.pingMode != 'tcp')) {
         throw const FormatException(
-            'Для iOS требуются sing-box, системный VPN (TUN) и TCP-проверка задержки.');
+            'Для iOS требуются Xray или sing-box, системный VPN (TUN) и TCP-проверка задержки.');
       }
       if (updated.killSwitchEnabled &&
           !Platform.isLinux &&
@@ -11442,6 +11561,7 @@ foreach ($route in $routes) {
       core: Platform.isAndroid || Platform.isIOS ? 'sing-box' : 'xray',
       connectionMode: 'tun',
       pingMode: Platform.isAndroid || Platform.isIOS ? 'tcp' : 'proxy',
+      disconnectVpnForPing: Platform.isIOS || Platform.isMacOS,
     );
     await _saveCore(defaults, requiresReconnect: false);
     process?.settings = defaults;

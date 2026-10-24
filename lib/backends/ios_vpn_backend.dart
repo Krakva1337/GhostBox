@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/services.dart';
 
@@ -8,8 +9,8 @@ import '../core/vpn_backend.dart';
 import '../models/core_settings.dart';
 import '../models/server_profile.dart';
 
-/// iOS runs sing-box inside Apple's Packet Tunnel extension, never as a
-/// Flutter child process. The host app only sends config and observes NE state.
+/// iOS runs its selected core inside Apple's Packet Tunnel extension, never as
+/// a Flutter child process. The host app sends config and observes NE state.
 class IosVpnBackend implements VpnBackend {
   static const _channel = MethodChannel('app.ghostbox.ghostbox/vpn');
 
@@ -67,22 +68,55 @@ class IosVpnBackend implements VpnBackend {
           (key, value) => MapEntry(key.toString(), value),
         ),
       );
+      final core = settings.core == 'xray' ? 'xray' : 'sing-box';
       final builder = CoreProcessBackend(
-        name: 'sing-box',
+        name: core,
         executable: '',
-        configPath: 'vendor/config/sing-box.json',
+        configPath: core == 'xray'
+            ? 'vendor/config/xray-ios.json'
+            : 'vendor/config/sing-box.json',
       )..settings = settings.copyWith(
-          core: 'sing-box',
+          core: core,
           connectionMode: 'tun',
+          aggressiveXhttpCleanup: core == 'sing-box',
         );
       final config = builder.makeConfig(profile);
-      final route = config['route'];
-      if (route is Map) {
-        route.remove('auto_detect_interface');
+      if (core == 'xray') {
+        final inbounds = (config['inbounds'] as List? ?? const [])
+            .whereType<Map>()
+            .map((item) => Map<String, dynamic>.from(item))
+            .toList();
+        final tun = inbounds.where((item) => item['tag'] == 'tun-in');
+        if (tun.isEmpty) {
+          throw const FormatException('Xray config is missing its TUN inbound');
+        }
+        tun.first['settings'] = {'name': 'utun', 'MTU': 1500};
+        config['inbounds'] = inbounds;
+      } else {
+        final route = config['route'];
+        if (route is Map) route.remove('auto_detect_interface');
+      }
+      final endpointIPs = <String>{};
+      try {
+        endpointIPs.addAll(
+          (await InternetAddress.lookup(profile.address))
+              .map((address) => address.address),
+        );
+      } on SocketException {
+        if (core == 'xray') rethrow;
+        // The packet tunnel reports a useful core startup error if DNS cannot
+        // resolve the selected endpoint while the connection is being made.
+      }
+      if (core == 'xray' && endpointIPs.isEmpty) {
+        throw const SocketException(
+            'Could not resolve the Xray server address for tunnel routing');
       }
       final starting = _channel.invokeMethod<void>('startVpn', {
         'config': const JsonEncoder.withIndent('  ').convert(config),
         'profileName': profile.name,
+        'oomMemoryLimitMB': settings.memoryMb.clamp(25, 50),
+        'core': core,
+        'serverEndpointIPs': endpointIPs.toList(),
       }).timeout(const Duration(seconds: 60));
       _starting = starting;
       await starting;

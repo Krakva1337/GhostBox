@@ -654,7 +654,7 @@ class CoreProcessBackend implements VpnBackend {
     if (name == 'sing-box' &&
         (p.network == 'xhttp' || p.network == 'splithttp') &&
         (lower.contains('xhttp') || lower.contains('transport'))) {
-      return 'Эта сборка sing-box не приняла XHTTP. Нужна сборка с тегом with_xhttp; штатная сборка GhostBox этот транспорт не содержит. Пока выберите Xray.';
+      return 'Эта сборка sing-box не приняла XHTTP. Нужна сборка sing-box-lx с тегом with_xhttp.';
     }
     if (lower.contains('address already in use') || lower.contains('bind:')) {
       return 'Локальный порт ${settings.localPort} занят. Смените порт в расширенных настройках.';

@@ -1,7 +1,7 @@
 # GhostBox on iOS
 
-The Flutter host controls a `NETunnelProviderManager`. The sing-box Apple
-`Extension` target runs independently of the host in a Packet Tunnel extension.
+The Flutter host controls a `NETunnelProviderManager`. The selected core runs
+independently of the host in a Packet Tunnel extension.
 The host embeds both `Extension.appex` and its `Library.framework` dependency.
 Closing the app does not stop the tunnel; reopening reads the existing system
 connection, its connected date and its profile name. Switching profiles waits
@@ -41,7 +41,11 @@ export GHOSTBOX_IOS_EXPORT_OPTIONS_PLIST=/absolute/path/to/ExportOptions.plist
 
 Export options must match your account and distribution method. The script
 passes the team to the host and extension; Xcode performs provisioning. A free
-personal team does not provide the VPN capabilities needed by this app.
+personal team does not provide the VPN capabilities needed by this app. If
+`saveToPreferences` reports `permission denied`, the signed app or extension
+profile is missing Network Extension or App Group authorization; re-signing
+with a free personal team cannot grant those entitlements. See Apple's
+[Network Extensions entitlement reference](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.developer.networking.networkextension).
 
 `tool/build_mobile_cores.sh apple` prepares `.toolchains/apple-client`, which
 is the source project reference used by `Runner.xcodeproj`. Run that preparation
@@ -55,8 +59,10 @@ license copies and build provenance are included in `dist/cores/apple`.
 Distribution of the linked app must comply with those licenses; GhostBox's
 custom project license does not replace third-party terms.
 
-The Apple backend uses sing-box. Xray-only transports or options need support
-in the chosen Apple core; the iOS host cannot spawn a desktop Xray executable.
+The Apple `Libbox.framework` contains sing-box-lx and Xray in one Go runtime.
+sing-box-lx is built with `with_xhttp`; Xray uses the NetworkExtension utun
+descriptor directly. The host can select either core for VLESS/VMess XHTTP
+profiles. Xray's TUN inbound does not support ICMP packets.
 
 Device verification still requires a provisioned iPhone: connect, switch a
 profile, close/reopen the host, disable VPN and check actual traffic routing,

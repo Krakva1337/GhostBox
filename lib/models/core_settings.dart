@@ -248,14 +248,17 @@ class CoreSettings {
       pingTimeoutSeconds: [2, 4, 8].contains(data['pingTimeoutSeconds'])
           ? data['pingTimeoutSeconds'] as int
           : 4,
-      disconnectVpnForPing: data['disconnectVpnForPing'] == true,
+      // iOS TCP checks must leave the active Packet Tunnel to measure the
+      // direct server handshake rather than routing the probe through itself.
+      disconnectVpnForPing:
+          data['disconnectVpnForPing'] ?? (Platform.isIOS || Platform.isMacOS),
       blockedDomains: domains('blockedDomains'),
       directDomains: routePatterns('directDomains'),
       proxyDomains: routePatterns('proxyDomains'),
       directApps: appIds('directApps'),
       proxyApps: appIds('proxyApps'),
       memoryMb: clampMemoryMb(
-          (data['memoryMb'] as num?)?.toInt() ?? (Platform.isIOS ? 32 : 128)),
+          (data['memoryMb'] as num?)?.toInt() ?? (Platform.isIOS ? 25 : 128)),
       showRamUsage: data['showRamUsage'] == true,
       localPort:
           ((data['localPort'] as num?)?.toInt() ?? 2080).clamp(1024, 65535),

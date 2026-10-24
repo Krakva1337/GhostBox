@@ -80,11 +80,13 @@ do {
       yRadius: cornerRadius
     )
     backgroundPath.addClip()
-    NSGradient(colors: [color(7, 26, 32), color(16, 54, 58)])?.draw(in: frame, angle: 90)
+    // The packaged icon uses GhostBox's default Midnight appearance. At
+    // runtime the Dock icon follows the selected macOS theme.
+    NSGradient(colors: [color(16, 28, 48), color(7, 13, 24)])?.draw(in: frame, angle: 90)
 
     // Keep the full background while leaving more breathing room around the mascot.
     let mascotScale = size * 0.90 / 64
-    color(83, 214, 194).setFill()
+    color(139, 185, 244).setFill()
     ghostPath(scale: mascotScale, size: size).fill()
     let eyeRadiusX = mascotScale * 3.3
     let eyeRadiusY = mascotScale * 3.7

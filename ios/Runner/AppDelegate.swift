@@ -60,10 +60,17 @@ import UIKit
       case "startVpn":
         guard let arguments = call.arguments as? [String: Any],
               let config = arguments["config"] as? String else {
-          result(FlutterError(code: "invalid_vpn_config", message: "Missing sing-box config", details: nil))
+          result(FlutterError(code: "invalid_vpn_config", message: "Missing core config", details: nil))
           return
         }
-        self.startVpn(config: config, profileName: arguments["profileName"] as? String ?? "GhostBox", result: result)
+        self.startVpn(
+          config: config,
+          profileName: arguments["profileName"] as? String ?? "GhostBox",
+          oomMemoryLimitMB: arguments["oomMemoryLimitMB"] as? Int ?? 25,
+          core: arguments["core"] as? String ?? "sing-box",
+          serverEndpointIPs: arguments["serverEndpointIPs"] as? [String] ?? [],
+          result: result
+        )
       case "stopVpn":
         self.stopVpn(result: result)
       case "vpnState":
@@ -75,7 +82,10 @@ import UIKit
           result(manager?.connection.connectedDate.map { Int64($0.timeIntervalSince1970 * 1000) })
         }
       case "vpnError":
-        result(UserDefaults.standard.string(forKey: "GhostBoxVpnError"))
+        result(
+          UserDefaults(suiteName: "group.app.ghostbox.ghostbox")?.string(forKey: "GhostBoxVpnError")
+            ?? UserDefaults.standard.string(forKey: "GhostBoxVpnError")
+        )
       default:
         result(FlutterMethodNotImplemented)
       }
@@ -146,7 +156,18 @@ import UIKit
     }
   }
 
-  private func startVpn(config: String, profileName: String, result: @escaping FlutterResult) {
+  private func preferencesErrorMessage(_ error: Error?) -> String? {
+    guard let error else { return nil }
+    let message = error.localizedDescription
+    if message.localizedCaseInsensitiveContains("permission denied") ||
+       message.localizedCaseInsensitiveContains("not permitted") {
+      return "iOS denied the VPN configuration. Sign the app and Packet Tunnel extension with provisioning profiles that authorize the Network Extension packet-tunnel-provider entitlement and the shared App Group."
+    }
+    return message
+  }
+
+  private func startVpn(config: String, profileName: String, oomMemoryLimitMB: Int,
+                        core: String, serverEndpointIPs: [String], result: @escaping FlutterResult) {
     guard let finish = beginMutation(result) else { return }
     guard let data = config.data(using: .utf8),
           (try? JSONSerialization.jsonObject(with: data)) is [String: Any] else {
@@ -154,9 +175,10 @@ import UIKit
       return
     }
     UserDefaults.standard.removeObject(forKey: "GhostBoxVpnError")
+    UserDefaults(suiteName: "group.app.ghostbox.ghostbox")?.removeObject(forKey: "GhostBoxVpnError")
     loadTunnelManager { manager, error in
       guard let manager else {
-        finish(FlutterError(code: "vpn_preferences_failed", message: error?.localizedDescription, details: nil))
+        finish(FlutterError(code: "vpn_preferences_failed", message: self.preferencesErrorMessage(error), details: nil))
         return
       }
       // Switching profiles never starts a second extension over a disconnecting
@@ -179,12 +201,12 @@ import UIKit
         manager.isEnabled = true
         manager.saveToPreferences { saveError in
           guard saveError == nil else {
-            finish(FlutterError(code: "vpn_preferences_failed", message: saveError?.localizedDescription, details: nil))
+            finish(FlutterError(code: "vpn_preferences_failed", message: self.preferencesErrorMessage(saveError), details: nil))
             return
           }
           manager.loadFromPreferences { reloadError in
             guard reloadError == nil else {
-              finish(FlutterError(code: "vpn_preferences_failed", message: reloadError?.localizedDescription, details: nil))
+              finish(FlutterError(code: "vpn_preferences_failed", message: self.preferencesErrorMessage(reloadError), details: nil))
               return
             }
             do {
@@ -192,6 +214,9 @@ import UIKit
                 "configContent": config as NSString,
                 "systemProxyEnabled": false as NSNumber,
                 "excludeAPNsRoute": true as NSNumber,
+                "oomMemoryLimitMB": min(max(oomMemoryLimitMB, 25), 50) as NSNumber,
+                "ghostboxCore": core as NSString,
+                "serverEndpointIPs": serverEndpointIPs as NSArray,
               ])
               finish(nil)
             } catch {
@@ -208,7 +233,7 @@ import UIKit
     guard let finish = beginMutation(result) else { return }
     loadTunnelManager { manager, error in
       guard let manager else {
-        finish(FlutterError(code: "vpn_preferences_failed", message: error?.localizedDescription, details: nil))
+        finish(FlutterError(code: "vpn_preferences_failed", message: self.preferencesErrorMessage(error), details: nil))
         return
       }
       manager.connection.stopVPNTunnel()
@@ -235,7 +260,7 @@ import UIKit
   private func readVpnSnapshot(result: @escaping FlutterResult) {
     loadTunnelManager { manager, error in
       guard let manager else {
-        result(FlutterError(code: "vpn_preferences_failed", message: error?.localizedDescription, details: nil))
+        result(FlutterError(code: "vpn_preferences_failed", message: self.preferencesErrorMessage(error), details: nil))
         return
       }
       var snapshot: [String: Any] = [
@@ -259,7 +284,7 @@ import UIKit
   private func readVpnState(result: @escaping FlutterResult) {
     loadTunnelManager { manager, error in
       guard let manager else {
-        result(FlutterError(code: "vpn_preferences_failed", message: error?.localizedDescription, details: nil))
+        result(FlutterError(code: "vpn_preferences_failed", message: self.preferencesErrorMessage(error), details: nil))
         return
       }
       result(self.stateName(manager.connection.status))

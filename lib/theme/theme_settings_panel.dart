@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'brand_icon.dart';
@@ -249,105 +251,114 @@ class _ThemeSettingsPanelState extends State<ThemeSettingsPanel> {
               icon: const Icon(Icons.palette_outlined, size: 18),
               label: Text(_s('Настроить свою тему', 'Customize theme')))),
       const SizedBox(height: 20),
-      Text(_s('Значок приложения', 'App icon'),
-          style: theme.textTheme.titleMedium),
-      const SizedBox(height: 5),
-      Text(
-          _s('Независима от темы. Готовые значки меняют иконку приложения; своя палитра применяется в интерфейсе и на десктопе.',
-              'Independent from the app theme. Presets change the app icon; custom colors apply in the UI and on desktop.'),
-          style: theme.textTheme.bodySmall),
-      const SizedBox(height: 12),
-      ScrollConfiguration(
-        behavior: const MaterialScrollBehavior().copyWith(dragDevices: {
-          PointerDeviceKind.touch,
-          PointerDeviceKind.mouse,
-          PointerDeviceKind.trackpad,
-        }),
-        child: Listener(
-          onPointerSignal: (signal) {
-            if (signal is! PointerScrollEvent || !_iconScroll.hasClients) {
-              return;
-            }
-            GestureBinding.instance.pointerSignalResolver.register(signal, (_) {
-              if (!_iconScroll.hasClients) return;
-              final delta = signal.scrollDelta.dx != 0
-                  ? signal.scrollDelta.dx
-                  : signal.scrollDelta.dy;
-              _iconScroll.position.pointerScroll(delta);
-            });
-          },
-          child: SizedBox(
-            height: 82,
-            child: SingleChildScrollView(
-              controller: _iconScroll,
-              scrollDirection: Axis.horizontal,
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  for (final icon in _iconOptions) ...[
+      if (Platform.isMacOS) ...[
+        const SizedBox(height: 20),
+        Text(
+            _s('Оформление значка приложения настраивается в macOS и соответствует выбранному режиму значков Dock.',
+                'macOS controls the app icon appearance and applies the selected Dock icon mode.'),
+            style: theme.textTheme.bodySmall),
+      ] else ...[
+        Text(_s('Значок приложения', 'App icon'),
+            style: theme.textTheme.titleMedium),
+        const SizedBox(height: 5),
+        Text(
+            _s('Готовые значки меняют иконку приложения; своя палитра применяется в интерфейсе и на десктопе.',
+                'Presets change the app icon; custom colors apply in the UI and on desktop.'),
+            style: theme.textTheme.bodySmall),
+        const SizedBox(height: 12),
+        ScrollConfiguration(
+          behavior: const MaterialScrollBehavior().copyWith(dragDevices: {
+            PointerDeviceKind.touch,
+            PointerDeviceKind.mouse,
+            PointerDeviceKind.trackpad,
+          }),
+          child: Listener(
+            onPointerSignal: (signal) {
+              if (signal is! PointerScrollEvent || !_iconScroll.hasClients) {
+                return;
+              }
+              GestureBinding.instance.pointerSignalResolver.register(signal,
+                  (_) {
+                if (!_iconScroll.hasClients) return;
+                final delta = signal.scrollDelta.dx != 0
+                    ? signal.scrollDelta.dx
+                    : signal.scrollDelta.dy;
+                _iconScroll.position.pointerScroll(delta);
+              });
+            },
+            child: SizedBox(
+              height: 82,
+              child: SingleChildScrollView(
+                controller: _iconScroll,
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    for (final icon in _iconOptions) ...[
+                      SizedBox(
+                        width: 72,
+                        child: _iconOption(context, controller, icon.$1,
+                            _presetName(icon.$2), icon.$3, icon.$4),
+                      ),
+                      const SizedBox(width: 8),
+                    ],
                     SizedBox(
                       width: 72,
-                      child: _iconOption(context, controller, icon.$1,
-                          _presetName(icon.$2), icon.$3, icon.$4),
-                    ),
-                    const SizedBox(width: 8),
-                  ],
-                  SizedBox(
-                    width: 72,
-                    child: _iconOption(
-                      context,
-                      controller,
-                      'custom',
-                      _s('Своя', 'Custom'),
-                      controller.iconForeground,
-                      controller.iconBackground,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
-      ),
-      AnimatedSize(
-        duration: const Duration(milliseconds: 260),
-        curve: Curves.easeInOutCubic,
-        child: controller.iconVariant != 'custom'
-            ? const SizedBox(width: double.infinity)
-            : Padding(
-                padding: const EdgeInsets.only(top: 18),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(_s('Цвет призрака', 'Ghost color'),
-                        style: theme.textTheme.bodySmall),
-                    const SizedBox(height: 9),
-                    _swatchPalette(
-                      context,
-                      colors: _iconColors,
-                      selected: controller.iconForeground,
-                      onSelected: (color) =>
-                          controller.setCustomIconColors(foreground: color),
-                      trailing: _customIconColor(context, controller,
-                          foreground: true),
-                    ),
-                    const SizedBox(height: 16),
-                    Text(_s('Фон значка', 'Icon background'),
-                        style: theme.textTheme.bodySmall),
-                    const SizedBox(height: 9),
-                    _swatchPalette(
-                      context,
-                      colors: _iconBackgrounds,
-                      selected: controller.iconBackground,
-                      onSelected: (color) =>
-                          controller.setCustomIconColors(background: color),
-                      trailing: _customIconColor(context, controller,
-                          foreground: false),
+                      child: _iconOption(
+                        context,
+                        controller,
+                        'custom',
+                        _s('Своя', 'Custom'),
+                        controller.iconForeground,
+                        controller.iconBackground,
+                      ),
                     ),
                   ],
                 ),
               ),
-      ),
+            ),
+          ),
+        ),
+        AnimatedSize(
+          duration: const Duration(milliseconds: 260),
+          curve: Curves.easeInOutCubic,
+          child: controller.iconVariant != 'custom'
+              ? const SizedBox(width: double.infinity)
+              : Padding(
+                  padding: const EdgeInsets.only(top: 18),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(_s('Цвет призрака', 'Ghost color'),
+                          style: theme.textTheme.bodySmall),
+                      const SizedBox(height: 9),
+                      _swatchPalette(
+                        context,
+                        colors: _iconColors,
+                        selected: controller.iconForeground,
+                        onSelected: (color) =>
+                            controller.setCustomIconColors(foreground: color),
+                        trailing: _customIconColor(context, controller,
+                            foreground: true),
+                      ),
+                      const SizedBox(height: 16),
+                      Text(_s('Фон значка', 'Icon background'),
+                          style: theme.textTheme.bodySmall),
+                      const SizedBox(height: 9),
+                      _swatchPalette(
+                        context,
+                        colors: _iconBackgrounds,
+                        selected: controller.iconBackground,
+                        onSelected: (color) =>
+                            controller.setCustomIconColors(background: color),
+                        trailing: _customIconColor(context, controller,
+                            foreground: false),
+                      ),
+                    ],
+                  ),
+                ),
+        ),
+      ],
       AnimatedSize(
           duration: const Duration(milliseconds: 320),
           curve: Curves.easeInOutCubic,

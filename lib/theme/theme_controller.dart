@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/cupertino.dart' show CupertinoPageTransitionsBuilder;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -152,6 +154,9 @@ class ThemeController extends ChangeNotifier {
   }
 
   Future<bool> _applyPlatformIcon() async {
+    // macOS owns Dock icon appearance (including tinted/clear modes). Setting
+    // NSApp.applicationIconImage overrides that system treatment at runtime.
+    if (Platform.isMacOS) return false;
     try {
       final customPng = _iconVariant == 'custom'
           ? await renderCustomGhostIcon(_iconForeground, _iconBackground)

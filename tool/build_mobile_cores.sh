@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build official sing-box libbox artifacts for Android or Apple platforms.
+# Build sing-box libbox artifacts for Android or Apple platforms.
 set -euo pipefail
 
 project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -16,8 +16,10 @@ if [[ "$target" == android ]]; then
   sing_box_repository="${GHOSTBOX_ANDROID_SING_BOX_REPOSITORY:-https://github.com/Leadaxe/sing-box-lx.git}"
   sing_box_version="${GHOSTBOX_ANDROID_SING_BOX_VERSION:-v1.14.3-lx.21}"
 else
-  sing_box_repository="${GHOSTBOX_SING_BOX_REPOSITORY:-https://github.com/SagerNet/sing-box.git}"
-  sing_box_version="${GHOSTBOX_SING_BOX_VERSION:-v1.14.3}"
+  # Use the same downstream core on Apple as Android so XHTTP profiles work
+  # in the Packet Tunnel extension instead of being silently unavailable.
+  sing_box_repository="${GHOSTBOX_APPLE_SING_BOX_REPOSITORY:-https://github.com/Leadaxe/sing-box-lx.git}"
+  sing_box_version="${GHOSTBOX_APPLE_SING_BOX_VERSION:-v1.14.3-lx.21}"
 fi
 source_dir="$project_dir/.toolchains/src/sing-box-$sing_box_version"
 command -v go >/dev/null || { echo 'Go is required.' >&2; exit 1; }
@@ -71,9 +73,14 @@ if [[ -f "$source_dir/go.version" ]]; then
   export GOTOOLCHAIN="$pinned_go_version"
 fi
 
-go install "github.com/sagernet/gomobile/cmd/gomobile@$gomobile_version"
-go install "github.com/sagernet/gomobile/cmd/gobind@$gomobile_version"
 export PATH="$(go env GOPATH)/bin:$PATH"
+gomobile_bin="$(go env GOPATH)/bin/gomobile"
+gobind_bin="$(go env GOPATH)/bin/gobind"
+if [[ ! -x "$gomobile_bin" || ! -x "$gobind_bin" ]] ||
+  ! go version -m "$gomobile_bin" 2>/dev/null | grep -Fq "$gomobile_version"; then
+  go install "github.com/sagernet/gomobile/cmd/gomobile@$gomobile_version"
+  go install "github.com/sagernet/gomobile/cmd/gobind@$gomobile_version"
+fi
 gomobile init
 
 pushd "$source_dir" >/dev/null
@@ -94,6 +101,10 @@ if [[ "$target" == android ]]; then
     "$(go version)" > "$artifact_dir/android/BUILD-INFO.txt"
   echo "Android libbox AARs: $artifact_dir/android"
 else
+  # The Apple libbox builder exposes the same mobile API but its default tag
+  # list omits the downstream XHTTP transport. Patch this build
+  # input idempotently so the generated framework contains its implementation.
+  python3 "$project_dir/tool/enable_apple_xhttp.py" "$source_dir"
   go run ./cmd/internal/build_libbox -target apple -platform ios,iossimulator,macos
   mkdir -p "$artifact_dir/apple"
   rm -rf "$artifact_dir/apple/Libbox.xcframework"
@@ -106,7 +117,7 @@ else
   if [[ -f "$source_dir/clients/apple/LICENSE" ]]; then
     install -m 0644 "$source_dir/clients/apple/LICENSE" "$artifact_dir/apple/LICENSE-apple-client"
   fi
-  printf 'sing-box %s\nGo %s\niOS low-memory build tag: with_low_memory (upstream gomobile builder)\n' \
+  printf 'sing-box-lx %s\nGo %s\niOS low-memory build tag: with_low_memory\nXHTTP build tag: with_xhttp\n' \
     "$sing_box_version" "$(go version)" > "$artifact_dir/apple/BUILD-INFO.txt"
   echo "Apple Libbox.xcframework: $artifact_dir/apple/Libbox.xcframework"
 fi
