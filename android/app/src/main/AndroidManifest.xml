@@ -17,7 +17,7 @@
             android:name=".GhostBoxVpnService"
             android:permission="android.permission.BIND_VPN_SERVICE"
             android:exported="true"
-            android:process=":singboxcore"
+            android:process=":singboxcore2"
             android:foregroundServiceType="systemExempted">
             <meta-data
                 android:name="android.net.VpnService.SUPPORTS_ALWAYS_ON"
@@ -30,7 +30,7 @@
             android:name=".XrayVpnService"
             android:permission="android.permission.BIND_VPN_SERVICE"
             android:exported="true"
-            android:process=":xray"
+            android:process=":xraycore2"
             android:foregroundServiceType="systemExempted">
             <meta-data
                 android:name="android.net.VpnService.SUPPORTS_ALWAYS_ON"

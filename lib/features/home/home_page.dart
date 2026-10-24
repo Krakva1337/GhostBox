@@ -144,6 +144,7 @@ class _HomePageState extends State<HomePage>
   bool switchingServer = false;
   String? activeProfileId;
   String? connectionIssue;
+  bool _suppressAndroidVpnRecoveryPrompt = false;
   final List<String> appLogs = <String>[];
   final List<Map<String, dynamic>> connectionHistory = <Map<String, dynamic>>[];
   Future<void> _logWriteQueue = Future<void>.value();
@@ -1702,6 +1703,9 @@ class _HomePageState extends State<HomePage>
         if (mounted) {
           setState(() {});
           _message(message);
+          if (_shouldOfferAndroidVpnRecovery(e.toString())) {
+            await _offerAndroidVpnRecovery();
+          }
         }
       }
     } else if (mounted) {
@@ -4497,6 +4501,66 @@ foreach ($route in $routes) {
     );
   }
 
+  bool _shouldOfferAndroidVpnRecovery(String error) {
+    if (!Platform.isAndroid || _suppressAndroidVpnRecoveryPrompt) return false;
+    final normalized = error.toLowerCase();
+    return normalized.contains('process is bad') ||
+        normalized.contains('cleanup_failed') ||
+        normalized.contains('reason=') && normalized.contains('status=');
+  }
+
+  Future<void> _offerAndroidVpnRecovery() async {
+    final recover = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(
+            _text('Сбой Android VPN-службы', 'Android VPN service failed')),
+        content: Text(_text(
+          'Можно жёстко остановить службы Xray и sing-box, завершить их зависшие процессы и очистить состояние VPN. Затем GhostBox заново запустит службу и повторит подключение.',
+          'GhostBox can force-stop the Xray and sing-box services, terminate their stuck processes, and reset VPN state. It will then recreate the service and retry the connection.',
+        )),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: Text(_text('Отмена', 'Cancel')),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            icon: const Icon(Icons.cleaning_services_rounded),
+            label: Text(_text('Очистить и повторить', 'Clean and retry')),
+          ),
+        ],
+      ),
+    );
+    if (recover != true || !mounted) return;
+
+    try {
+      final cleaned = await const MethodChannel('app.ghostbox.ghostbox/vpn')
+          .invokeMethod<bool>('forceCleanupVpn')
+          .timeout(const Duration(seconds: 20));
+      if (cleaned != true) {
+        throw StateError('Android VPN processes did not stop completely');
+      }
+      _message(_text(
+        'VPN-служба очищена. Повторяю подключение…',
+        'VPN service cleaned. Retrying connection…',
+      ));
+      _suppressAndroidVpnRecoveryPrompt = true;
+      try {
+        await _toggle();
+      } finally {
+        _suppressAndroidVpnRecoveryPrompt = false;
+      }
+    } on Object catch (error) {
+      if (mounted) {
+        _message(_text(
+          'Не удалось восстановить VPN-службу: $error',
+          'Could not recover the VPN service: $error',
+        ));
+      }
+    }
+  }
+
   Future<void> _addProfile() async {
     final controller = TextEditingController();
     final input = await _showPasteDialog(
@@ -7119,10 +7183,10 @@ foreach ($route in $routes) {
                   ))));
     }
     return Padding(
-        padding: EdgeInsets.fromLTRB(14, 0, 14, 11),
+        padding: EdgeInsets.fromLTRB(14, 0, 14, 8),
         child: Container(
             width: double.infinity,
-            padding: EdgeInsets.all(14),
+            padding: EdgeInsets.symmetric(horizontal: 11, vertical: 8),
             decoration: BoxDecoration(
                 color: _subscriptionInfoSurface,
                 borderRadius: BorderRadius.circular(17),
@@ -7143,13 +7207,13 @@ foreach ($route in $routes) {
                     visualDensity: VisualDensity.compact,
                     padding: EdgeInsets.zero,
                     constraints:
-                        const BoxConstraints.tightFor(width: 44, height: 44),
+                        const BoxConstraints.tightFor(width: 28, height: 28),
                     onPressed: () => setState(() =>
                         collapsedSubscriptionInfo.add(sub['url'] as String)),
                     icon: Icon(Icons.expand_less_rounded,
                         size: 19, color: _muted)),
               ]),
-              const SizedBox(height: 9),
+              const SizedBox(height: 3),
               if (!hasInfo)
                 Text(
                     _text('Провайдер не передал данные о трафике и сроке',
@@ -7183,7 +7247,7 @@ foreach ($route in $routes) {
                   ],
                 ]),
                 if (progress != null) ...[
-                  SizedBox(height: 9),
+                  SizedBox(height: 6),
                   ClipRRect(
                       borderRadius: BorderRadius.circular(10),
                       child: LinearProgressIndicator(
@@ -7198,8 +7262,8 @@ foreach ($route in $routes) {
                   metadata.deviceLimit != null ||
                   metadata.updateIntervalHours != null ||
                   (updatedAtInline && updatedAt != null)) ...[
-                SizedBox(height: 11),
-                Wrap(spacing: 12, runSpacing: 7, children: [
+                SizedBox(height: 6),
+                Wrap(spacing: 8, runSpacing: 3, children: [
                   if (expiryText != null)
                     _metadataBadge(Icons.event_rounded, expiryText,
                         expired ? Color(0xFFFFA3A3) : _muted),
@@ -7232,14 +7296,14 @@ foreach ($route in $routes) {
                     alignment: Alignment.centerRight,
                     child: _subscriptionProviderLinks(metadata)),
               if (metadata.description?.isNotEmpty == true) ...[
-                SizedBox(height: 10),
+                SizedBox(height: 6),
                 Text(metadata.description!,
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(color: _muted, fontSize: 11)),
               ],
               if (metadata.announcement?.isNotEmpty == true) ...[
-                SizedBox(height: 10),
+                SizedBox(height: 6),
                 InkWell(
                     onTap: () => showDialog<void>(
                         context: context,
@@ -7264,7 +7328,7 @@ foreach ($route in $routes) {
                     ])),
               ],
               if (updatedAt != null && !updatedAtInline) ...[
-                SizedBox(height: 8),
+                SizedBox(height: 4),
                 _metadataBadge(
                     Icons.update_rounded,
                     _text('Обновлено ${_updatedLabel(updatedAt)}',
@@ -7272,7 +7336,7 @@ foreach ($route in $routes) {
                     _muted),
               ],
               if (hasProviderLinks && !linksAtTop) ...[
-                SizedBox(height: 9),
+                SizedBox(height: 4),
                 _subscriptionProviderLinks(metadata),
               ],
             ])));
@@ -12228,6 +12292,8 @@ class _ProviderLinkButtonState extends State<_ProviderLinkButton> {
                   padding: const EdgeInsets.symmetric(horizontal: 6),
                   tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                   visualDensity: VisualDensity.compact,
+                  overlayColor: Colors.transparent,
+                  splashFactory: NoSplash.splashFactory,
                   foregroundColor: hovered ? widget.accent : null,
                   textStyle: const TextStyle(fontSize: 11),
                 ),

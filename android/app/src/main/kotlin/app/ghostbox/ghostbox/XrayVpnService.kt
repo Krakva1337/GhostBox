@@ -17,7 +17,7 @@ import java.lang.reflect.InvocationTargetException
 import java.util.concurrent.Executors
 import java.util.zip.ZipFile
 
-/** Xray owns its Go runtime in :xray, separate from sing-box's :singbox process. */
+/** Xray owns its Go runtime in :xraycore2, separate from sing-box's :singboxcore2 process. */
 class XrayVpnService : VpnService() {
     companion object {
         const val EXTRA_CONFIG = "ghostbox.xray.config"

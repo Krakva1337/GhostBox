@@ -43,6 +43,13 @@ class MainActivity : FlutterActivity() {
     private var pendingDownloadsName: String? = null
     @Volatile private var staleVpnCleanupScheduled = false
 
+    private val xrayProcessName get() = "$packageName:xraycore2"
+    private val singBoxProcessName get() = "$packageName:singboxcore2"
+    private val legacyVpnProcessNames get() =
+        setOf("$packageName:xray", "$packageName:singboxcore")
+    private val allVpnProcessNames get() =
+        legacyVpnProcessNames + setOf(xrayProcessName, singBoxProcessName)
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
@@ -106,6 +113,7 @@ class MainActivity : FlutterActivity() {
                         }
                     }
                     "cleanupVpnBeforeConnect" -> cleanupVpnBeforeConnect(result)
+                    "forceCleanupVpn" -> forceCleanupVpn(result)
                     "vpnState" -> result.success(currentVpnState())
                     "vpnStopComplete" -> {
                         val state = VpnStateStore.read(this)
@@ -154,7 +162,11 @@ class MainActivity : FlutterActivity() {
                     "xrayProxyState" -> result.success(VpnStateStore.xrayProxyState(this))
                     "xrayProxyError" -> result.success(VpnStateStore.xrayProxyError(this))
                     "vpnMemoryMb" -> {
-                        val processName = "$packageName:${if (VpnStateStore.activeCore(this) == "xray") "xray" else "singboxcore"}"
+                        val processName = if (VpnStateStore.activeCore(this) == "xray") {
+                            xrayProcessName
+                        } else {
+                            singBoxProcessName
+                        }
                         val pid = getSystemService(android.app.ActivityManager::class.java)
                             .runningAppProcesses
                             ?.firstOrNull { it.processName == processName }
@@ -649,12 +661,13 @@ class MainActivity : FlutterActivity() {
                         service.service.className.endsWith(serviceSuffix)
                 }
 
-        val processName = "$packageName:${if (core == "xray") "xray" else "singboxcore"}"
+        val processName = if (core == "xray") xrayProcessName else singBoxProcessName
         val coreAlive = serviceAlive(
             processName,
             if (core == "xray") "XrayVpnService" else "GhostBoxVpnService",
         )
-        val xrayAlive = serviceAlive("$packageName:xray", "XrayVpnService")
+        val xrayAlive = serviceAlive(xrayProcessName, "XrayVpnService") ||
+            serviceAlive("$packageName:xray", "XrayVpnService")
 
         // A launcher Activity can be recreated while either foreground VPN
         // service survives. If persisted state says disconnected, it is an
@@ -735,7 +748,7 @@ class MainActivity : FlutterActivity() {
      * completed only after Android no longer reports either child process.
      */
     private fun cleanupVpnBeforeConnect(result: MethodChannel.Result) {
-        val childNames = setOf("$packageName:xray", "$packageName:singboxcore")
+        val childNames = allVpnProcessNames
         fun liveChildren(): List<android.app.ActivityManager.RunningAppProcessInfo> =
             getSystemService(android.app.ActivityManager::class.java)
                 .runningAppProcesses
@@ -760,8 +773,8 @@ class MainActivity : FlutterActivity() {
             // processes before allowing a new connection.
             val liveNames = liveChildren().mapTo(mutableSetOf()) { it.processName }
             listOf(
-                GhostBoxVpnService::class.java to "$packageName:singboxcore",
-                XrayVpnService::class.java to "$packageName:xray",
+                GhostBoxVpnService::class.java to singBoxProcessName,
+                XrayVpnService::class.java to xrayProcessName,
             ).forEach { (serviceClass, processName) ->
                 if (processName !in liveNames) return@forEach
                 try {
@@ -841,6 +854,113 @@ class MainActivity : FlutterActivity() {
     }
 
     /**
+     * Hard recovery for a user-confirmed broken VPN session. Android has no
+     * separately installable VpnService component: stop both app-owned VPN
+     * services, terminate only their isolated core processes, then clear the
+     * persisted runtime state so the next connection can start fresh.
+     */
+    private fun forceCleanupVpn(result: MethodChannel.Result) {
+        val childNames = allVpnProcessNames
+        fun liveChildren(): List<android.app.ActivityManager.RunningAppProcessInfo> =
+            getSystemService(android.app.ActivityManager::class.java)
+                .runningAppProcesses
+                ?.filter {
+                    it.processName in childNames && it.pid != android.os.Process.myPid()
+                }
+                .orEmpty()
+
+        try {
+            VpnStateStore.update(this) {
+                it.put("state", "stopping")
+                    .put("xrayProxyState", "stopping")
+                    .put("singBoxStopComplete", false)
+                    .put("xrayStopComplete", false)
+                    .remove("connectedAtMs")
+            }
+        } catch (error: Exception) {
+            result.error("force_cleanup_failed", error.message ?: error.toString(), null)
+            return
+        }
+
+        Thread({
+            try {
+                val stopIntent = Intent("app.ghostbox.STOP_VPN")
+                val liveNames = liveChildren().mapTo(mutableSetOf()) { it.processName }
+                listOf(
+                    GhostBoxVpnService::class.java to singBoxProcessName,
+                    XrayVpnService::class.java to xrayProcessName,
+                ).forEach { (serviceClass, processName) ->
+                    if (processName !in liveNames) return@forEach
+                    runCatching {
+                        startService(Intent(stopIntent).setClass(this, serviceClass))
+                    }.onFailure { error ->
+                        VpnStateStore.appendLog(
+                            this,
+                            "Force cleanup: STOP для ${serviceClass.simpleName} не принят: " +
+                                (error.message ?: error.toString()),
+                        )
+                    }
+                }
+
+                val gracefulDeadline = System.currentTimeMillis() + 1_000L
+                while (
+                    System.currentTimeMillis() < gracefulDeadline &&
+                    liveChildren().isNotEmpty()
+                ) {
+                    Thread.sleep(100L)
+                }
+
+                liveChildren().forEach { process ->
+                    VpnStateStore.appendLog(
+                        this,
+                        "Force cleanup: завершаю процесс ${process.processName} " +
+                            "(pid ${process.pid})",
+                    )
+                    android.os.Process.killProcess(process.pid)
+                }
+
+                val exitDeadline = System.currentTimeMillis() + 4_000L
+                var remaining = liveChildren()
+                while (System.currentTimeMillis() < exitDeadline && remaining.isNotEmpty()) {
+                    Thread.sleep(100L)
+                    remaining = liveChildren()
+                }
+                if (remaining.isNotEmpty()) {
+                    throw IllegalStateException(
+                        "Не удалось остановить VPN-процессы: " +
+                            remaining.joinToString { it.processName },
+                    )
+                }
+
+                stopService(Intent(this, GhostBoxVpnService::class.java))
+                stopService(Intent(this, XrayVpnService::class.java))
+                VpnStateStore.update(this) {
+                    it.put("state", "disconnected")
+                        .put("xrayProxyState", "disconnected")
+                        .put("singBoxStopComplete", true)
+                        .put("xrayStopComplete", true)
+                    it.remove("connectedAtMs")
+                    it.remove("startedAtMs")
+                    it.remove("xrayProxyStartedAtMs")
+                    it.remove("error")
+                    it.remove("xrayProxyError")
+                }
+                runOnUiThread { result.success(true) }
+            } catch (error: Exception) {
+                VpnStateStore.update(this) {
+                    it.put("state", "error")
+                        .put("error", error.message ?: error.toString())
+                    it.remove("connectedAtMs")
+                    it.remove("startedAtMs")
+                }
+                runOnUiThread {
+                    result.error("force_cleanup_failed", error.message ?: error.toString(), null)
+                }
+            }
+        }, "GhostBox-vpn-force-cleanup").start()
+    }
+
+    /**
      * A crashed libXray runtime can leave its isolated :xray process registered
      * with Android. Signal graceful service shutdown first, then kill only the
      * app-owned VPN child processes if they are still present. This path is
@@ -850,11 +970,19 @@ class MainActivity : FlutterActivity() {
         if (staleVpnCleanupScheduled) return
         staleVpnCleanupScheduled = true
         val stopIntent = Intent("app.ghostbox.STOP_VPN")
-        runCatching {
-            startService(Intent(stopIntent).setClass(this, GhostBoxVpnService::class.java))
+        val runningNames = getSystemService(android.app.ActivityManager::class.java)
+            .runningAppProcesses
+            ?.mapTo(mutableSetOf()) { it.processName }
+            .orEmpty()
+        if (singBoxProcessName in runningNames) {
+            runCatching {
+                startService(Intent(stopIntent).setClass(this, GhostBoxVpnService::class.java))
+            }
         }
-        runCatching {
-            startService(Intent(stopIntent).setClass(this, XrayVpnService::class.java))
+        if (xrayProcessName in runningNames) {
+            runCatching {
+                startService(Intent(stopIntent).setClass(this, XrayVpnService::class.java))
+            }
         }
         android.os.Handler(mainLooper).postDelayed({
             if (VpnStateStore.state(this) == "connecting" ||
@@ -864,7 +992,7 @@ class MainActivity : FlutterActivity() {
                 return@postDelayed
             }
             val activityManager = getSystemService(android.app.ActivityManager::class.java)
-            val staleNames = setOf("$packageName:xray", "$packageName:singboxcore")
+            val staleNames = allVpnProcessNames
             activityManager.runningAppProcesses
                 ?.filter { it.processName in staleNames && it.pid != android.os.Process.myPid() }
                 ?.forEach { process ->
@@ -969,7 +1097,7 @@ class MainActivity : FlutterActivity() {
             result.error("xray_not_running", "The Android Xray proxy is not active", null)
             return
         }
-        val processName = "$packageName:xray"
+        val processName = xrayProcessName
         val xrayProcessRunning = getSystemService(android.app.ActivityManager::class.java)
             .runningAppProcesses
             ?.any { it.processName == processName && it.pid != android.os.Process.myPid() }
@@ -1010,12 +1138,16 @@ class MainActivity : FlutterActivity() {
     private fun recentVpnServiceExit(core: String): String? {
         if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.R) return null
         return runCatching {
-            val expectedProcess = "$packageName:${if (core == "xray") "xray" else "singboxcore"}"
+            val expectedProcesses = if (core == "xray") {
+                setOf(xrayProcessName, "$packageName:xray")
+            } else {
+                setOf(singBoxProcessName, "$packageName:singboxcore")
+            }
             val recentThreshold = System.currentTimeMillis() - 2 * 60 * 1000L
             getSystemService(android.app.ActivityManager::class.java)
                 .getHistoricalProcessExitReasons(packageName, 0, 20)
                 .asSequence()
-                .filter { it.processName == expectedProcess && it.timestamp >= recentThreshold }
+                .filter { it.processName in expectedProcesses && it.timestamp >= recentThreshold }
                 .sortedByDescending { it.timestamp }
                 .firstOrNull()
                 ?.let { exit ->
