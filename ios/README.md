@@ -14,15 +14,19 @@ unmanaged iOS devices. See [Apple TN3134](https://developer.apple.com/documentat
 
 ## Build
 
-Use a Mac with Xcode, the iOS Simulator runtime, Flutter, Go and Python 3:
+Use a Mac with Xcode, Flutter, Go and Python 3. An iOS Simulator runtime is
+only needed for simulator testing:
 
 ```sh
 ./tool/build_ios.sh unsigned
 ```
 
 This prepares the pinned Apple client and Libbox framework, compiles the host
-and extension together and creates `dist/GhostBox-*-iOS-unsigned.zip`. It is a
-compile artifact and cannot be installed on a device without signing.
+and extension together, and creates both
+`dist/GhostBox-*-iOS-unsigned.zip` and `dist/GhostBox-*-iOS-unsigned.ipa`.
+The IPA contains `Payload/GhostBox.app`, but it is unsigned and cannot be
+installed on a device until you sign it with an Apple team and provisioning
+profiles.
 
 For a signed archive/export, first configure Xcode with your Apple Developer
 account. Register the app IDs `app.ghostbox.ghostbox` and

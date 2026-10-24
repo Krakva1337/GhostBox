@@ -73,6 +73,8 @@ jobs:
           path: |
             dist/GhostBox-*-iOS-unsigned.zip
             dist/GhostBox-*-iOS-unsigned.zip.sha256
+            dist/GhostBox-*-iOS-unsigned.ipa
+            dist/GhostBox-*-iOS-unsigned.ipa.sha256
             dist/cores/apple/BUILD-INFO.txt
             dist/cores/apple/LICENSE*
           if-no-files-found: error

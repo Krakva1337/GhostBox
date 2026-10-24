@@ -1,0 +1,221 @@
+{
+  "pins" : [
+    {
+      "identity" : "binarycodable",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/christophhagen/BinaryCodable",
+      "state" : {
+        "revision" : "9e5ef6ca38f18d0bdfbe134dadbe1517f7468293",
+        "version" : "4.0.0"
+      }
+    },
+    {
+      "identity" : "codeeditlanguages",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/CodeEditApp/CodeEditLanguages.git",
+      "state" : {
+        "revision" : "331d5dbc5fc8513be5848fce8a2a312908f36a11",
+        "version" : "0.1.20"
+      }
+    },
+    {
+      "identity" : "codeeditsourceeditor",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/nekohasekai/CodeEditSourceEditor.git",
+      "state" : {
+        "branch" : "main",
+        "revision" : "0478fd4b8d45f191b6c400d2c7bf6cc648485593"
+      }
+    },
+    {
+      "identity" : "codeeditsymbols",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/CodeEditApp/CodeEditSymbols.git",
+      "state" : {
+        "revision" : "ae69712b08571c4469c2ed5cd38ad9f19439793e",
+        "version" : "0.2.3"
+      }
+    },
+    {
+      "identity" : "codeedittextview",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/CodeEditApp/CodeEditTextView.git",
+      "state" : {
+        "revision" : "d7ac3f11f22ec2e820187acce8f3a3fb7aa8ddec",
+        "version" : "0.12.1"
+      }
+    },
+    {
+      "identity" : "devicekit",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/devicekit/DeviceKit.git",
+      "state" : {
+        "revision" : "19528aa07e1426626ea9fb2c4a161edf43c4f9e8",
+        "version" : "5.9.0"
+      }
+    },
+    {
+      "identity" : "displaylink",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/Lakr233/DisplayLink.git",
+      "state" : {
+        "revision" : "41bea2661e04bebcb1c4f15fc0b6197850100fdd",
+        "version" : "3.0.1"
+      }
+    },
+    {
+      "identity" : "grdb.swift",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/groue/GRDB.swift",
+      "state" : {
+        "revision" : "b83108d10f42680d78f23fe4d4d80fc88dab3212",
+        "version" : "7.11.1"
+      }
+    },
+    {
+      "identity" : "legacybinarycodable",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/christophhagen/LegacyBinaryCodable",
+      "state" : {
+        "revision" : "bf13e2bc2aa27d8b119738054357dd6ab7eb0a95",
+        "version" : "2.0.3"
+      }
+    },
+    {
+      "identity" : "libghostty-spm",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/Lakr233/libghostty-spm",
+      "state" : {
+        "revision" : "5b9cb63d83e687b4a66d6c3a3c2a840341c576d9",
+        "version" : "2.2.2026102101"
+      }
+    },
+    {
+      "identity" : "networkimage",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/gonzalezreal/NetworkImage",
+      "state" : {
+        "revision" : "2849f5323265386e200484b0d0f896e73c3411b9",
+        "version" : "6.0.1"
+      }
+    },
+    {
+      "identity" : "plcrashreporter",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/microsoft/plcrashreporter.git",
+      "state" : {
+        "revision" : "0254f941c646b1ed17b243654723d0f071e990d0",
+        "version" : "1.12.2"
+      }
+    },
+    {
+      "identity" : "qrcode",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/dagronf/qrcode.git",
+      "state" : {
+        "revision" : "a8b8a5166e072156baf66ec2fff0850aa14b5297",
+        "version" : "28.1.0"
+      }
+    },
+    {
+      "identity" : "rearrange",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/ChimeHQ/Rearrange",
+      "state" : {
+        "revision" : "4de8be41dba304192e87dc0a11e0aa39e72aa2e8",
+        "version" : "2.1.1"
+      }
+    },
+    {
+      "identity" : "swift-cmark",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/swiftlang/swift-cmark",
+      "state" : {
+        "revision" : "08ddb528923cc1a6527e02b7a1aee9e516ca749a",
+        "version" : "0.9.0"
+      }
+    },
+    {
+      "identity" : "swift-collections",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-collections.git",
+      "state" : {
+        "revision" : "844289ac455816e193f1dbbe014f3c4dbe429410",
+        "version" : "1.7.4"
+      }
+    },
+    {
+      "identity" : "swift-markdown-ui",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/gonzalezreal/swift-markdown-ui",
+      "state" : {
+        "revision" : "5f613358148239d0292c0cef674a3c2314737f9e",
+        "version" : "2.4.1"
+      }
+    },
+    {
+      "identity" : "swift-qrcode-generator",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/dagronf/swift-qrcode-generator",
+      "state" : {
+        "revision" : "2b1980b825f08a81ccc762b0c4d17fcde9d5e953",
+        "version" : "2.0.2"
+      }
+    },
+    {
+      "identity" : "swiftimagereadwrite",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/dagronf/SwiftImageReadWrite",
+      "state" : {
+        "revision" : "42ace2412279f18bc264bc306e96b51c36e12a33",
+        "version" : "1.9.2"
+      }
+    },
+    {
+      "identity" : "swiftlintplugin",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/lukepistrol/SwiftLintPlugin",
+      "state" : {
+        "revision" : "b384a67cf45d9989aed5aab23e226cbc7bc2cd54",
+        "version" : "0.65.0"
+      }
+    },
+    {
+      "identity" : "swifttreesitter",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/ChimeHQ/SwiftTreeSitter.git",
+      "state" : {
+        "revision" : "08ef81eb8620617b55b08868126707ad72bf754f",
+        "version" : "0.25.0"
+      }
+    },
+    {
+      "identity" : "textformation",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/ChimeHQ/TextFormation",
+      "state" : {
+        "revision" : "b1ce9a14bd86042bba4de62236028dc4ce9db6a1",
+        "version" : "0.9.0"
+      }
+    },
+    {
+      "identity" : "textstory",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/ChimeHQ/TextStory",
+      "state" : {
+        "revision" : "a52db1a2eca74d37c8c19bf3165416941632ed45",
+        "version" : "0.9.2"
+      }
+    },
+    {
+      "identity" : "tree-sitter",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/tree-sitter/tree-sitter",
+      "state" : {
+        "revision" : "da6fe9beb4f7f67beb75914ca8e0d48ae48d6406",
+        "version" : "0.25.10"
+      }
+    }
+  ],
+  "version" : 2
+}

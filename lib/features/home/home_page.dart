@@ -4988,21 +4988,11 @@ foreach ($route in $routes) {
                               duration: const Duration(milliseconds: 320),
                               curve: Curves.easeInOutCubicEmphasized,
                               alignment: Alignment.topCenter,
-                              child: AnimatedSwitcher(
-                                duration: const Duration(milliseconds: 300),
-                                reverseDuration:
-                                    const Duration(milliseconds: 220),
-                                switchInCurve: Curves.easeOutCubic,
-                                switchOutCurve: Curves.easeInCubic,
-                                layoutBuilder: _currentChildSwitcherLayout,
-                                transitionBuilder: _fadeSlideSwap,
-                                child: KeyedSubtree(
-                                  key: ValueKey(wideLayout
-                                      ? 'wide-layout'
-                                      : 'compact-layout'),
-                                  child: responsiveLayout,
-                                ),
-                              ),
+                              // Keep only one responsive tree mounted. An
+                              // AnimatedSwitcher here temporarily mounted both
+                              // layouts, duplicating their GlobalKeys and
+                              // attaching the same ScrollController twice.
+                              child: responsiveLayout,
                             );
                           }))
                     ]),
@@ -6422,7 +6412,9 @@ foreach ($route in $routes) {
                               duration: const Duration(milliseconds: 240),
                               reverseDuration:
                                   const Duration(milliseconds: 180),
-                              switchInCurve: Curves.easeOutBack,
+                              // The transition builder applies another curve
+                              // to this animation, so keep the parent bounded.
+                              switchInCurve: Curves.easeOutCubic,
                               switchOutCurve: Curves.easeInCubic,
                               transitionBuilder: (child, animation) {
                                 final curved = CurvedAnimation(

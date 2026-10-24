@@ -27,7 +27,14 @@ if [[ "$mode" == unsigned ]]; then
   output="$project_dir/dist/GhostBox-$version-iOS-unsigned.zip"
   ditto -c -k --sequesterRsrc --keepParent "$app" "$output"
   shasum -a 256 "$output" > "$output.sha256"
-  echo "Unsigned compile artifact: $output (requires Apple signing before installation)."
+  ipa_staging="$(mktemp -d "${TMPDIR:-/tmp}/ghostbox-ipa.XXXXXX")"
+  trap 'rm -rf "$ipa_staging"' EXIT
+  mkdir -p "$ipa_staging/Payload"
+  ditto "$app" "$ipa_staging/Payload/GhostBox.app"
+  ipa_output="$project_dir/dist/GhostBox-$version-iOS-unsigned.ipa"
+  ditto -c -k --norsrc --keepParent "$ipa_staging/Payload" "$ipa_output"
+  shasum -a 256 "$ipa_output" > "$ipa_output.sha256"
+  echo "Unsigned compile artifacts: $output and $ipa_output (requires Apple signing before installation)."
 else
   flutter build ios --config-only --release \
     --build-name="$numeric_version" --build-number="$build_number" \

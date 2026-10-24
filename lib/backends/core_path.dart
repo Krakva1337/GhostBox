@@ -1,3 +1,4 @@
+import 'dart:ffi' show Abi;
 import 'dart:io';
 
 /// Installed bundles take priority; development launches use workspace/vendor.
@@ -12,5 +13,16 @@ String coreExecutable(String name, String root) {
   }
   final bundled =
       File('${File(Platform.resolvedExecutable).parent.path}/$relative');
-  return bundled.existsSync() ? bundled.path : File(relative).absolute.path;
+  if (bundled.existsSync()) return bundled.path;
+
+  // Desktop build scripts keep host cores under vendor/<platform>/<arch>/bin.
+  // Resolve those directly for Flutter development runs, where the app bundle
+  // does not yet contain the packaged vendor/bin directory.
+  if (Platform.isMacOS) {
+    final arch = Abi.current() == Abi.macosArm64 ? 'arm64' : 'amd64';
+    final developmentCore = File('vendor/macos/$arch/bin/$name');
+    if (developmentCore.existsSync()) return developmentCore.absolute.path;
+  }
+
+  return File(relative).absolute.path;
 }
