@@ -10566,7 +10566,14 @@ foreach ($route in $routes) {
     final uri =
         Uri.parse(availableAppRelease?.pageUrl ?? GitHubUpdater.releasesPage);
     try {
-      if (Platform.isWindows) {
+      if (Platform.isAndroid) {
+        final opened = await const MethodChannel('app.ghostbox.ghostbox/vpn')
+            .invokeMethod<bool>('openExternalUrl', uri.toString());
+        if (opened != true && mounted) {
+          _message(_text('Не удалось открыть страницу релизов',
+              'Could not open the releases page'));
+        }
+      } else if (Platform.isWindows) {
         await Process.start('cmd.exe', ['/c', 'start', '', uri.toString()],
             mode: ProcessStartMode.detached);
       } else {

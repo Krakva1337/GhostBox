@@ -735,6 +735,15 @@ class MainActivity : FlutterActivity() {
      * completed only after Android no longer reports either child process.
      */
     private fun cleanupVpnBeforeConnect(result: MethodChannel.Result) {
+        val childNames = setOf("$packageName:xray", "$packageName:singboxcore")
+        fun liveChildren(): List<android.app.ActivityManager.RunningAppProcessInfo> =
+            getSystemService(android.app.ActivityManager::class.java)
+                .runningAppProcesses
+                ?.filter {
+                    it.processName in childNames && it.pid != android.os.Process.myPid()
+                }
+                .orEmpty()
+
         try {
             VpnStateStore.update(this) {
                 it.put("state", "stopping")
@@ -744,24 +753,34 @@ class MainActivity : FlutterActivity() {
                     .remove("connectedAtMs")
             }
             val stopIntent = Intent("app.ghostbox.STOP_VPN")
-            startService(Intent(stopIntent).setClass(this, GhostBoxVpnService::class.java))
-            startService(Intent(stopIntent).setClass(this, XrayVpnService::class.java))
+            // Android can blacklist a recently-crashed service process and
+            // reject even a stop intent with `process is bad`. Treat that as
+            // a failed graceful-stop request, not as a failed cleanup: below
+            // we wait for and, if needed, kill only our own isolated VPN
+            // processes before allowing a new connection.
+            val liveNames = liveChildren().mapTo(mutableSetOf()) { it.processName }
+            listOf(
+                GhostBoxVpnService::class.java to "$packageName:singboxcore",
+                XrayVpnService::class.java to "$packageName:xray",
+            ).forEach { (serviceClass, processName) ->
+                if (processName !in liveNames) return@forEach
+                try {
+                    startService(Intent(stopIntent).setClass(this, serviceClass))
+                } catch (error: Exception) {
+                    val detail = error.message ?: error.toString()
+                    VpnStateStore.appendLog(
+                        this,
+                        "Не удалось отправить STOP_VPN в ${serviceClass.simpleName}; " +
+                            "перехожу к очистке процесса: $detail",
+                    )
+                }
+            }
         } catch (error: Exception) {
             result.error("cleanup_failed", error.message ?: error.toString(), null)
             return
         }
 
         Thread({
-            val childNames = setOf("$packageName:xray", "$packageName:singboxcore")
-            fun liveChildren(): List<android.app.ActivityManager.RunningAppProcessInfo> =
-                getSystemService(android.app.ActivityManager::class.java)
-                    .runningAppProcesses
-                    ?.filter {
-                        it.processName in childNames &&
-                            it.pid != android.os.Process.myPid()
-                    }
-                    .orEmpty()
-
             try {
                 val gracefulDeadline = System.currentTimeMillis() + 2_500L
                 while (
