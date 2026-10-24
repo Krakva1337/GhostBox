@@ -2723,21 +2723,38 @@ foreach ($route in $routes) {
   }
 
   Future<void> _disconnectActive() async {
+    final failures = <String>[];
+
+    Future<void> cleanup(String label, Future<void> Function() action) async {
+      try {
+        await action();
+      } on Object catch (error) {
+        failures.add('$label: $error');
+        _recordAppLog('Ошибка очистки ($label): $error');
+      }
+    }
+
     final storage = prefs;
     if (storage != null &&
         (coreSettings.connectionMode == 'tun' ||
             coreSettings.connectionMode == 'mixed')) {
-      await trafficStats.sample(storage);
+      await cleanup('статистика трафика', () => trafficStats.sample(storage));
     }
     final bridge = tunnelBridgeBackend;
     tunnelBridgeBackend = null;
     xrayTunnelBridgeActive = false;
-    if (bridge != null) await bridge.disconnect();
-    await backend.disconnect();
-    await systemProxy.restore();
+    if (bridge != null) {
+      await cleanup('остановка TUN-моста', bridge.disconnect);
+    }
+    await cleanup('остановка основного ядра', backend.disconnect);
+    await cleanup('восстановление системного прокси', systemProxy.restore);
     _activeMacUtunInterface = null;
     _macUtunInterfacesBeforeConnect.clear();
     activeLocalPort = null;
+    if (failures.isNotEmpty) {
+      _recordAppLog(
+          'Очистка подключения завершена с ошибками: ${failures.join(' | ')}');
+    }
   }
 
   Future<String> _resolveKillSwitchEndpoint(String host) async {

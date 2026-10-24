@@ -658,12 +658,14 @@ class CoreProcessBackend implements VpnBackend {
     if (config == null) return;
     // PID reuse must never turn a delayed stop into killing an unrelated app.
     final expected = _shellQuote('$executable run -c ${config.path}');
+    // Let sing-box handle SIGTERM so its route manager can remove the routes
+    // it installed. SIGKILL here can leave macOS with GhostBox's split default
+    // routes after the TUN interface disappears, breaking all connectivity.
     final command =
         'owned() { [ "\$(/bin/ps -ww -p $pid -o command=)" = $expected ]; }; '
         'if owned; then /bin/kill -TERM $pid 2>/dev/null || true; '
-        'i=0; while [ \$i -lt 30 ] && owned; do '
-        '/bin/sleep 0.1; i=\$((i + 1)); done; '
-        'if owned; then /bin/kill -KILL $pid 2>/dev/null || true; fi; fi';
+        'i=0; while [ \$i -lt 120 ] && owned; do '
+        '/bin/sleep 0.1; i=\$((i + 1)); done; fi';
     final script = 'do shell script ${_appleScriptQuote(command)} '
         'with administrator privileges';
     try {
@@ -679,7 +681,7 @@ class CoreProcessBackend implements VpnBackend {
       }
     } on Object catch (error) {
       _writeLifecycleLog(
-          'Не удалось остановить привилегированное ядро TUN: $error');
+          'Не удалось штатно остановить привилегированное ядро TUN: $error');
       rethrow;
     }
   }
