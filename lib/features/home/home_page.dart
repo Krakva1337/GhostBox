@@ -1383,7 +1383,7 @@ class _HomePageState extends State<HomePage>
     // Import protocol links before a possible update exits/restarts the app,
     // then let the updater finish before auto-connect brings the VPN up.
     await _drainPendingAppLinks();
-    if (mounted && autoUpdateApp && !skipUpdateChecks) {
+    if (mounted && (Platform.isAndroid || autoUpdateApp) && !skipUpdateChecks) {
       await _checkAppUpdate(silent: true);
     }
     if (Platform.isAndroid) {
@@ -10414,6 +10414,8 @@ foreach ($route in $routes) {
         _text('Загрузка обновления', 'Downloading update'),
       UpdateDownloadStage.verifying =>
         _text('Проверка файла', 'Verifying package'),
+      UpdateDownloadStage.savingToDownloads =>
+        _text('Сохраняю в Загрузки', 'Saving to Downloads'),
       UpdateDownloadStage.launchingInstaller =>
         _text('Запускаю установщик', 'Opening installer'),
     };
@@ -10741,6 +10743,7 @@ foreach ($route in $routes) {
           _message(_text(
               'Установлена последняя версия', 'You have the latest version'));
       } else {
+        if (Platform.isAndroid && !silent) _offeredUpdateTag = null;
         await _offerAppUpdate(release);
       }
     } on Object catch (error) {
@@ -10760,13 +10763,14 @@ foreach ($route in $routes) {
   Future<void> _installAppUpdate() async {
     final release = availableAppRelease;
     if (release == null || installingAppUpdate) return;
-    if (backend.state != VpnState.disconnected) {
+    if (!Platform.isAndroid && backend.state != VpnState.disconnected) {
       _message(_text('Перед обновлением отключи VPN',
           'Disconnect the VPN before updating'));
       return;
     }
     setState(() => installingAppUpdate = true);
     Future<void>? progressDialog;
+    DialogRoute<void>? progressRoute;
     try {
       final assetName = await appUpdater.platformAssetName(release);
       if (assetName == null) {
@@ -10791,7 +10795,7 @@ foreach ($route in $routes) {
           'Downloading ${GitHubUpdater.displayVersion(release.version)}…'));
       appUpdateProgress = null;
       _updateProgressNotifier.value = null;
-      progressDialog = showDialog<void>(
+      progressRoute = DialogRoute<void>(
         context: context,
         barrierDismissible: false,
         builder: (dialogContext) => AlertDialog(
@@ -10815,6 +10819,8 @@ foreach ($route in $routes) {
           ),
         ),
       );
+      progressDialog =
+          Navigator.of(context, rootNavigator: true).push(progressRoute);
       final savedPath =
           await appUpdater.apply(release, asset, onProgress: (progress) {
         final now = DateTime.now();
@@ -10837,6 +10843,8 @@ foreach ($route in $routes) {
                 'Downloading ${GitHubUpdater.displayVersion(release.version)}…'),
             UpdateDownloadStage.verifying =>
               _text('Проверяю SHA-256…', 'Verifying SHA-256…'),
+            UpdateDownloadStage.savingToDownloads =>
+              _text('Сохраняю APK в Загрузки…', 'Saving APK to Downloads…'),
             UpdateDownloadStage.launchingInstaller =>
               _text('Открываю установщик…', 'Opening installer…'),
           };
@@ -10866,8 +10874,9 @@ foreach ($route in $routes) {
           appUpdateProgress = null;
         });
         _updateProgressNotifier.value = null;
-        if (Navigator.of(context, rootNavigator: true).canPop()) {
-          Navigator.of(context, rootNavigator: true).pop();
+        final route = progressRoute;
+        if (route != null && route.isActive) {
+          route.navigator?.removeRoute(route);
         }
       }
       if (progressDialog != null) await progressDialog;

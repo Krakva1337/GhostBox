@@ -3,6 +3,7 @@ package app.ghostbox.ghostbox
 import android.app.Activity
 import android.app.DownloadManager
 import android.Manifest
+import android.content.ActivityNotFoundException
 import android.content.ContentValues
 import android.content.Intent
 import android.content.pm.ApplicationInfo
@@ -17,6 +18,7 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
 import java.util.zip.ZipFile
+import java.security.MessageDigest
 
 class MainActivity : FlutterActivity() {
     companion object {
@@ -41,6 +43,7 @@ class MainActivity : FlutterActivity() {
     private var pendingDownloadsResult: MethodChannel.Result? = null
     private var pendingDownloadsSource: String? = null
     private var pendingDownloadsName: String? = null
+    @Volatile private var updateInProgress = false
     @Volatile private var staleVpnCleanupScheduled = false
 
     private val xrayProcessName get() = "$packageName:xraycore2"
@@ -260,8 +263,47 @@ class MainActivity : FlutterActivity() {
             }
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, UPDATE_CHANNEL)
             .setMethodCallHandler { call, result ->
+                if (call.method == "getUpdateCacheDirectory") {
+                    try {
+                        val directory = File(cacheDir, "updates")
+                        check(directory.isDirectory || directory.mkdirs()) { "Could not create update cache" }
+                        result.success(directory.absolutePath)
+                    } catch (error: Exception) {
+                        result.error("update_cache_failed", error.message, null)
+                    }
+                    return@setMethodCallHandler
+                }
+                if (call.method == "sha256File") {
+                    val path = call.argument<String>("path")
+                    if (path.isNullOrBlank()) {
+                        result.error("missing_path", "File path was not provided", null)
+                        return@setMethodCallHandler
+                    }
+                    Thread({
+                        try {
+                            val digest = MessageDigest.getInstance("SHA-256")
+                            File(path).inputStream().use { input ->
+                                val buffer = ByteArray(64 * 1024)
+                                while (true) {
+                                    val count = input.read(buffer)
+                                    if (count < 0) break
+                                    digest.update(buffer, 0, count)
+                                }
+                            }
+                            val hash = digest.digest().joinToString("") { "%02x".format(it.toInt() and 0xff) }
+                            runOnUiThread { result.success(hash) }
+                        } catch (error: Exception) {
+                            runOnUiThread { result.error("checksum_failed", error.message, null) }
+                        }
+                    }, "ghostbox-update-checksum").start()
+                    return@setMethodCallHandler
+                }
                 if (call.method != "saveApkToDownloads") {
                     result.notImplemented()
+                    return@setMethodCallHandler
+                }
+                if (updateInProgress) {
+                    result.error("update_busy", "Another APK is already being saved", null)
                     return@setMethodCallHandler
                 }
                 val sourcePath = call.argument<String>("path")
@@ -273,6 +315,7 @@ class MainActivity : FlutterActivity() {
                     ?.substringAfterLast('/')
                     ?.takeIf { it.endsWith(".apk", ignoreCase = true) }
                     ?: "GhostBox-update.apk"
+                updateInProgress = true
                 try {
                     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q &&
                         checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) !=
@@ -287,8 +330,9 @@ class MainActivity : FlutterActivity() {
                         )
                         return@setMethodCallHandler
                     }
-                    result.success(saveApkAndOpenDownloads(sourcePath, fileName))
+                    saveApkAsync(sourcePath, fileName, result)
                 } catch (error: Exception) {
+                    updateInProgress = false
                     result.error("downloads_failed", error.message, null)
                 }
             }
@@ -404,13 +448,26 @@ class MainActivity : FlutterActivity() {
         }
         val candidateSignatures = certificateHistory(candidate)
         val installedSignatures = certificateHistory(installed)
-        val signerMatches = candidateSignatures.any { candidateSignature ->
-            installedSignatures.any { installedSignature ->
-                candidateSignature.toByteArray()
-                    .contentEquals(installedSignature.toByteArray())
+        val hasMultipleSigners = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P &&
+            (candidate.signingInfo?.hasMultipleSigners() == true ||
+                installed.signingInfo?.hasMultipleSigners() == true)
+        val signerMatches = if (hasMultipleSigners) {
+            candidate.signingInfo?.apkContentsSigners?.toSet() ==
+                installed.signingInfo?.apkContentsSigners?.toSet()
+        } else {
+            candidateSignatures.any { candidateSignature ->
+                installedSignatures.any { installedSignature ->
+                    candidateSignature.toByteArray()
+                        .contentEquals(installedSignature.toByteArray())
+                }
             }
         }
-        if (candidateSignatures.isEmpty() || !signerMatches) {
+        if (candidateSignatures.isEmpty()) {
+            throw SecurityException(
+                "APK не подписан. Unsigned-сборку из GitHub Actions нужно сначала подписать тем же Android keystore, что и установленное приложение.",
+            )
+        }
+        if (!signerMatches) {
             throw SecurityException(
                 "Подпись APK не совпадает с установленной версией. Android запрещает обновление. Используй в GitHub Actions тот же постоянный Android keystore, которым подписана установленная сборка.",
             )
@@ -420,7 +477,10 @@ class MainActivity : FlutterActivity() {
     @Suppress("DEPRECATION")
     private fun certificateHistory(info: android.content.pm.PackageInfo): List<android.content.pm.Signature> {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            info.signingInfo?.signingCertificateHistory?.toList().orEmpty()
+            info.signingInfo?.let { signing ->
+                if (signing.hasMultipleSigners()) signing.apkContentsSigners.toList()
+                else signing.signingCertificateHistory?.toList().orEmpty()
+            }.orEmpty()
         } else {
             info.signatures?.toList().orEmpty()
         }
@@ -510,6 +570,7 @@ class MainActivity : FlutterActivity() {
             pendingDownloadsName = null
             if (result == null) return
             if (grantResults.firstOrNull() != PackageManager.PERMISSION_GRANTED) {
+                updateInProgress = false
                 result.error(
                     "downloads_permission_denied",
                     "Разреши доступ к Загрузкам, чтобы сохранить APK.",
@@ -517,15 +578,11 @@ class MainActivity : FlutterActivity() {
                 )
                 return
             }
-            try {
-                result.success(
-                    saveApkAndOpenDownloads(
-                        sourcePath ?: error("Downloaded APK path was lost"),
-                        fileName ?: "GhostBox-update.apk",
-                    ),
-                )
-            } catch (error: Exception) {
-                result.error("downloads_failed", error.message, null)
+            if (sourcePath == null) {
+                updateInProgress = false
+                result.error("missing_apk", "Downloaded APK path was lost", null)
+            } else {
+                saveApkAsync(sourcePath, fileName ?: "GhostBox-update.apk", result)
             }
             return
         }
@@ -537,7 +594,29 @@ class MainActivity : FlutterActivity() {
         requestVpnPermission(result)
     }
 
-    private fun saveApkAndOpenDownloads(sourcePath: String, fileName: String): String {
+    private fun saveApkAsync(sourcePath: String, fileName: String, result: MethodChannel.Result) {
+        Thread({
+            try {
+                val savedPath = saveApkToDownloads(sourcePath, fileName)
+                runOnUiThread {
+                    try {
+                        val opened = !isFinishing && !isDestroyed && openDownloads()
+                        val prefix = if (opened) "downloads_opened:" else "downloads_saved:"
+                        result.success("$prefix$savedPath")
+                    } finally {
+                        updateInProgress = false
+                    }
+                }
+            } catch (error: Exception) {
+                runOnUiThread {
+                    updateInProgress = false
+                    result.error("downloads_failed", error.message, null)
+                }
+            }
+        }, "ghostbox-save-update").start()
+    }
+
+    private fun saveApkToDownloads(sourcePath: String, fileName: String): String {
         val source = File(sourcePath)
         if (!source.isFile || source.length() <= 0L) {
             error(
@@ -562,22 +641,25 @@ class MainActivity : FlutterActivity() {
             try {
                 val output = contentResolver.openOutputStream(uri, "w")
                     ?: error("Android could not open the Downloads file")
-                output.use { stream -> source.inputStream().use { it.copyTo(stream) } }
+                val copied = output.use { stream -> source.inputStream().use { it.copyTo(stream) } }
+                check(copied == source.length()) { "Downloaded APK copy is incomplete" }
                 val completed = ContentValues().apply {
                     put(MediaStore.MediaColumns.IS_PENDING, 0)
                 }
                 if (contentResolver.update(uri, completed, null, null) <= 0) {
                     error("Android could not finish saving the APK")
                 }
-                contentResolver.query(
-                    uri,
-                    arrayOf(MediaStore.MediaColumns.DISPLAY_NAME),
-                    null,
-                    null,
-                    null,
-                )?.use { cursor ->
-                    if (cursor.moveToFirst()) {
-                        savedFileName = cursor.getString(0) ?: fileName
+                runCatching {
+                    contentResolver.query(
+                        uri,
+                        arrayOf(MediaStore.MediaColumns.DISPLAY_NAME),
+                        null,
+                        null,
+                        null,
+                    )?.use { cursor ->
+                        if (cursor.moveToFirst()) {
+                            savedFileName = cursor.getString(0) ?: fileName
+                        }
                     }
                 }
             } catch (error: Exception) {
@@ -589,37 +671,62 @@ class MainActivity : FlutterActivity() {
             val downloads = Environment.getExternalStoragePublicDirectory(
                 Environment.DIRECTORY_DOWNLOADS,
             )
-            val directory = File(downloads, "GhostBox").apply { mkdirs() }
+            val directory = File(downloads, "GhostBox")
+            check(directory.isDirectory || directory.mkdirs()) { "Could not create Downloads/GhostBox" }
             val destination = File(directory, fileName)
-            source.copyTo(destination, overwrite = true)
-            if (destination.length() != source.length()) {
-                destination.delete()
-                error("Downloaded APK copy is incomplete")
+            val staging = File.createTempFile("ghostbox-", ".part", directory)
+            try {
+                source.copyTo(staging, overwrite = true)
+                check(staging.length() == source.length()) { "Downloaded APK copy is incomplete" }
+                check(staging.renameTo(destination)) { "Could not finish saving the APK" }
+            } finally {
+                staging.delete()
             }
+            // Registration is optional: the fully saved file is still usable
+            // if a vendor DownloadManager refuses external completed files.
             @Suppress("DEPRECATION")
-            getSystemService(DownloadManager::class.java).addCompletedDownload(
-                destination.name,
-                "GhostBox Android update",
-                true,
-                mimeType,
-                destination.absolutePath,
-                destination.length(),
-                true,
-            )
+            runCatching {
+                getSystemService(DownloadManager::class.java).addCompletedDownload(
+                    destination.name,
+                    "GhostBox Android update",
+                    true,
+                    mimeType,
+                    destination.absolutePath,
+                    destination.length(),
+                    true,
+                )
+            }
         }
 
-        val downloadsIntent = Intent("android.intent.action.VIEW_DOWNLOADS")
-        if (downloadsIntent.resolveActivity(packageManager) != null) {
-            startActivity(downloadsIntent)
-        } else {
-            startActivity(
-                Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-                    addCategory(Intent.CATEGORY_OPENABLE)
-                    type = mimeType
-                },
-            )
+        return "$downloadsRelativePath/$savedFileName"
+    }
+
+    private fun openDownloads(): Boolean {
+        // Launch directly: resolveActivity can return null because of package
+        // visibility even when a matching system file manager is installed.
+        val intents = listOf(
+            Intent(DownloadManager.ACTION_VIEW_DOWNLOADS),
+            Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(
+                    android.provider.DocumentsContract.buildDocumentUri(
+                        "com.android.externalstorage.documents",
+                        "primary:${Environment.DIRECTORY_DOWNLOADS}/GhostBox",
+                    ),
+                    android.provider.DocumentsContract.Document.MIME_TYPE_DIR,
+                )
+            },
+        )
+        for (intent in intents) {
+            try {
+                startActivity(intent)
+                return true
+            } catch (_: ActivityNotFoundException) {
+                // Try opening the saved directory in a system file manager.
+            } catch (_: SecurityException) {
+                // Saving succeeded even if the system denies opening its UI.
+            }
         }
-        return "downloads_opened:$downloadsRelativePath/$savedFileName"
+        return false
     }
 
     private fun requestVpnPermission(result: MethodChannel.Result) {

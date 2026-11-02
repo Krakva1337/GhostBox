@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Bind the pinned upstream Packet Tunnel target to the GhostBox iOS host."""
 from pathlib import Path
+import json
 import os
 import re
+import subprocess
 import sys
 
 root = Path(__file__).resolve().parent.parent
@@ -58,7 +60,66 @@ for match in reversed(list(pattern.finditer(text))):
     updated += 1
 if updated != 2:
     raise SystemExit(f"Expected two Packet Tunnel configurations, found {updated}")
+
+# The upstream project also contains the complete iOS/macOS/tvOS applications
+# and their editor/UI packages. GhostBox imports only Extension + Library.
+# Keep the root build graph limited to those targets, so Xcode does not resolve
+# package targets belonging to unrelated upstream apps (CodeEdit, Runestone,
+# Ghostty, etc.). Preserve object definitions/comments: unattached PBX objects
+# are legal and this keeps the preparation step idempotent.
+parsed = json.loads(subprocess.run(
+    ["plutil", "-convert", "json", "-o", "-", "--", "-"],
+    input=text, text=True, check=True, capture_output=True,
+).stdout)
+objects = parsed["objects"]
+root_id = parsed["rootObject"]
+root_project = objects[root_id]
+targets = {
+    identifier for identifier in root_project["targets"]
+    if objects[identifier].get("name") in {"Extension", "Library"}
+}
+if len(targets) != 2:
+    raise SystemExit("Expected the upstream Extension and Library targets")
+pending = list(targets)
+while pending:
+    target = objects[pending.pop()]
+    for dependency_id in target.get("dependencies", []):
+        dependency = objects[dependency_id].get("target")
+        if dependency is not None and dependency not in targets:
+            targets.add(dependency)
+            pending.append(dependency)
+packages = {
+    objects[product]["package"]
+    for target_id in targets
+    for product in objects[target_id].get("packageProductDependencies", [])
+}
+root_pattern = re.compile(
+    rf"^\t\t{root_id} /\* Project object \*/ = \{{[\s\S]*?^\t\t\}};", re.M,
+)
+root_match = root_pattern.search(text)
+if root_match is None:
+    raise SystemExit("Could not locate upstream PBXProject root object")
+root_block = root_match.group(0)
+for field, allowed in (("targets", targets), ("packageReferences", packages)):
+    array_pattern = re.compile(rf"(\b{field} = \(\n)([\s\S]*?)(\t\t\t\);)")
+    def filter_array(match):
+        lines = []
+        for line in match.group(2).splitlines(keepends=True):
+            reference = re.search(r"\b[A-Fa-f0-9]{24}\b", line)
+            if reference is None or reference.group(0) in allowed:
+                lines.append(line)
+        return match.group(1) + "".join(lines) + match.group(3)
+    root_block, count = array_pattern.subn(filter_array, root_block)
+    if count != 1:
+        raise SystemExit(f"Expected one upstream project {field} array, found {count}")
+root_block = re.sub(
+    r"^\t{5}([A-Fa-f0-9]{24}) = \{\n[\s\S]*?^\t{5}\};\n",
+    lambda match: match.group(0) if match.group(1) in targets else "",
+    root_block, flags=re.M,
+)
+text = text[:root_match.start()] + root_block + text[root_match.end():]
 project.write_text(text)
+print(f"Apple dependency graph: {len(targets)} targets, {len(packages)} Swift packages")
 
 # sing-box-lx adds a DNS-query callback to its libbox handler protocol. The
 # stock Apple client does not display this stream, so provide an explicit

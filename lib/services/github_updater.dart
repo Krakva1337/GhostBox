@@ -35,7 +35,12 @@ class GhostBoxReleaseAsset {
   final int size;
 }
 
-enum UpdateDownloadStage { downloading, verifying, launchingInstaller }
+enum UpdateDownloadStage {
+  downloading,
+  verifying,
+  savingToDownloads,
+  launchingInstaller
+}
 
 class UpdateDownloadProgress {
   const UpdateDownloadProgress({
@@ -160,6 +165,9 @@ class GitHubUpdater {
     GhostBoxReleaseAsset asset, {
     void Function(UpdateDownloadProgress progress)? onProgress,
   }) async {
+    if (Platform.isAndroid) {
+      return _downloadAndroid(asset, onProgress: onProgress);
+    }
     final destination = File(
         '${Directory.systemTemp.path}${Platform.pathSeparator}${asset.name}');
     final request = await _client
@@ -210,6 +218,87 @@ class GitHubUpdater {
     return destination;
   }
 
+  Future<File> _downloadAndroid(
+    GhostBoxReleaseAsset asset, {
+    void Function(UpdateDownloadProgress progress)? onProgress,
+  }) async {
+    final cachePath = await _androidUpdateChannel
+        .invokeMethod<String>('getUpdateCacheDirectory');
+    if (cachePath == null || cachePath.isEmpty) {
+      throw const FileSystemException(
+          'Android не вернул каталог загрузки обновлений.');
+    }
+    final directory = await Directory(cachePath).createTemp('ghostbox-update-');
+    final name = asset.name.split(RegExp(r'[/\\]')).last;
+    final destination = File('${directory.path}/$name');
+    IOSink? sink;
+    try {
+      final request = await _client
+          .getUrl(Uri.parse(asset.url))
+          .timeout(const Duration(seconds: 20));
+      request.headers
+        ..set(HttpHeaders.acceptHeader, 'application/octet-stream')
+        ..set(HttpHeaders.userAgentHeader, AppVersion.userAgent);
+      final response =
+          await request.close().timeout(const Duration(seconds: 20));
+      if (response.statusCode != HttpStatus.ok) {
+        await response.timeout(const Duration(seconds: 30)).drain<void>();
+        throw HttpException(
+            'Не удалось скачать ${asset.name}: HTTP ${response.statusCode}');
+      }
+      final total =
+          response.contentLength > 0 ? response.contentLength : asset.size;
+      final clock = Stopwatch()..start();
+      var bytes = 0;
+      var lastPaint = -200;
+      void report() => onProgress?.call(UpdateDownloadProgress(
+            assetName: asset.name,
+            path: destination.path,
+            downloadedBytes: bytes,
+            totalBytes: total,
+            bytesPerSecond: clock.elapsedMicroseconds == 0
+                ? 0
+                : bytes * 1000000 / clock.elapsedMicroseconds,
+            stage: UpdateDownloadStage.downloading,
+          ));
+      report();
+      sink = destination.openWrite();
+      await sink
+          .addStream(response.timeout(const Duration(seconds: 30)).map((chunk) {
+        bytes += chunk.length;
+        if (clock.elapsedMilliseconds - lastPaint >= 180) {
+          lastPaint = clock.elapsedMilliseconds;
+          report();
+        }
+        return chunk;
+      }));
+      await sink.close();
+      sink = null;
+      if (bytes == 0 ||
+          (asset.size > 0 && bytes != asset.size) ||
+          (total > 0 && bytes != total)) {
+        throw HttpException(
+            'Загрузка ${asset.name} неполная: получено $bytes байт, ожидалось $total.');
+      }
+      report();
+      return destination;
+    } on Object {
+      try {
+        await sink?.close();
+      } on Object {/* Preserve the download error. */}
+      if (await directory.exists()) await directory.delete(recursive: true);
+      rethrow;
+    }
+  }
+
+  Future<void> _removeDownload(File file) async {
+    if (await file.exists()) await file.delete();
+    if (Platform.isAndroid &&
+        file.parent.path.split('/').last.startsWith('ghostbox-update-')) {
+      if (await file.parent.exists()) await file.parent.delete(recursive: true);
+    }
+  }
+
   Future<String?> apply(
     GhostBoxRelease release,
     GhostBoxReleaseAsset asset, {
@@ -242,7 +331,7 @@ class GitHubUpdater {
         if (actual != expected)
           throw const FormatException('SHA-256 пакета не совпал');
       } finally {
-        if (checksumFile.existsSync()) await checksumFile.delete();
+        await _removeDownload(checksumFile);
       }
 
       if (Platform.isLinux) {
@@ -294,28 +383,47 @@ class GitHubUpdater {
         exit(0);
       }
       if (Platform.isAndroid) {
+        final size = await package.length();
+        onProgress?.call(UpdateDownloadProgress(
+          assetName: asset.name,
+          path: package.path,
+          downloadedBytes: size,
+          totalBytes: size,
+          bytesPerSecond: 0,
+          stage: UpdateDownloadStage.savingToDownloads,
+        ));
         final result = await _androidUpdateChannel
             .invokeMethod<String>('saveApkToDownloads', {
           'path': package.absolute.path,
           'fileName': 'GhostBox-${release.version}.apk',
         });
-        const resultPrefix = 'downloads_opened:';
-        if (result == null || !result.startsWith(resultPrefix)) {
+        final prefix = result?.startsWith('downloads_saved:') == true
+            ? 'downloads_saved:'
+            : 'downloads_opened:';
+        if (result == null || !result.startsWith(prefix)) {
           throw const FileSystemException(
               'Android не подтвердил сохранение APK в «Загрузки».');
         }
-        if (package.existsSync()) await package.delete();
-        return result.substring(resultPrefix.length);
+        await _removeDownload(package);
+        return result.substring(prefix.length);
       }
       throw UnsupportedError(
           'Автоустановка не поддерживается на этой платформе');
     } on Object {
-      if (package.existsSync()) await package.delete();
+      await _removeDownload(package);
       rethrow;
     }
   }
 
   Future<String> _sha256(File file) async {
+    if (Platform.isAndroid) {
+      final value = await _androidUpdateChannel
+          .invokeMethod<String>('sha256File', {'path': file.absolute.path});
+      if (value == null || !RegExp(r'^[0-9a-fA-F]{64}$').hasMatch(value)) {
+        throw const FormatException('Android не подтвердил SHA-256 пакета.');
+      }
+      return value.toLowerCase();
+    }
     if (Platform.isWindows) {
       final result = await Process.run('powershell.exe', [
         '-NoProfile',
