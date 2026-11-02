@@ -16,11 +16,16 @@ flutter pub get
 version="$(awk '/^version:/ {split($2, v, "+"); print v[1]}' pubspec.yaml)"
 build_number="$(awk '/^version:/ {split($2, v, "+"); print v[2]}' pubspec.yaml)"
 numeric_version="${version%%-*}"
-mkdir -p dist
+mkdir -p dist build/ios/logs
+xcodebuild -version | tee build/ios/logs/toolchain.log
+swift --version 2>&1 | tee -a build/ios/logs/toolchain.log
+cp .toolchains/apple-client/sing-box.xcodeproj/project.pbxproj \
+  build/ios/logs/packet-tunnel.pbxproj
 if [[ "$mode" == unsigned ]]; then
-  flutter build ios --release --no-codesign \
+  flutter build ios --release --no-codesign --verbose \
     --build-name="$numeric_version" --build-number="$build_number" \
-    --dart-define="GHOSTBOX_VERSION=$version" --dart-define="GHOSTBOX_BUILD=$build_number"
+    --dart-define="GHOSTBOX_VERSION=$version" --dart-define="GHOSTBOX_BUILD=$build_number" \
+    2>&1 | tee build/ios/logs/flutter-build.log
   app="$project_dir/build/ios/iphoneos/Runner.app"
   [[ -d "$app/PlugIns/Extension.appex" ]] || { echo 'Packet Tunnel extension missing from app bundle.' >&2; exit 1; }
   [[ -d "$app/Frameworks/Library.framework" ]] || { echo 'Packet Tunnel Library.framework dependency missing from app bundle.' >&2; exit 1; }

@@ -65,8 +65,7 @@ if updated != 2:
 # and their editor/UI packages. GhostBox imports only Extension + Library.
 # Keep the root build graph limited to those targets, so Xcode does not resolve
 # package targets belonging to unrelated upstream apps (CodeEdit, Runestone,
-# Ghostty, etc.). Preserve object definitions/comments: unattached PBX objects
-# are legal and this keeps the preparation step idempotent.
+# Ghostty, etc.). Preserve comments so preparation stays idempotent.
 parsed = json.loads(subprocess.run(
     ["plutil", "-convert", "json", "-o", "-", "--", "-"],
     input=text, text=True, check=True, capture_output=True,
@@ -118,6 +117,119 @@ root_block = re.sub(
     root_block, flags=re.M,
 )
 text = text[:root_match.start()] + root_block + text[root_match.end():]
+# Root-only filtering is insufficient: Xcode also reads package definitions on
+# orphan app targets. Remove every PBX object outside the retained target graph.
+parsed = json.loads(subprocess.run(
+    ["plutil", "-convert", "json", "-o", "-", "--", "-"],
+    input=text, text=True, check=True, capture_output=True,
+).stdout)
+objects = parsed["objects"]
+for item in objects.values():
+    if item.get("isa") == "PBXFileSystemSynchronizedRootGroup":
+        item["exceptions"] = [
+            ref for ref in item.get("exceptions", [])
+            if objects[ref].get("target") in targets
+        ]
+
+parents = {}
+for identifier, item in objects.items():
+    if item.get("isa") in {"PBXGroup", "PBXVariantGroup"}:
+        for child in item.get("children", []):
+            parents.setdefault(child, set()).add(identifier)
+
+def object_references(value):
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if key in objects:
+                yield key
+            yield from object_references(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from object_references(child)
+    elif isinstance(value, str) and value in objects:
+        yield value
+
+reachable = set()
+# A synchronized group can opt individual files into a target through an
+# exception set even when the target does not list the group itself. The
+# Extension/PacketTunnelProvider.swift entry uses exactly this layout.
+pending = [root_id] + [
+    identifier for identifier, item in objects.items()
+    if item.get("isa") == "PBXFileSystemSynchronizedRootGroup"
+    and item.get("exceptions")
+]
+while pending:
+    identifier = pending.pop()
+    if identifier in reachable:
+        continue
+    reachable.add(identifier)
+    item = objects[identifier]
+    # Source/build phases identify used files. Traversing ordinary browser
+    # groups would pull the entire upstream app graph back into the project.
+    fields = {key: value for key, value in item.items()
+              if key != "children" or item.get("isa") != "PBXGroup"}
+    pending.extend(object_references(fields))
+    # Keep the parent groups of used files, preserving <group>-relative paths.
+    pending.extend(parents.get(identifier, ()))
+
+object_pattern = re.compile(
+    r"^\t\t([A-Fa-f0-9]{24})(?: /\* [^\n]*? \*/)? = \{"
+    r"(?:[^\n]*\};[ \t]*$|\n[\s\S]*?^\t\t\};)", re.M,
+)
+if set(object_pattern.findall(text)) != set(objects):
+    raise SystemExit("Unsupported upstream PBX object formatting")
+
+def keep_array(block, field, allowed):
+    def replace(match):
+        entries = []
+        for entry in match.group(2).split(","):
+            reference = re.search(r"\b[A-Fa-f0-9]{24}\b", entry)
+            if reference is None or reference.group(0) in allowed:
+                entries.append(entry)
+        return match.group(1) + ",".join(entries) + match.group(3)
+    return re.sub(rf"(\b{field} = \()([\s\S]*?)(\);)", replace, block)
+
+def keep_object(match):
+    identifier = match.group(1)
+    if identifier not in reachable:
+        return ""
+    block = match.group(0)
+    item = objects[identifier]
+    if item.get("isa") == "PBXGroup":
+        block = keep_array(block, "children", reachable)
+    elif item.get("isa") == "PBXFileSystemSynchronizedRootGroup":
+        block = keep_array(block, "exceptions", set(item["exceptions"]))
+    return block
+
+text = object_pattern.sub(keep_object, text)
+validated = json.loads(subprocess.run(
+    ["plutil", "-convert", "json", "-o", "-", "--", "-"],
+    input=text, text=True, check=True, capture_output=True,
+).stdout)
+if set(validated["objects"]) != reachable:
+    raise SystemExit("Prepared Apple project lost a required PBX object")
+for item in validated["objects"].values():
+    if item.get("isa") == "PBXNativeTarget" and item.get("name") not in {"Extension", "Library"}:
+        raise SystemExit("Prepared Apple project still contains an unrelated target")
+    if item.get("isa") in {"XCRemoteSwiftPackageReference", "XCLocalSwiftPackageReference"}:
+        if item not in [objects[identifier] for identifier in packages]:
+            raise SystemExit("Prepared Apple project still contains an unrelated Swift package")
+
+# Package.resolved pins do not declare dependencies, but keeping unrelated
+# upstream UI pins here can retain old resolutions in Xcode's project cache.
+package_identities = {
+    objects[identifier]["repositoryURL"].rstrip("/").split("/")[-1].removesuffix(".git").lower()
+    for identifier in packages
+}
+lockfiles = [client / "sing-box.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved"]
+lockfiles += list(client.glob("*.xcworkspace/xcshareddata/swiftpm/Package.resolved"))
+for lockfile in lockfiles:
+    if lockfile.is_file():
+        resolved = json.loads(lockfile.read_text())
+        resolved["pins"] = [pin for pin in resolved.get("pins", [])
+                            if pin.get("identity") in package_identities]
+        lockfile.write_text(json.dumps(resolved, indent=2) + "\n")
+
 project.write_text(text)
 print(f"Apple dependency graph: {len(targets)} targets, {len(packages)} Swift packages")
 
