@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:flutter/services.dart';
 import '../services/log_store.dart';
 import '../models/server_profile.dart';
 import '../models/core_settings.dart';
@@ -14,6 +15,8 @@ import 'split_routing.dart';
 /// platform adapter can add TUN setup before [start] and tear it down after
 /// [stop].
 class CoreProcessBackend implements VpnBackend {
+  static const MethodChannel _macKeychainChannel =
+      MethodChannel('app.ghostbox.ghostbox/macos_keychain');
   CoreProcessBackend({
     required this.name,
     required this.executable,
@@ -272,23 +275,14 @@ class CoreProcessBackend implements VpnBackend {
     final command = 'umask 022; ${_shellQuote(executable)} run -c '
         '${_shellQuote(_runtimeConfig!.path)} > ${_shellQuote(logFile.path)} 2>&1 '
         '< /dev/null & echo ${String.fromCharCode(36)}!';
-    final script = 'do shell script ${_appleScriptQuote(command)} '
-        'with administrator privileges';
     _macPreviousRouteInterface = await _macRouteInterface('1.1.1.1');
     _macPreviousTunInterfaces = await _macGhostBoxTunInterfaces();
     _macTunnelInterface = null;
-    final launched = await Process.run('osascript', ['-e', script])
-        .timeout(const Duration(minutes: 3));
-    if (launched.exitCode != 0) {
-      throw FormatException(
-        'macOS не разрешил запустить TUN с правами администратора: ${launched.stderr.toString().trim()} ${launched.stdout.toString().trim()}'
-            .trim(),
-      );
-    }
-    final pid = int.tryParse('${launched.stdout}'.trim());
+    final output = await _runMacAdminCommand(command);
+    final pid = int.tryParse(output.trim());
     if (pid == null) {
       throw FormatException(
-          'Не удалось получить PID привилегированного ядра: ${launched.stdout}');
+          'Не удалось получить PID привилегированного ядра: $output');
     }
     _macElevatedPid = pid;
     _startedAt = DateTime.now();
@@ -510,6 +504,96 @@ class CoreProcessBackend implements VpnBackend {
   String _appleScriptQuote(String value) =>
       '"${value.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"';
 
+  Future<String> _runMacAdminCommand(String command) async {
+    String? password;
+    try {
+      password =
+          await _macKeychainChannel.invokeMethod<String>('getAdminPassword');
+    } on Object catch (error) {
+      _writeLifecycleLog(
+          'Не удалось прочитать пароль из macOS Keychain: $error');
+    }
+
+    final hadStoredPassword = password != null;
+    for (var attempt = 0; attempt < 2; attempt++) {
+      password ??= await _requestMacAdminPassword();
+      final usernameResult = await Process.run('/usr/bin/id', ['-un']);
+      if (usernameResult.exitCode != 0) {
+        throw const FormatException(
+            'Не удалось определить пользователя macOS.');
+      }
+      final username = usernameResult.stdout.toString().trim();
+      final script = '''
+try
+  set resultText to do shell script ${_appleScriptQuote(command)} user name ${_appleScriptQuote(username)} password ${_appleScriptQuote(password)} with administrator privileges
+  return "GHOSTBOX_OK:" & resultText
+on error errorText number errorNumber
+  return "GHOSTBOX_ERROR:" & errorNumber & ":" & errorText
+end try
+''';
+      final (exitCode, stdout, stderr) = await _runAppleScript(script);
+      final result = stdout.trim();
+      if (exitCode == 0 && result.startsWith('GHOSTBOX_OK:')) {
+        if (!hadStoredPassword || attempt > 0) {
+          try {
+            await _macKeychainChannel
+                .invokeMethod<void>('setAdminPassword', {'password': password});
+          } on Object catch (error) {
+            _writeLifecycleLog(
+                'Не удалось сохранить пароль в macOS Keychain: $error');
+          }
+        }
+        return result.substring('GHOSTBOX_OK:'.length);
+      }
+
+      final errorText = result.startsWith('GHOSTBOX_ERROR:')
+          ? result.substring('GHOSTBOX_ERROR:'.length)
+          : '$stderr $stdout'.trim();
+      if (hadStoredPassword && attempt == 0) {
+        try {
+          await _macKeychainChannel.invokeMethod<void>('deleteAdminPassword');
+        } on Object {
+          // A stale entry must not block the user from entering a new password.
+        }
+        password = null;
+        continue;
+      }
+      throw FormatException(
+          'macOS не разрешил выполнить команду с правами администратора: $errorText');
+    }
+    throw const FormatException(
+        'Не удалось выполнить команду с правами администратора macOS.');
+  }
+
+  Future<String> _requestMacAdminPassword() async {
+    const script = '''
+try
+  set answer to display dialog "Введите пароль учётной записи macOS. GhostBox сохранит его в Keychain, чтобы не спрашивать при следующих подключениях." default answer "" with hidden answer buttons {"Отмена", "Продолжить"} default button "Продолжить"
+  return "GHOSTBOX_PASSWORD:" & text returned of answer
+on error errorText number errorNumber
+  return "GHOSTBOX_ERROR:" & errorNumber & ":" & errorText
+end try
+''';
+    final (exitCode, stdout, stderr) = await _runAppleScript(script);
+    final output = stdout.trim();
+    if (exitCode == 0 && output.startsWith('GHOSTBOX_PASSWORD:')) {
+      final password = output.substring('GHOSTBOX_PASSWORD:'.length);
+      if (password.isNotEmpty) return password;
+    }
+    throw FormatException(
+        'Пароль администратора macOS не введён: ${output.isEmpty ? stderr.trim() : output}');
+  }
+
+  Future<(int, String, String)> _runAppleScript(String script) async {
+    final process = await Process.start('/usr/bin/osascript', ['-']);
+    final stdoutFuture = process.stdout.transform(utf8.decoder).join();
+    final stderrFuture = process.stderr.transform(utf8.decoder).join();
+    process.stdin.write(script);
+    await process.stdin.close();
+    final exitCode = await process.exitCode.timeout(const Duration(minutes: 3));
+    return (exitCode, await stdoutFuture, await stderrFuture);
+  }
+
   Future<void> _recoverProcess(String profile) async {
     const delays = [500, 1200, 2500];
     for (final delayMs in delays) {
@@ -666,18 +750,10 @@ class CoreProcessBackend implements VpnBackend {
         'if owned; then /bin/kill -TERM $pid 2>/dev/null || true; '
         'i=0; while [ \$i -lt 120 ] && owned; do '
         '/bin/sleep 0.1; i=\$((i + 1)); done; fi';
-    final script = 'do shell script ${_appleScriptQuote(command)} '
-        'with administrator privileges';
     try {
-      final result = await Process.run('osascript', ['-e', script])
-          .timeout(const Duration(minutes: 2));
-      if (result.exitCode != 0 && await _macElevatedProcessAlive(pid)) {
-        throw ProcessException(
-          'osascript',
-          ['-e', script],
-          '${result.stderr} ${result.stdout}'.trim(),
-          result.exitCode,
-        );
+      await _runMacAdminCommand(command);
+      if (await _macElevatedProcessAlive(pid)) {
+        throw StateError('macOS TUN не завершился после команды остановки.');
       }
     } on Object catch (error) {
       _writeLifecycleLog(

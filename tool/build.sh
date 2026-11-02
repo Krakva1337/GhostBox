@@ -5,6 +5,7 @@ set -euo pipefail
 project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 target="${1:-}"
 arch="$(uname -m)"
+discord_client_id="${GHOSTBOX_DISCORD_CLIENT_ID:-1566838058207412414}"
 export GOCACHE="${GOCACHE:-$project_dir/.toolchains/go-build-cache}"
 case "$arch" in x86_64|amd64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;; esac
 
@@ -51,10 +52,13 @@ build_linux() {
   local update_branch="${GHOSTBOX_UPDATE_BRANCH:-main}"
   ghostbox_version="$(awk '/^version:/ {split($2,v,"+"); print v[1]}' pubspec.yaml)"
   ghostbox_build="$(awk '/^version:/ {split($2,v,"+"); print v[2]}' pubspec.yaml)"
-  flutter build linux --release \
-    --dart-define="GHOSTBOX_VERSION=$ghostbox_version" \
-    --dart-define="GHOSTBOX_BUILD=$ghostbox_build" \
-    --dart-define="GHOSTBOX_UPDATE_BRANCH=$update_branch"
+  local build_args=(
+    "--dart-define=GHOSTBOX_VERSION=$ghostbox_version"
+    "--dart-define=GHOSTBOX_BUILD=$ghostbox_build"
+    "--dart-define=GHOSTBOX_UPDATE_BRANCH=$update_branch"
+    "--dart-define=GHOSTBOX_DISCORD_CLIENT_ID=$discord_client_id"
+  )
+  flutter build linux --release "${build_args[@]}"
 
   local appdir="$project_dir/build/appimage/GhostBox.AppDir"
   local bundle_arch=x64
@@ -183,10 +187,13 @@ case "$target" in
     ghostbox_version="$(awk '/^version:/ {split($2,v,"+"); print v[1]}' pubspec.yaml)"
     ghostbox_build="$(awk '/^version:/ {split($2,v,"+"); print v[2]}' pubspec.yaml)"
     update_branch="${GHOSTBOX_UPDATE_BRANCH:-main}"
-    flutter build macos --release \
-      --dart-define="GHOSTBOX_VERSION=$ghostbox_version" \
-      --dart-define="GHOSTBOX_BUILD=$ghostbox_build" \
-      --dart-define="GHOSTBOX_UPDATE_BRANCH=$update_branch"
+    build_args=(
+      "--dart-define=GHOSTBOX_VERSION=$ghostbox_version"
+      "--dart-define=GHOSTBOX_BUILD=$ghostbox_build"
+      "--dart-define=GHOSTBOX_UPDATE_BRANCH=$update_branch"
+      "--dart-define=GHOSTBOX_DISCORD_CLIENT_ID=$discord_client_id"
+    )
+    flutter build macos --release "${build_args[@]}"
     app_dir="$project_dir/build/macos/Build/Products/Release/GhostBox.app"
     if [[ ! -d "$app_dir" ]]; then
       app_dir="$project_dir/build/macos/Build/Products/Release/Runner.app"

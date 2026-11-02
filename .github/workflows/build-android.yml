@@ -30,42 +30,13 @@ jobs:
         run: |
           for _ in {1..50}; do echo y; done | sdkmanager --licenses
           sdkmanager 'platform-tools' 'platforms;android-36' 'build-tools;36.0.0' 'ndk;28.2.13676358' 'cmake;3.22.1'
-      - name: Configure Android signing
+      - name: Build unsigned APK and Android cores
         env:
-          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        shell: bash
-        run: |
-          if [[ -z "$ANDROID_KEYSTORE_BASE64" &&
-                -z "$ANDROID_KEYSTORE_PASSWORD" &&
-                -z "$ANDROID_KEY_ALIAS" &&
-                -z "$ANDROID_KEY_PASSWORD" ]]; then
-            echo "No Android release keystore configured; building a debug-signed APK."
-            exit 0
-          fi
-          if [[ -z "$ANDROID_KEYSTORE_BASE64" ||
-                -z "$ANDROID_KEYSTORE_PASSWORD" ||
-                -z "$ANDROID_KEY_ALIAS" ||
-                -z "$ANDROID_KEY_PASSWORD" ]]; then
-            echo "Configure all four Android signing secrets or leave all four empty."
-            exit 1
-          fi
-          keystore="$RUNNER_TEMP/ghostbox-release.jks"
-          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$keystore"
-          test -s "$keystore"
-          {
-            echo "GHOSTBOX_ANDROID_KEYSTORE_FILE=$keystore"
-            echo "GHOSTBOX_ANDROID_KEYSTORE_PASSWORD=$ANDROID_KEYSTORE_PASSWORD"
-            echo "GHOSTBOX_ANDROID_KEY_ALIAS=$ANDROID_KEY_ALIAS"
-            echo "GHOSTBOX_ANDROID_KEY_PASSWORD=$ANDROID_KEY_PASSWORD"
-          } >> "$GITHUB_ENV"
-      - name: Build APK and sing-box libbox
+          GHOSTBOX_ANDROID_UNSIGNED: 'true'
         run: ./tool/build_android.sh
       - uses: actions/upload-artifact@v4
         with:
-          name: GhostBox-Android-universal
+          name: GhostBox-Android-universal-unsigned
           path: |
             dist/android/GhostBox-Android-universal.apk
             dist/android/GhostBox-Android-universal.apk.sha256

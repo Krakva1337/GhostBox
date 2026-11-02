@@ -38,6 +38,7 @@ import '../../services/github_updater.dart';
 import '../../services/log_store.dart';
 import '../../services/traffic_stats.dart';
 import '../../services/speed_test_activity.dart';
+import '../../services/discord_presence.dart';
 import '../../theme/theme_settings_panel.dart';
 import '../../theme/theme_controller.dart';
 import '../../theme/brand_icon.dart';
@@ -175,6 +176,7 @@ class _HomePageState extends State<HomePage>
   bool autoRefreshSubscriptions = true;
   bool autoUpdateApp = false;
   bool skipUpdateChecks = false;
+  bool discordPresenceEnabled = false;
   bool checkingAppUpdate = false;
   bool installingAppUpdate = false;
   String? appUpdateStatus;
@@ -1156,6 +1158,7 @@ class _HomePageState extends State<HomePage>
       autoRefreshSubscriptions = p.getBool('autoRefreshSubscriptions') ?? true;
       autoUpdateApp = p.getBool('autoUpdateApp') ?? true;
       skipUpdateChecks = p.getBool('skipUpdateChecks') ?? false;
+      discordPresenceEnabled = p.getBool('discordPresenceEnabled') ?? false;
       selectedId = p.getString('selectedProfile') ?? rows.firstOrNull?.id;
       final rawCore = p.getString('coreSettings');
       coreSettings = rawCore == null
@@ -1508,6 +1511,7 @@ class _HomePageState extends State<HomePage>
     glow.dispose();
     ambientMotion.dispose();
     if (!Platform.isAndroid && !Platform.isIOS) unawaited(_disconnectActive());
+    unawaited(DiscordPresence.instance.dispose());
     super.dispose();
   }
 
@@ -1850,12 +1854,14 @@ class _HomePageState extends State<HomePage>
   void _startConnectedMonitoring() {
     uptimeTicker?.cancel();
     _syncMacTrayConnectionState();
+    _syncDiscordPresence();
     final connected = backend.state == VpnState.connected;
     if (connected || backend.state == VpnState.connecting) {
       if (connected && !glow.isAnimating) glow.forward(from: 0);
       if (!connected) glow.stop();
       uptimeTicker = Timer.periodic(const Duration(seconds: 1), (_) {
         if (!mounted) return;
+        _syncDiscordPresence();
         if (backend is AndroidVpnBackend) {
           unawaited(
               (backend as AndroidVpnBackend).refreshState().catchError((_) {}));
@@ -1900,6 +1906,48 @@ class _HomePageState extends State<HomePage>
     } else {
       glow.stop();
     }
+  }
+
+  void _syncDiscordPresence() {
+    final connected = backend.state == VpnState.connected;
+    final connectedFor = backend is AndroidVpnBackend
+        ? (backend as AndroidVpnBackend).uptime
+        : backend is IosVpnBackend
+            ? (backend as IosVpnBackend).uptime
+            : process?.uptime ?? Duration.zero;
+    final connectionTime = _formatDiscordDuration(connectedFor);
+    final status = connected
+        ? _text(
+            'VPN Подключен | $connectionTime',
+            'VPN connected | $connectionTime',
+          )
+        : backend.state == VpnState.connecting
+            ? _text('Подключение', 'Connecting')
+            : _text('VPN отключён', 'VPN disconnected');
+    final speed = trafficStats.available
+        ? '↓ ${formatTrafficRate(trafficStats.receivedPerSecond)}  ·  ↑ ${formatTrafficRate(trafficStats.sentPerSecond)}'
+        : _text('Скорость: нет данных', 'Speed: unavailable');
+    unawaited(DiscordPresence.instance.update(
+      enabled: discordPresenceEnabled,
+      connected: connected,
+      status: status,
+      speed: speed,
+      connectedFor: connected ? connectedFor : Duration.zero,
+    ));
+  }
+
+  String _formatDiscordDuration(Duration duration) {
+    final hours = duration.inHours.toString().padLeft(2, '0');
+    final minutes = (duration.inMinutes % 60).toString().padLeft(2, '0');
+    final seconds = (duration.inSeconds % 60).toString().padLeft(2, '0');
+    return '$hours:$minutes:$seconds';
+  }
+
+  Future<void> _setDiscordPresenceEnabled(bool enabled) async {
+    setState(() => discordPresenceEnabled = enabled);
+    final storage = prefs ??= await SharedPreferences.getInstance();
+    await storage.setBool('discordPresenceEnabled', enabled);
+    _syncDiscordPresence();
   }
 
   Future<void> _applyPendingReconnect() async {
@@ -5691,6 +5739,11 @@ foreach ($route in $routes) {
 
   Widget _home() => SingleChildScrollView(
       controller: homeScroll,
+      // The compact bottom navigation floats above the page in the Stack.
+      // Reserve its height in the scroll extent so the last server rows can
+      // move clear of the navigation bar instead of remaining covered by it.
+      padding: EdgeInsets.only(
+          bottom: MediaQuery.sizeOf(context).width < 800 ? 104 : 16),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         SizedBox(height: contentTopSpacing),
         RepaintBoundary(
@@ -9673,6 +9726,33 @@ foreach ($route in $routes) {
                   'Disables startup and manual update checks'),
               _compactSwitch(
                   value: skipUpdateChecks, onChanged: _setSkipUpdateChecks)),
+          if (DiscordPresence.supported) ...[
+            const SizedBox(height: 12),
+            _section(_text('DISCORD', 'DISCORD')),
+            _row(
+                Icons.headset_mic_outlined,
+                _text('Discord Rich Presence', 'Discord Rich Presence'),
+                !DiscordPresence.configured
+                    ? _text('Нужен Client ID при сборке',
+                        'Set Client ID at build time')
+                    : _text('Показывать общий статус VPN',
+                        'Show a generic VPN activity status'),
+                _compactSwitch(
+                    value: discordPresenceEnabled && DiscordPresence.configured,
+                    onChanged: DiscordPresence.configured
+                        ? _setDiscordPresenceEnabled
+                        : null)),
+            if (DiscordPresence.configured)
+              Padding(
+                padding: const EdgeInsets.only(left: 46, top: 0, bottom: 8),
+                child: Text(
+                  _text(
+                      'Нужно, чтобы Discord был запущен на этом компьютере. Название сервера и адреса не передаются.',
+                      'Discord must be running on this computer. Server names and addresses are never shared.'),
+                  style: TextStyle(color: _muted, fontSize: 11),
+                ),
+              ),
+          ],
           _row(
               Icons.cloud_download_outlined,
               _text('Версия приложения', 'App version'),
@@ -11778,6 +11858,32 @@ foreach ($route in $routes) {
         coreSettings.copyWith(localPort: value, autoLocalPort: false));
   }
 
+  ServerProfile? _matchRefreshedProfile(
+    ServerProfile previous,
+    List<ServerProfile> fresh, {
+    int? fallbackIndex,
+  }) {
+    for (final profile in fresh) {
+      if (profile.id == previous.id) return profile;
+    }
+    final name = previous.name.trim().toLowerCase();
+    final sameName = fresh
+        .where((profile) => profile.name.trim().toLowerCase() == name)
+        .toList();
+    if (sameName.length == 1) return sameName.single;
+    if (fallbackIndex != null && fresh.isNotEmpty) {
+      return fresh[fallbackIndex.clamp(0, fresh.length - 1)];
+    }
+    return sameName.firstOrNull;
+  }
+
+  String _profileConnectionSignature(ServerProfile profile) {
+    final value = profile.toJson()
+      ..remove('id')
+      ..remove('name');
+    return jsonEncode(value);
+  }
+
   Future<bool> _refreshSubscription(
       [String? sourceUrl, bool silent = false]) async {
     final url = sourceUrl ?? subscriptionUrl;
@@ -11791,15 +11897,37 @@ foreach ($route in $routes) {
         final group = subscriptions.firstWhere((s) => s['url'] == url,
             orElse: () => {'url': url, 'ids': subscriptionProfileIds});
         final oldIds = (group['ids'] as List? ?? []).cast<String>().toSet();
+        final previousGroupProfiles =
+            profiles.where((profile) => oldIds.contains(profile.id)).toList();
+        final previousSelected =
+            profiles.where((profile) => profile.id == selectedId).firstOrNull;
+        final previousSelectedIndex = previousSelected == null
+            ? null
+            : previousGroupProfiles
+                .indexWhere((profile) => profile.id == previousSelected.id);
         final previousActive =
             profiles.where((p) => p.id == activeProfileId).firstOrNull;
-        final refreshedActive =
-            fresh.where((p) => p.id == activeProfileId).firstOrNull;
+        final previousActiveIndex = previousActive == null
+            ? null
+            : previousGroupProfiles
+                .indexWhere((profile) => profile.id == previousActive.id);
+        final refreshedActive = previousActive == null
+            ? null
+            : _matchRefreshedProfile(
+                previousActive,
+                fresh,
+                fallbackIndex:
+                    previousActiveIndex != null && previousActiveIndex >= 0
+                        ? previousActiveIndex
+                        : null,
+              );
         if (backend.state == VpnState.connected &&
             previousActive != null &&
-            refreshedActive != null &&
-            jsonEncode(previousActive.toJson()) !=
-                jsonEncode(refreshedActive.toJson())) {
+            previousActiveIndex != null &&
+            previousActiveIndex >= 0 &&
+            (refreshedActive == null ||
+                _profileConnectionSignature(previousActive) !=
+                    _profileConnectionSignature(refreshedActive))) {
           pendingReconnect = true;
         }
         profiles = [...profiles.where((e) => !oldIds.contains(e.id)), ...fresh];
@@ -11814,11 +11942,24 @@ foreach ($route in $routes) {
             .expand((s) => (s['ids'] as List? ?? []).cast<String>())
             .toSet()
             .toList();
-        if (selectedId == null ||
-            (oldIds.contains(selectedId) &&
-                !fresh.any((p) => p.id == selectedId))) {
+        if (previousSelected == null && selectedId == null) {
           selectedId = fresh.first.id;
           if (backend.state == VpnState.connected) pendingReconnect = true;
+        } else if (previousSelected != null &&
+            oldIds.contains(previousSelected.id)) {
+          final refreshedSelected = _matchRefreshedProfile(
+            previousSelected,
+            fresh,
+            fallbackIndex:
+                previousSelectedIndex != null && previousSelectedIndex >= 0
+                    ? previousSelectedIndex
+                    : null,
+          );
+          selectedId = refreshedSelected?.id ?? fresh.first.id;
+          if (backend.state == VpnState.connected &&
+              refreshedSelected == null) {
+            pendingReconnect = true;
+          }
         }
       });
       await _persist();

@@ -9,6 +9,7 @@ val releaseStorePath = System.getenv("GHOSTBOX_ANDROID_KEYSTORE_FILE")
 val releaseStorePassword = System.getenv("GHOSTBOX_ANDROID_KEYSTORE_PASSWORD")
 val releaseKeyAlias = System.getenv("GHOSTBOX_ANDROID_KEY_ALIAS")
 val releaseKeyPassword = System.getenv("GHOSTBOX_ANDROID_KEY_PASSWORD")
+val unsignedRelease = System.getenv("GHOSTBOX_ANDROID_UNSIGNED") == "true"
 val hasReleaseSigning = listOf(
     releaseStorePath,
     releaseStorePassword,
@@ -67,11 +68,13 @@ android {
 
     buildTypes {
         release {
-            // Sideloadable development build by default. CI can provide the
-            // private signing material through encrypted repository secrets.
-            signingConfig = signingConfigs.getByName(
-                if (hasReleaseSigning) "release" else "debug",
-            )
+            // Local builds remain installable with the debug key by default.
+            // CI may opt into a truly unsigned artifact for manual signing.
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
+            } else if (!unsignedRelease) {
+                signingConfig = signingConfigs.getByName("debug")
+            }
         }
     }
 }
