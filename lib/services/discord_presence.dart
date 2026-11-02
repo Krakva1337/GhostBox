@@ -23,6 +23,12 @@ class DiscordPresence {
   Timer? _retryTimer;
   bool _connecting = false;
   bool _enabled = false;
+  Completer<void>? _ready;
+  final Map<String, Completer<void>> _requests = {};
+  final List<int> _incoming = [];
+  Timer? _publishTimer;
+  DateTime? _lastSentAt;
+  static const _publishInterval = Duration(seconds: 5);
 
   static bool get supported =>
       !kIsWeb && (Platform.isLinux || Platform.isMacOS);
@@ -40,7 +46,9 @@ class DiscordPresence {
     if (!_enabled) {
       _retryTimer?.cancel();
       _retryTimer = null;
-      _sendActivity(null, null);
+      _publishTimer?.cancel();
+      _publishTimer = null;
+      await _sendActivity(null, null).catchError((Object _) {});
       await _close();
       return;
     }
@@ -50,24 +58,9 @@ class DiscordPresence {
       _connectedAt = null;
     }
     _lastDetails = status;
-    _lastActivityState = connected ? '$speed · Telegram' : 'Telegram';
+    _lastActivityState = connected ? speed : null;
     _lastActivityKey = '$status\n${_lastActivityState ?? ''}\n$_connectedAt';
-    if (_lastActivityKey == _lastSentActivityKey && _socket != null) return;
-    if (_connecting) return;
-
-    _connecting = true;
-    try {
-      if (_socket == null) await _connect();
-      _sendActivity(_lastDetails, _lastActivityState);
-      _lastSentActivityKey = _lastActivityKey;
-      _retryTimer?.cancel();
-      _retryTimer = null;
-    } on Object {
-      await _close();
-      _scheduleRetry();
-    } finally {
-      _connecting = false;
-    }
+    await _retry();
   }
 
   String? _lastSentActivityKey;
@@ -76,7 +69,9 @@ class DiscordPresence {
     _enabled = false;
     _retryTimer?.cancel();
     _retryTimer = null;
-    _sendActivity(null, null);
+    _publishTimer?.cancel();
+    _publishTimer = null;
+    await _sendActivity(null, null).catchError((Object _) {});
     await _close();
   }
 
@@ -92,16 +87,20 @@ class DiscordPresence {
             timeout: const Duration(milliseconds: 350),
           );
           _socket = socket;
+          _incoming.clear();
+          final ready = _ready = Completer<void>();
           _socketSubscription = socket.listen(
-            (_) {},
+            _onData,
             onDone: () => _onSocketClosed(socket),
             onError: (Object _) => _onSocketClosed(socket),
             cancelOnError: true,
           );
           _sendFrame(0, {'v': 1, 'client_id': clientId.trim()});
+          await ready.future.timeout(const Duration(seconds: 5));
           return;
         } on Object catch (error) {
           lastError = error;
+          await _close();
         }
       }
     }
@@ -130,7 +129,7 @@ class DiscordPresence {
     return directories.toSet().toList(growable: false);
   }
 
-  void _sendActivity(String? details, String? state) {
+  Future<void> _sendActivity(String? details, String? state) async {
     if (_socket == null) return;
     final activity = details == null
         ? null
@@ -138,17 +137,35 @@ class DiscordPresence {
             'name': 'GhostBox',
             'type': 0,
             'details': details,
-            'details_url': 'https://github.com/Krakva1337/GhostBox',
             if (state != null) 'state': state,
-            'state_url': 'https://t.me/GhostBoxVPN',
+            // Discord hides these buttons when viewing your own presence.
+            // They are displayed to other users viewing the activity.
+            'buttons': [
+              {
+                'label': 'GitHub',
+                'url': 'https://github.com/Krakva1337/GhostBox',
+              },
+              {
+                'label': 'Telegram',
+                'url': 'https://t.me/GhostBoxVPN',
+              },
+            ],
             if (_connectedAt != null)
               'timestamps': {'start': _connectedAt!.millisecondsSinceEpoch},
           };
+    final nonce = DateTime.now().microsecondsSinceEpoch.toString();
+    final response = Completer<void>();
+    _requests[nonce] = response;
     _sendFrame(1, {
       'cmd': 'SET_ACTIVITY',
       'args': {'pid': pid, 'activity': activity},
-      'nonce': DateTime.now().microsecondsSinceEpoch.toString(),
+      'nonce': nonce,
     });
+    try {
+      await response.future.timeout(const Duration(seconds: 8));
+    } finally {
+      _requests.remove(nonce);
+    }
   }
 
   void _sendFrame(int opcode, Map<String, Object?> value) {
@@ -172,24 +189,95 @@ class DiscordPresence {
     if (!_enabled) return;
     _retryTimer?.cancel();
     _retryTimer = Timer(const Duration(seconds: 30), () {
+      _retryTimer = null;
       unawaited(_retry());
     });
   }
 
   Future<void> _retry() async {
-    if (!_enabled || _lastDetails == null || _connecting) return;
+    if (!_enabled ||
+        _lastDetails == null ||
+        _connecting ||
+        _retryTimer?.isActive == true) return;
+    if (_socket != null && _lastActivityKey == _lastSentActivityKey) return;
+    final sentAt = _lastSentAt;
+    if (sentAt != null) {
+      final remaining = _publishInterval - DateTime.now().difference(sentAt);
+      if (remaining > Duration.zero) {
+        _publishTimer ??= Timer(remaining, () {
+          _publishTimer = null;
+          unawaited(_retry());
+        });
+        return;
+      }
+    }
     _connecting = true;
+    var succeeded = false;
     try {
       if (_socket == null) await _connect();
-      _sendActivity(_lastDetails, _lastActivityState);
-      _lastSentActivityKey = _lastActivityKey;
+      if (!_enabled) return;
+      final key = _lastActivityKey;
+      await _sendActivity(_lastDetails, _lastActivityState);
+      _lastSentActivityKey = key;
+      _lastSentAt = DateTime.now();
       _retryTimer?.cancel();
       _retryTimer = null;
+      succeeded = true;
     } on Object {
       await _close();
       _scheduleRetry();
     } finally {
       _connecting = false;
+    }
+    if (succeeded && _lastActivityKey != _lastSentActivityKey) {
+      unawaited(_retry());
+    }
+  }
+
+  void _onData(List<int> bytes) {
+    _incoming.addAll(bytes);
+    while (_incoming.length >= 8) {
+      final header =
+          ByteData.sublistView(Uint8List.fromList(_incoming.take(8).toList()));
+      final opcode = header.getUint32(0, Endian.little);
+      final length = header.getUint32(4, Endian.little);
+      if (length > 1024 * 1024) {
+        final socket = _socket;
+        if (socket != null) _onSocketClosed(socket);
+        return;
+      }
+      if (_incoming.length < 8 + length) return;
+      final payload = _incoming.sublist(8, 8 + length);
+      _incoming.removeRange(0, 8 + length);
+      if (opcode == 3) {
+        final pong = ByteData(8)
+          ..setUint32(0, 4, Endian.little)
+          ..setUint32(4, length, Endian.little);
+        _socket?.add(pong.buffer.asUint8List());
+        _socket?.add(payload);
+        continue;
+      }
+      try {
+        final value = jsonDecode(utf8.decode(payload)) as Map;
+        if (opcode == 2) {
+          throw StateError('Discord closed RPC: ${value['code']}');
+        }
+        if (value['evt'] == 'READY') {
+          if (_ready?.isCompleted == false) _ready!.complete();
+        }
+        final request = _requests.remove(value['nonce']);
+        if (request != null && !request.isCompleted) {
+          if (value['evt'] == 'ERROR') {
+            request.completeError(StateError('Discord RPC: ${value['data']}'));
+          } else {
+            request.complete();
+          }
+        }
+      } on Object {
+        final socket = _socket;
+        if (socket != null) _onSocketClosed(socket);
+        return;
+      }
     }
   }
 
@@ -199,6 +287,14 @@ class DiscordPresence {
     _socketSubscription = null;
     _socket = null;
     _lastSentActivityKey = null;
+    final error = StateError('Discord RPC disconnected');
+    if (_ready?.isCompleted == false) _ready!.completeError(error);
+    _ready = null;
+    for (final request in _requests.values) {
+      if (!request.isCompleted) request.completeError(error);
+    }
+    _requests.clear();
+    _incoming.clear();
     await subscription?.cancel();
     socket?.destroy();
   }
