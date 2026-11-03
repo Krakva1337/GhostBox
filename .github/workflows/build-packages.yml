@@ -242,43 +242,9 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  ios-unsigned:
-    name: iOS unsigned IPA and VPN extension
-    runs-on: macos-15
-    steps:
-      - uses: actions/checkout@v4
-      - uses: subosito/flutter-action@v2
-        with:
-          channel: stable
-          cache: true
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.27.2'
-          cache: true
-      - name: Build unsigned IPA and iOS cores
-        run: ./tool/build_ios.sh unsigned
-      - name: Upload iOS build diagnostics on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: GhostBox-iOS-build-diagnostics
-          path: build/ios/logs/
-          if-no-files-found: ignore
-          retention-days: 7
-      - uses: actions/upload-artifact@v4
-        with:
-          name: GhostBox-iOS-unsigned
-          path: |
-            dist/GhostBox-*-iOS-unsigned.ipa
-            dist/GhostBox-*-iOS-unsigned.ipa.sha256
-            dist/GhostBox-*-iOS-unsigned.zip
-            dist/GhostBox-*-iOS-unsigned.zip.sha256
-          if-no-files-found: error
-          retention-days: 14
-
   publish-alpha-release:
     if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish_release)
-    needs: [linux-appimage, macos-arm64, windows-x64, android-universal, ios-unsigned]
+    needs: [linux-appimage, macos-arm64, windows-x64, android-universal]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -306,10 +272,6 @@ jobs:
         with:
           name: GhostBox-Android-universal-unsigned
           path: dist/android
-      - uses: actions/download-artifact@v4
-        with:
-          name: GhostBox-iOS-unsigned
-          path: dist/ios-unsigned
       - name: Prepare release notes
         id: release-context
         env:
@@ -357,7 +319,6 @@ jobs:
             echo '- macOS ARM64 app (.zip)'
             echo '- Windows x64 installer (.exe) and portable ZIP'
             echo '- Android universal unsigned APK'
-            echo '- iOS unsigned IPA and app archive'
             echo
             echo '## Файлы релиза'
             echo
@@ -373,4 +334,4 @@ jobs:
           if [[ "$RELEASE_TAG" == *alpha* ]]; then args+=(--prerelease); fi
           gh release create "$RELEASE_TAG" "${args[@]}" \
             dist/linux-x86_64/* dist/linux-ARM64/* dist/windows-x64/* \
-            dist/macos-arm64/* dist/android/* dist/ios-unsigned/*
+            dist/macos-arm64/* dist/android/*
