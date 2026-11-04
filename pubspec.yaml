@@ -1,7 +1,7 @@
 name: ghostbox
 description: Cross-platform VPN client powered by xray-core and sing-box.
 publish_to: 'none'
-version: 1.7.0-alpha+27
+version: 1.7.5-alpha+28
 environment:
   sdk: '>=3.3.0 <4.0.0'
   flutter: '>=3.19.0'
@@ -10,6 +10,7 @@ dependencies:
     sdk: flutter
   cupertino_icons: ^1.0.6
   file_selector: ^1.0.3
+  ffi: ^2.2.0
   shared_preferences: ^2.5.3
   app_links: ^7.2.2
   mobile_scanner: ^7.4.2
@@ -27,4 +28,3 @@ flutter:
   assets:
     - assets/icons/
     - assets/flags/
-

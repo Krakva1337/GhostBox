@@ -107,11 +107,13 @@ try {
   # Flutter selects the Windows target architecture from the Windows runner.
   # `--target-platform` is not a supported option for `flutter build windows`.
   $updateBranch = if ($env:GHOSTBOX_UPDATE_BRANCH) { $env:GHOSTBOX_UPDATE_BRANCH } else { 'main' }
+  $discordClientId = if ($env:GHOSTBOX_DISCORD_CLIENT_ID) { $env:GHOSTBOX_DISCORD_CLIENT_ID } else { '1566838058207412414' }
   Invoke-Checked 'flutter' @(
     'build', 'windows', '--release',
     "--dart-define=GHOSTBOX_VERSION=$version",
     "--dart-define=GHOSTBOX_BUILD=$build",
-    "--dart-define=GHOSTBOX_UPDATE_BRANCH=$updateBranch"
+    "--dart-define=GHOSTBOX_UPDATE_BRANCH=$updateBranch",
+    "--dart-define=GHOSTBOX_DISCORD_CLIENT_ID=$discordClientId"
   )
 
   $releaseDirectory = Join-Path $ProjectRoot 'build/windows/x64/runner/Release'

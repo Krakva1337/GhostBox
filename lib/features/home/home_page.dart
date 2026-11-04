@@ -1244,6 +1244,7 @@ class _HomePageState extends State<HomePage>
       }
     });
     await trafficStats.load(p);
+    _syncDiscordPresence();
     if (!animatedBackground || reduceAnimations) {
       ambientMotion.stop();
       ambientMotion.value = .12;
@@ -1915,32 +1916,32 @@ class _HomePageState extends State<HomePage>
         : backend is IosVpnBackend
             ? (backend as IosVpnBackend).uptime
             : process?.uptime ?? Duration.zero;
-    final connectionTime = _formatDiscordDuration(connectedFor);
     final status = connected
         ? _text(
-            'VPN Подключен | $connectionTime',
-            'VPN connected | $connectionTime',
+            'VPN Подключен',
+            'VPN connected',
           )
         : backend.state == VpnState.connecting
             ? _text('Подключение', 'Connecting')
             : _text('VPN отключён', 'VPN disconnected');
-    final speed = trafficStats.available
-        ? '↓ ${formatTrafficRate(trafficStats.receivedPerSecond)}  ·  ↑ ${formatTrafficRate(trafficStats.sentPerSecond)}'
+    final traffic = connected && trafficStats.available
+        ? '↓ ${formatTrafficRate(trafficStats.receivedPerSecond)} ↑ ${formatTrafficRate(trafficStats.sentPerSecond)}'
         : _text('Скорость: нет данных', 'Speed: unavailable');
+    final now = DateTime.now();
+    final dayKey =
+        '${now.year.toString().padLeft(4, '0')}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
+    final today = trafficStats.days[dayKey] ?? const DailyTraffic();
+    final todayTraffic =
+        '${_text('Сегодня', 'Today')}: ${formatTrafficBytes(today.received + today.sent)}';
     unawaited(DiscordPresence.instance.update(
       enabled: discordPresenceEnabled,
       connected: connected,
       status: status,
-      speed: speed,
+      version: AppVersion.version,
+      traffic: traffic,
+      todayTraffic: todayTraffic,
       connectedFor: connected ? connectedFor : Duration.zero,
     ));
-  }
-
-  String _formatDiscordDuration(Duration duration) {
-    final hours = duration.inHours.toString().padLeft(2, '0');
-    final minutes = (duration.inMinutes % 60).toString().padLeft(2, '0');
-    final seconds = (duration.inSeconds % 60).toString().padLeft(2, '0');
-    return '$hours:$minutes:$seconds';
   }
 
   Future<void> _setDiscordPresenceEnabled(bool enabled) async {
@@ -5130,6 +5131,9 @@ foreach ($route in $routes) {
                                     crossAxisAlignment:
                                         CrossAxisAlignment.stretch,
                                     children: [
+                                      // SafeArea already clears landscape cutouts;
+                                      // keep the floating rail away from that edge.
+                                      const SizedBox(width: 16),
                                       SizedBox(
                                         width: 120,
                                         child: Padding(
@@ -5138,7 +5142,7 @@ foreach ($route in $routes) {
                                           child: _sideNav(),
                                         ),
                                       ),
-                                      const SizedBox(width: 10),
+                                      const SizedBox(width: 16),
                                       Expanded(
                                         child: Stack(
                                           children: [
@@ -9735,8 +9739,8 @@ foreach ($route in $routes) {
                 !DiscordPresence.configured
                     ? _text('Нужен Client ID при сборке',
                         'Set Client ID at build time')
-                    : _text('Показывать общий статус VPN',
-                        'Show a generic VPN activity status'),
+                    : _text('Версия, статус VPN, время и трафик',
+                        'Version, VPN status, time and traffic'),
                 _compactSwitch(
                     value: discordPresenceEnabled && DiscordPresence.configured,
                     onChanged: DiscordPresence.configured
@@ -9747,9 +9751,34 @@ foreach ($route in $routes) {
                 padding: const EdgeInsets.only(left: 46, top: 0, bottom: 8),
                 child: Text(
                   _text(
-                      'Нужно, чтобы Discord был запущен на этом компьютере. Название сервера и адреса не передаются.',
-                      'Discord must be running on this computer. Server names and addresses are never shared.'),
+                      'Discord должен быть запущен. Таймер подключения считает Discord; скорость и трафик за сегодня передаются не чаще раза в 5 секунд. Кнопки GitHub и Telegram видны другим пользователям — в собственном статусе Discord их скрывает. Название сервера и адреса не передаются.',
+                      'Discord must be running. Discord runs the live connection timer; speed and today’s traffic are sent at most every 5 seconds. GitHub and Telegram buttons are visible to other users; Discord hides them in your own activity. Server names and addresses are never shared.'),
                   style: TextStyle(color: _muted, fontSize: 11),
+                ),
+              ),
+            if (DiscordPresence.configured && discordPresenceEnabled)
+              Padding(
+                padding: const EdgeInsets.only(left: 46, bottom: 8),
+                child: ValueListenableBuilder<DiscordPresenceStatus>(
+                  valueListenable: DiscordPresence.instance.connectionStatus,
+                  builder: (context, rpc, _) => Text(
+                    switch (rpc.phase) {
+                      DiscordPresencePhase.disabled =>
+                        _text('RPC выключен', 'RPC disabled'),
+                      DiscordPresencePhase.connecting => _text(
+                          'Подключение к Discord…', 'Connecting to Discord…'),
+                      DiscordPresencePhase.ready => rpc.buttons == null
+                          ? _text(
+                              'Discord подтвердил RPC • отправлены 2 кнопки',
+                              'Discord acknowledged RPC • 2 buttons sent')
+                          : _text(
+                              'Discord подтвердил RPC • кнопок: ${rpc.buttons}',
+                              'Discord acknowledged RPC • buttons: ${rpc.buttons}'),
+                      DiscordPresencePhase.retrying =>
+                        '${_text('RPC: повторное подключение', 'RPC: retrying')} — ${rpc.error}',
+                    },
+                    style: TextStyle(color: _muted, fontSize: 11),
+                  ),
                 ),
               ),
           ],
@@ -12291,8 +12320,11 @@ foreach ($route in $routes) {
                         color: Colors.white.withValues(alpha: .10)),
                     _sideActionItem(
                         Icons.speed_rounded,
-                        _text('Пинг все', 'Ping all'),
-                        () => _checkAllProfiles(List.of(profiles))),
+                        checkingAll
+                            ? '$pingAllDone/$pingAllTotal'
+                            : _text('Пинг все', 'Ping all'),
+                        () => _checkAllProfiles(List.of(profiles)),
+                        busy: checkingAll),
                     _sideActionItem(Icons.article_outlined,
                         _text('Логи', 'Logs'), _showLogs),
                     _sideActionItem(Icons.history_rounded,
@@ -12304,30 +12336,88 @@ foreach ($route in $routes) {
         ),
       );
 
-  Widget _sideActionItem(IconData icon, String label, VoidCallback onTap) =>
+  Widget _sideActionItem(
+    IconData icon,
+    String label,
+    VoidCallback onTap, {
+    bool busy = false,
+  }) =>
       SizedBox(
-          height: 62,
+        height: 62,
+        width: double.infinity,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 2),
           child: Tooltip(
-              message: label,
-              child: Material(
-                  color: Colors.transparent,
-                  child: InkWell(
-                      borderRadius: BorderRadius.circular(16),
-                      onTap: onTap,
-                      child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(icon, size: 19, color: _muted),
-                            const SizedBox(height: 4),
-                            SizedBox(
-                                width: double.infinity,
-                                child: Text(label,
-                                    textAlign: TextAlign.center,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: TextStyle(
-                                        color: _muted, fontSize: 9.5)))
-                          ])))));
+            message: label,
+            child: TextButton(
+              onPressed: busy ? null : onTap,
+              style: ButtonStyle(
+                animationDuration: optimizedMode
+                    ? Duration.zero
+                    : _motion(const Duration(milliseconds: 180)),
+                padding: const WidgetStatePropertyAll(EdgeInsets.all(6)),
+                shape: WidgetStatePropertyAll(RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(16))),
+                foregroundColor: WidgetStateProperty.resolveWith((states) =>
+                    busy ||
+                            states.contains(WidgetState.hovered) ||
+                            states.contains(WidgetState.focused) ||
+                            states.contains(WidgetState.pressed)
+                        ? _accent
+                        : _muted),
+                backgroundColor: WidgetStateProperty.resolveWith((states) {
+                  if (states.contains(WidgetState.pressed)) {
+                    return _accent.withValues(alpha: .22);
+                  }
+                  if (busy || states.contains(WidgetState.focused)) {
+                    return _accent.withValues(alpha: .13);
+                  }
+                  if (states.contains(WidgetState.hovered)) {
+                    return _accent.withValues(alpha: .10);
+                  }
+                  return Colors.transparent;
+                }),
+                side: WidgetStateProperty.resolveWith((states) => BorderSide(
+                    color: busy ||
+                            states.contains(WidgetState.focused) ||
+                            states.contains(WidgetState.pressed)
+                        ? _accent.withValues(alpha: .4)
+                        : states.contains(WidgetState.hovered)
+                            ? _accent.withValues(alpha: .23)
+                            : Colors.transparent)),
+                overlayColor: const WidgetStatePropertyAll(Colors.transparent),
+              ),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  if (busy)
+                    SizedBox(
+                      width: 19,
+                      height: 19,
+                      child: CircularProgressIndicator(
+                        color: _accent,
+                        strokeWidth: 2,
+                        value: pingAllTotal > 0
+                            ? pingAllDone / pingAllTotal
+                            : null,
+                      ),
+                    )
+                  else
+                    Icon(icon, size: 19),
+                  const SizedBox(height: 4),
+                  Text(
+                    label,
+                    textAlign: TextAlign.center,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 9.5),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
 
   Widget _sideNavItem(IconData icon, String label, int index) => MouseRegion(
       cursor: SystemMouseCursors.click,
