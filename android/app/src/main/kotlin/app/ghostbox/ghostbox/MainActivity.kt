@@ -29,6 +29,7 @@ class MainActivity : FlutterActivity() {
         private const val NOTIFICATION_PERMISSION_REQUEST = 4138
         private const val LOG_EXPORT_REQUEST = 4139
         private const val DOWNLOADS_PERMISSION_REQUEST = 4140
+        private const val APPEARANCE_FILE_REQUEST = 4141
     }
 
     private var pendingVpnResult: MethodChannel.Result? = null
@@ -43,6 +44,8 @@ class MainActivity : FlutterActivity() {
     private var pendingDownloadsResult: MethodChannel.Result? = null
     private var pendingDownloadsSource: String? = null
     private var pendingDownloadsName: String? = null
+    private var pendingAppearanceResult: MethodChannel.Result? = null
+    private var pendingAppearanceMaxBytes = 0
     @Volatile private var updateInProgress = false
     @Volatile private var staleVpnCleanupScheduled = false
 
@@ -117,6 +120,49 @@ class MainActivity : FlutterActivity() {
                     }
                     "cleanupVpnBeforeConnect" -> cleanupVpnBeforeConnect(result)
                     "forceCleanupVpn" -> forceCleanupVpn(result)
+                    "resetVpnConfiguration" -> {
+                        // VPN JSON is handed to the native services in memory;
+                        // GhostBox does not persist user configurations on Android.
+                        // Reuse the owned-process cleanup path, which clears all
+                        // persisted runtime/error state after both services stop.
+                        pendingConfig = null
+                        pendingProfileName = null
+                        pendingCore = "sing-box"
+                        pendingProxyOnly = false
+                        pendingKeepXray = false
+                        forceCleanupVpn(result)
+                    }
+                    "appearanceStorageDirectory" -> {
+                        val directory = File(filesDir, "appearance")
+                        directory.mkdirs()
+                        result.success(directory.absolutePath)
+                    }
+                    "pickAppearanceFile" -> {
+                        if (pendingAppearanceResult != null) {
+                            result.error("busy", "A file picker is already open", null)
+                        } else {
+                            val kind = call.argument<String>("kind")
+                            val mime = when (kind) {
+                                "font" -> arrayOf("font/ttf", "font/otf", "application/font-sfnt", "application/octet-stream")
+                                "background" -> arrayOf("image/*")
+                                else -> null
+                            }
+                            if (mime == null) {
+                                result.error("invalid_kind", "Expected font or background", null)
+                            } else {
+                                pendingAppearanceResult = result
+                                pendingAppearanceMaxBytes = if (kind == "font") 5 * 1024 * 1024 else 12 * 1024 * 1024
+                                try { startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                                    addCategory(Intent.CATEGORY_OPENABLE)
+                                    type = if (kind == "background") "image/*" else "*/*"
+                                    putExtra(Intent.EXTRA_MIME_TYPES, mime)
+                                }, APPEARANCE_FILE_REQUEST) } catch (error: Exception) {
+                                    pendingAppearanceResult = null
+                                    result.error("picker_unavailable", error.message, null)
+                                }
+                            }
+                        }
+                    }
                     "vpnState" -> result.success(currentVpnState())
                     "vpnStopComplete" -> {
                         val state = VpnStateStore.read(this)
@@ -510,6 +556,37 @@ class MainActivity : FlutterActivity() {
     @Deprecated("FlutterActivity permission result bridge")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == APPEARANCE_FILE_REQUEST) {
+            val pickerResult = pendingAppearanceResult ?: return
+            pendingAppearanceResult = null
+            if (resultCode != Activity.RESULT_OK || data?.data == null) {
+                pickerResult.success(null)
+                return
+            }
+            try {
+                val uri = data.data!!
+                val bytes = contentResolver.openInputStream(uri)?.use { input ->
+                    val output = java.io.ByteArrayOutputStream()
+                    val buffer = ByteArray(8192)
+                    var total = 0
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        total += count
+                        require(total <= pendingAppearanceMaxBytes) { "Selected file exceeds size limit" }
+                        output.write(buffer, 0, count)
+                    }
+                    output.toByteArray()
+                } ?: error("Unable to read selected file")
+                val name = contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                    if (cursor.moveToFirst()) cursor.getString(0) else null
+                } ?: "appearance-file"
+                pickerResult.success(mapOf("name" to name, "bytes" to bytes))
+            } catch (error: Exception) {
+                pickerResult.error("appearance_file_failed", error.message ?: "Unable to read selected file", null)
+            }
+            return
+        }
         if (requestCode == LOG_EXPORT_REQUEST) {
             val exportResult = pendingLogExportResult ?: return
             val content = pendingLogExportContent

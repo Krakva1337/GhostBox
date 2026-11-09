@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -168,8 +169,10 @@ class GitHubUpdater {
     if (Platform.isAndroid) {
       return _downloadAndroid(asset, onProgress: onProgress);
     }
-    final destination = File(
-        '${Directory.systemTemp.path}${Platform.pathSeparator}${asset.name}');
+    final name = asset.name.split(RegExp(r'[/\\]')).last;
+    if (name.isEmpty || name == '.' || name == '..') {
+      throw const FormatException('Некорректное имя файла обновления.');
+    }
     final request = await _client
         .getUrl(Uri.parse(asset.url))
         .timeout(const Duration(seconds: 20));
@@ -181,6 +184,11 @@ class GitHubUpdater {
       throw HttpException(
           'Не удалось скачать ${asset.name}: HTTP ${response.statusCode}');
     }
+    final downloadDirectory = Platform.isMacOS
+        ? await Directory.systemTemp.createTemp('ghostbox-download-')
+        : Directory.systemTemp;
+    final destination =
+        File('${downloadDirectory.path}${Platform.pathSeparator}$name');
     final sink = destination.openWrite();
     final stopwatch = Stopwatch()..start();
     var downloadedBytes = 0;
@@ -205,12 +213,12 @@ class GitHubUpdater {
       await sink.close();
     } on Object {
       await sink.close();
-      if (destination.existsSync()) await destination.delete();
+      await _removeDownload(destination);
       rethrow;
     }
     final actualSize = await destination.length();
     if (asset.size > 0 && actualSize != asset.size) {
-      await destination.delete();
+      await _removeDownload(destination);
       throw HttpException(
         'Загрузка ${asset.name} неполная: ожидалось ${asset.size} байт, получено $actualSize.',
       );
@@ -293,8 +301,13 @@ class GitHubUpdater {
 
   Future<void> _removeDownload(File file) async {
     if (await file.exists()) await file.delete();
-    if (Platform.isAndroid &&
-        file.parent.path.split('/').last.startsWith('ghostbox-update-')) {
+    if ((Platform.isAndroid &&
+            file.parent.path.split('/').last.startsWith('ghostbox-update-')) ||
+        (Platform.isMacOS &&
+            file.parent.path
+                .split('/')
+                .last
+                .startsWith('ghostbox-download-'))) {
       if (await file.parent.exists()) await file.parent.delete(recursive: true);
     }
   }
@@ -305,6 +318,7 @@ class GitHubUpdater {
     void Function(UpdateDownloadProgress progress)? onProgress,
   }) async {
     final package = await download(asset, onProgress: onProgress);
+    var packageVerified = false;
     try {
       onProgress?.call(UpdateDownloadProgress(
         assetName: asset.name,
@@ -317,7 +331,7 @@ class GitHubUpdater {
       final checksumAsset = release.asset('${asset.name}.sha256');
       if (checksumAsset == null) {
         throw FileSystemException(
-            'В релизе ${release.tagName} нет файла ${asset.name}.sha256. Загрузите APK и созданный рядом checksum-файл в один релиз.');
+            'В релизе ${release.tagName} нет файла ${asset.name}.sha256. Загрузите пакет и созданный рядом checksum-файл в один релиз.');
       }
       final checksumFile = await download(checksumAsset);
       try {
@@ -325,11 +339,14 @@ class GitHubUpdater {
             .firstMatch(await checksumFile.readAsString())
             ?.group(1)
             ?.toLowerCase();
-        if (expected == null)
+        if (expected == null) {
           throw const FormatException('Некорректный SHA-256');
+        }
         final actual = await _sha256(package);
-        if (actual != expected)
+        if (actual != expected) {
           throw const FormatException('SHA-256 пакета не совпал');
+        }
+        packageVerified = true;
       } finally {
         await _removeDownload(checksumFile);
       }
@@ -371,15 +388,55 @@ class GitHubUpdater {
           throw const FileSystemException(
               'Не найден установщик обновлений. Установите GhostBox заново из macOS ZIP.');
         }
-        await Process.start(
+        final size = await package.length();
+        onProgress?.call(UpdateDownloadProgress(
+          assetName: asset.name,
+          path: package.path,
+          downloadedBytes: size,
+          totalBytes: size,
+          bytesPerSecond: 0,
+          stage: UpdateDownloadStage.launchingInstaller,
+        ));
+        // The updater must survive replacing the bundle that contains it.
+        final handoff =
+            await Directory.systemTemp.createTemp('ghostbox-update-handoff-');
+        try {
+          final stagedHelper =
+              await helper.copy('${handoff.path}/ghostbox-update-macos.sh');
+          final log = File('${handoff.path}/installer.log');
+          await Process.start(
             '/bin/bash',
             [
-              helper.path,
-              package.path,
+              stagedHelper.path,
+              package.absolute.path,
               '$pid',
-              appBundle,
+              '/Applications/GhostBox.app',
+              handoff.path,
             ],
-            mode: ProcessStartMode.detached);
+            mode: ProcessStartMode.detached,
+          );
+          // Exit only once the helper has extracted and validated the package.
+          // A failed handoff leaves this app running so its UI can show errors.
+          final deadline = DateTime.now().add(const Duration(seconds: 60));
+          final ready = File('${handoff.path}/ready');
+          final error = File('${handoff.path}/error');
+          while (!await ready.exists()) {
+            if (await error.exists()) {
+              throw FileSystemException(
+                  'Не удалось подготовить обновление: ${await error.readAsString()}');
+            }
+            if (DateTime.now().isAfter(deadline)) {
+              await File('${handoff.path}/cancelled').writeAsString('timeout');
+              throw FileSystemException(
+                  'Установщик не подтвердил готовность. Журнал: ${log.path}');
+            }
+            await Future<void>.delayed(const Duration(milliseconds: 100));
+          }
+        } on Object {
+          // Keep the helper's log and cancellation marker for diagnostics.
+          await File('${handoff.path}/cancelled').writeAsString('cancelled');
+          rethrow;
+        }
         exit(0);
       }
       if (Platform.isAndroid) {
@@ -410,7 +467,9 @@ class GitHubUpdater {
       throw UnsupportedError(
           'Автоустановка не поддерживается на этой платформе');
     } on Object {
-      await _removeDownload(package);
+      if (!Platform.isMacOS || !packageVerified) {
+        await _removeDownload(package);
+      }
       rethrow;
     }
   }
@@ -431,8 +490,9 @@ class GitHubUpdater {
         '-Command',
         "(Get-FileHash -Algorithm SHA256 -LiteralPath '${file.path.replaceAll("'", "''")}').Hash.ToLowerInvariant()",
       ]);
-      if (result.exitCode != 0)
+      if (result.exitCode != 0) {
         throw const ProcessException('powershell.exe', []);
+      }
       return '${result.stdout}'.trim().toLowerCase();
     }
     final command = Platform.isMacOS ? 'shasum' : 'sha256sum';
@@ -459,10 +519,19 @@ class GitHubUpdater {
           : 'GhostBox-${release.version}-linux-$suffix.AppImage';
     }
     if (Platform.isMacOS) {
-      final result = await Process.run('uname', ['-m']);
-      if ('${result.stdout}'.trim().toLowerCase() == 'arm64') {
-        return 'GhostBox-${release.version}-macOS-arm64.zip';
-      }
+      // sysctl detects Apple Silicon even when this app runs under Rosetta.
+      final silicon =
+          await Process.run('/usr/sbin/sysctl', ['-n', 'hw.optional.arm64']);
+      final machine = await Process.run('/usr/bin/uname', ['-m']);
+      final arch = '${machine.stdout}'.trim().toLowerCase();
+      final suffix = '${silicon.stdout}'.trim() == '1' || arch == 'arm64'
+          ? 'arm64'
+          : arch == 'x86_64'
+              ? 'x86_64'
+              : null;
+      return suffix == null
+          ? null
+          : 'GhostBox-${release.version}-macOS-$suffix.zip';
     }
     if (Platform.isAndroid) {
       const expectedName = 'GhostBox-Android-universal.apk';

@@ -23,6 +23,22 @@ class ServerProfile {
   final String? security;
   final Map<String, dynamic> raw;
 
+  /// Optional server icon supplied by the `srv-logo` profile tag.
+  ///
+  /// Only remote HTTP(S) URLs are surfaced to UI code. The original tag stays
+  /// in [raw] and therefore survives profile serialization and re-import.
+  String? get srvLogoUrl {
+    final value = raw['srv-logo'] ?? raw['srv_logo'] ?? raw['srvLogo'];
+    if (value is! String || value.trim().isEmpty) return null;
+    final uri = Uri.tryParse(value.trim());
+    if (uri == null ||
+        !{'http', 'https'}.contains(uri.scheme) ||
+        uri.host.isEmpty) {
+      return null;
+    }
+    return uri.toString();
+  }
+
   factory ServerProfile.fromJson(Map<String, dynamic> json) => ServerProfile(
         id: json['id'] as String,
         name: _decodeStoredName(json['name'] as String),

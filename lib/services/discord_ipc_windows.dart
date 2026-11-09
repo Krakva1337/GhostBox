@@ -125,12 +125,38 @@ class _DiscordPipeException implements IOException {
 
 const _maxQueuedBytes = 1024 * 1024;
 const _bufferSize = 64 * 1024;
+const _invalidHandle = -1;
+const _genericReadWrite = 0xc0000000;
+const _openExisting = 3;
+const _pipeNowait = 1;
+const _errorFileNotFound = 2;
+const _errorPipeBusy = 231;
+const _errorNoData = 232;
+
+String _pipeError(String operation, String path, int code) {
+  final description = switch (code) {
+    2 => 'ERROR_FILE_NOT_FOUND: no Discord desktop pipe at this endpoint',
+    3 => 'ERROR_PATH_NOT_FOUND: Discord desktop IPC endpoint is absent',
+    5 => 'ERROR_ACCESS_DENIED: check that GhostBox and Discord run as the same '
+        'Windows user with matching administrator privileges',
+    6 => 'ERROR_INVALID_HANDLE: the Discord pipe handle is no longer valid',
+    87 => 'ERROR_INVALID_PARAMETER: Windows rejected the pipe parameters',
+    109 => 'ERROR_BROKEN_PIPE: Discord closed its IPC connection',
+    121 => 'ERROR_SEM_TIMEOUT: the busy Discord pipe did not become available',
+    231 => 'ERROR_PIPE_BUSY: all instances of this Discord pipe are busy',
+    232 => 'ERROR_NO_DATA: the Discord pipe is empty or closing',
+    233 => 'ERROR_PIPE_NOT_CONNECTED: Discord disconnected its pipe',
+    _ => 'WIN32_ERROR_$code',
+  };
+  return '$operation "$path": $description ($code)';
+}
 
 void _pipeWorker(SendPort output) {
   final commands = ReceivePort();
   Timer? poll;
   _Kernel32? kernel;
-  var handle = -1;
+  var handle = _invalidHandle;
+  var connectedPath = '';
   Pointer<Uint8>? buffer;
   Pointer<Uint32>? count;
   var closed = false;
@@ -143,7 +169,7 @@ void _pipeWorker(SendPort output) {
     closed = true;
     poll?.cancel();
     commands.close();
-    if (handle != -1) kernel!.closeHandle(handle);
+    if (handle != _invalidHandle) kernel!.closeHandle(handle);
     if (buffer != null) calloc.free(buffer);
     if (count != null) calloc.free(count);
     if (error != null) output.send(error.toString());
@@ -168,8 +194,8 @@ void _pipeWorker(SendPort output) {
         );
         if (ok == 0) {
           final code = api.getLastError();
-          if (code == 232) break; // ERROR_NO_DATA: open, empty NOWAIT pipe.
-          throw StateError('ReadFile failed ($code)');
+          if (code == _errorNoData) break; // Empty NOWAIT pipe.
+          throw StateError(_pipeError('ReadFile', connectedPath, code));
         }
         final read = transferred.value;
         if (read == 0) break;
@@ -194,7 +220,8 @@ void _pipeWorker(SendPort output) {
           nullptr,
         );
         if (ok == 0) {
-          throw StateError('WriteFile failed (${api.getLastError()})');
+          final code = api.getLastError();
+          throw StateError(_pipeError('WriteFile', connectedPath, code));
         }
         final written = transferred.value;
         if (written == 0) break; // Discord's pipe buffer is temporarily full.
@@ -212,32 +239,73 @@ void _pipeWorker(SendPort output) {
 
   try {
     kernel = _Kernel32();
-    var lastError = 2;
+    final failures = <String>[];
+    var missingEndpoints = 0;
     for (var index = 0; index < 10; index++) {
-      final path = '\\\\?\\pipe\\discord-ipc-$index'.toNativeUtf16();
+      final endpoint = '\\\\?\\pipe\\discord-ipc-$index';
+      final path = endpoint.toNativeUtf16();
       try {
         handle = kernel.createFile(
           path,
-          0xc0000000,
+          _genericReadWrite,
           0,
           nullptr,
-          3,
+          _openExisting,
           0,
           0,
         );
-        if (handle != -1) break;
-        lastError = kernel.getLastError();
+        if (handle != _invalidHandle) {
+          connectedPath = endpoint;
+          break;
+        }
+        var code = kernel.getLastError();
+        if (code == _errorPipeBusy) {
+          // CreateFile does not wait for a free instance. Retry once after a
+          // bounded wait in this worker; never stall Flutter or skip a busy
+          // real endpoint in favour of nine nonexistent endpoints.
+          if (kernel.waitNamedPipe(path, 150) != 0) {
+            handle = kernel.createFile(
+              path,
+              _genericReadWrite,
+              0,
+              nullptr,
+              _openExisting,
+              0,
+              0,
+            );
+            if (handle != _invalidHandle) {
+              connectedPath = endpoint;
+              break;
+            }
+            code = kernel.getLastError();
+          } else {
+            code = kernel.getLastError();
+            failures.add(_pipeError('WaitNamedPipeW', endpoint, code));
+            continue;
+          }
+        }
+        if (code == _errorFileNotFound) missingEndpoints++;
+        failures.add(_pipeError('CreateFileW', endpoint, code));
       } finally {
         calloc.free(path);
       }
     }
-    if (handle == -1) {
-      throw StateError('Discord named pipe unavailable ($lastError)');
+    if (handle == _invalidHandle) {
+      final hint = missingEndpoints == 10
+          ? 'Start the Discord desktop app and sign in; browser Discord does '
+              'not expose local IPC.'
+          : 'Check the endpoint errors below; a missing later endpoint does '
+              'not replace an earlier busy or denied endpoint.';
+      throw StateError('Windows Discord named pipes unavailable. $hint '
+          '${failures.join('; ')}');
     }
-    final mode = calloc<Uint32>()..value = 1; // byte mode | PIPE_NOWAIT
+    final mode = calloc<Uint32>()..value = _pipeNowait; // byte mode | NOWAIT
     try {
       if (kernel.setNamedPipeHandleState(handle, mode, nullptr, nullptr) == 0) {
-        throw StateError('Cannot set pipe mode (${kernel.getLastError()})');
+        final code = kernel.getLastError();
+        throw StateError(
+          _pipeError('SetNamedPipeHandleState', connectedPath, code),
+        );
       }
     } finally {
       calloc.free(mode);
@@ -279,6 +347,9 @@ class _Kernel32 {
       int Function(int, Pointer<Uint32>, Pointer<Uint32>, Pointer<Uint32>)>(
     'SetNamedPipeHandleState',
   );
+  late final waitNamedPipe = _library.lookupFunction<
+      Int32 Function(Pointer<Utf16>, Uint32),
+      int Function(Pointer<Utf16>, int)>('WaitNamedPipeW');
   late final readFile = _library.lookupFunction<
       Int32 Function(
           IntPtr, Pointer<Uint8>, Uint32, Pointer<Uint32>, Pointer<Void>),

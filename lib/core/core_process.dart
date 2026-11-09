@@ -58,7 +58,11 @@ class CoreProcessBackend implements VpnBackend {
   String? get macTunInterface => Platform.isMacOS ? _macTunnelInterface : null;
   String? get lastError => _lastError;
   List<String> get logs => List.unmodifiable(_logs);
-  Future<void> flushLogs() => _coreLogWriteQueue;
+  Future<void> flushLogs() async {
+    await _coreLogWriteQueue;
+    await GhostBoxLogStore.instance.flush();
+  }
+
   void clearLogBuffer() {
     _logs.clear();
     _lastError = null;
@@ -980,12 +984,12 @@ end try
 
   void _captureLog(String line, ServerProfile profile,
       {bool toStderr = false}) {
-    final safe = _safeLog(line, profile);
+    final safe = _safeLog(
+        line.length > 16384 ? line.substring(0, 16384) : line, profile);
     _logs.add(safe);
     if (_logs.length > 100) _logs.removeAt(0);
     if (toStderr) stderr.writeln('[$name] $safe');
-    _coreLogWriteQueue =
-        _coreLogWriteQueue.then((_) => _appendPersistentLog(safe));
+    _coreLogWriteQueue = _appendPersistentLog(safe);
   }
 
   Future<void> _appendPersistentLog(String line) async {
@@ -995,6 +999,31 @@ end try
   }
 
   Map<String, dynamic> makeConfig(ServerProfile p) {
+    final customKey = name.toLowerCase().contains('xray')
+        ? '_customXrayConfig'
+        : '_customSingBoxConfig';
+    final custom = p.raw[customKey];
+    if (custom is Map) {
+      final config = Map<String, dynamic>.from(custom);
+      if (config['inbounds'] is! List || config['outbounds'] is! List) {
+        throw const FormatException(
+            'Пользовательский JSON должен содержать inbounds и outbounds');
+      }
+      final result = jsonDecode(jsonEncode(config)) as Map<String, dynamic>;
+      for (final inbound in (result['inbounds'] as List).whereType<Map>()) {
+        // The application owns these listeners for health checks, system proxy
+        // and Android's upstream bridge. Other user-configured ports stay intact.
+        if (inbound['tag'] == 'local') {
+          inbound[name == 'xray' ? 'port' : 'listen_port'] = settings.localPort;
+        }
+        if (inbound['tag'] == 'http-probe') {
+          final port = int.tryParse('${p.raw['_ghostboxHttpProbePort'] ?? ''}');
+          if (port != null && port > 0)
+            inbound[name == 'xray' ? 'port' : 'listen_port'] = port;
+        }
+      }
+      return result;
+    }
     final initialRouting = SplitRoutingPlan.fromSettings(settings);
     if (initialRouting.targets.hasApps && !Platform.isAndroid) {
       throw const FormatException(

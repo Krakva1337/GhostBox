@@ -1,7 +1,9 @@
 import 'dart:io';
+import 'dart:ui' as ui;
 
 import 'package:flutter/cupertino.dart' show CupertinoPageTransitionsBuilder;
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'brand_icon.dart';
@@ -104,10 +106,142 @@ class ThemeController extends ChangeNotifier {
   Color get iconForeground => _iconForeground;
   Color get iconBackground => _iconBackground;
 
+  bool motionBlur = false;
+  double glassStrength = .35;
+  double transitionSpeed = 1.0;
+  String transitionStyle = 'soft';
+  bool glassPanelsEnabled = true;
+  bool glassButtonsEnabled = true;
+  bool glassSliderThumbEnabled = false;
+  Future<void> setGlass(
+      {bool? motion,
+      double? strength,
+      double? speed,
+      String? style,
+      bool? panels,
+      bool? buttons,
+      bool? sliderThumb}) async {
+    if (motion != null) motionBlur = motion;
+    if (strength != null) glassStrength = strength.clamp(0, 1);
+    if (speed != null) transitionSpeed = speed.clamp(.5, 1.5);
+    if (style != null && const {'soft', 'smooth', 'spring'}.contains(style))
+      transitionStyle = style;
+    if (panels != null) glassPanelsEnabled = panels;
+    if (buttons != null) glassButtonsEnabled = buttons;
+    if (sliderThumb != null) glassSliderThumbEnabled = sliderThumb;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('appearance.motionBlur', motionBlur);
+    await prefs.setDouble('appearance.glassStrength', glassStrength);
+    await prefs.setDouble('appearance.transitionSpeed', transitionSpeed);
+    await prefs.setString('appearance.transitionStyle', transitionStyle);
+    await prefs.setBool('appearance.glassPanels', glassPanelsEnabled);
+    await prefs.setBool('appearance.glassButtons', glassButtonsEnabled);
+    await prefs.setBool('appearance.glassSliderThumb', glassSliderThumbEnabled);
+  }
+
+  String? customFontName;
+  String? _customFontFamily;
+  Uint8List? backgroundImage;
+  String? backgroundImageName;
+
+  Future<File> _appearanceFile(String key) async {
+    String base;
+    if (Platform.isAndroid) {
+      base = (await const MethodChannel('app.ghostbox.ghostbox/vpn')
+          .invokeMethod<String>('appearanceStorageDirectory'))!;
+    } else {
+      final env = Platform.environment;
+      base = Platform.isWindows
+          ? '${env['APPDATA'] ?? Directory.systemTemp.path}/GhostBox/appearance'
+          : Platform.isLinux
+              ? '${env['XDG_DATA_HOME'] ?? '${env['HOME']}/.local/share'}/GhostBox/appearance'
+              : '${env['HOME']}/Library/Application Support/GhostBox/appearance';
+    }
+    final directory = await Directory(base).create(recursive: true);
+    return File('${directory.path}/$key');
+  }
+
+  Future<void> importAppearanceFile(String name, Uint8List bytes,
+      {required bool font, bool persist = true}) async {
+    if (bytes.isEmpty || bytes.length > (font ? 5 : 12) * 1024 * 1024) {
+      throw const FormatException('File is empty or too large');
+    }
+    if (font) {
+      final signature = bytes.length >= 4 ? bytes.sublist(0, 4) : <int>[];
+      if (!(listEquals(signature, [0, 1, 0, 0]) ||
+          listEquals(signature, [79, 84, 84, 79]))) {
+        throw const FormatException('Choose a TTF or OTF font');
+      }
+      final family = 'GhostBoxCustom${DateTime.now().microsecondsSinceEpoch}';
+      final loader = FontLoader(family)
+        ..addFont(Future.value(ByteData.sublistView(bytes)));
+      await loader.load();
+      _customFontFamily = family;
+      customFontName = name;
+    } else {
+      final codec = await ui.instantiateImageCodec(bytes, targetWidth: 1920);
+      final frame = await codec.getNextFrame();
+      frame.image.dispose();
+      codec.dispose();
+      backgroundImage = bytes;
+      backgroundImageName = name;
+    }
+    final prefs = await SharedPreferences.getInstance();
+    final key = font ? 'font' : 'image';
+    if (persist)
+      await (await _appearanceFile(key)).writeAsBytes(bytes, flush: true);
+    await prefs.setString('appearance.$key.name', name);
+    notifyListeners();
+  }
+
+  Future<void> clearAppearanceFile({required bool font}) async {
+    final prefs = await SharedPreferences.getInstance();
+    final key = font ? 'font' : 'image';
+    final file = await _appearanceFile(key);
+    if (await file.exists()) await file.delete();
+    await prefs.remove('appearance.$key.name');
+    if (font) {
+      _customFontFamily = null;
+      customFontName = null;
+    } else {
+      backgroundImage = null;
+      backgroundImageName = null;
+    }
+    notifyListeners();
+  }
+
   Future<void> load() async {
     if (_loaded) return;
     _loaded = true;
     final prefs = await SharedPreferences.getInstance();
+    for (final key in ['font', 'image']) {
+      try {
+        final file = await _appearanceFile(key);
+        if (!await file.exists()) continue;
+        if (await file.length() > (key == 'font' ? 5 : 12) * 1024 * 1024) {
+          await file.delete();
+          continue;
+        }
+        await importAppearanceFile(
+            prefs.getString('appearance.$key.name') ?? key,
+            await file.readAsBytes(),
+            font: key == 'font',
+            persist: false);
+      } on Object {
+        await clearAppearanceFile(font: key == 'font');
+      }
+    }
+    motionBlur = prefs.getBool('appearance.motionBlur') ?? false;
+    glassStrength =
+        (prefs.getDouble('appearance.glassStrength') ?? .35).clamp(0, 1);
+    transitionSpeed =
+        (prefs.getDouble('appearance.transitionSpeed') ?? 1).clamp(.5, 1.5);
+    transitionStyle = prefs.getString('appearance.transitionStyle') ?? 'soft';
+    glassPanelsEnabled = prefs.getBool('appearance.glassPanels') ?? true;
+    glassButtonsEnabled = prefs.getBool('appearance.glassButtons') ?? true;
+    glassSliderThumbEnabled =
+        prefs.getBool('appearance.glassSliderThumb') ?? false;
     final name = prefs.getString('appearance.preset');
     _preset = ThemePreset.values.where((p) => p.name == name).firstOrNull ??
         ThemePreset.midnight;
@@ -211,7 +345,7 @@ class ThemeController extends ChangeNotifier {
     final base = ThemeData(
         useMaterial3: true,
         brightness: brightness,
-        fontFamily: 'SF Pro Display',
+        fontFamily: _customFontFamily ?? 'SF Pro Display',
         fontFamilyFallback: const [
           'SF Pro Text',
           '.AppleSystemUIFont',

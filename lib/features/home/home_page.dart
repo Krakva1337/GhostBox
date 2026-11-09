@@ -44,6 +44,8 @@ import '../../theme/theme_controller.dart';
 import '../../theme/brand_icon.dart';
 import '../../theme/glass_switch.dart';
 import '../../widgets/ghost_notice.dart';
+import '../../widgets/profile_json_editor.dart';
+import '../../widgets/glass_dialog.dart';
 import '../../widgets/ghost_menu.dart';
 import '../../widgets/smooth_scroll_controller.dart';
 
@@ -84,8 +86,6 @@ class _HomePageState extends State<HomePage>
   Timer? subscriptionRefreshTimer;
   DateTime? subscriptionRetryNotBefore;
   Color get _surface => Theme.of(context).colorScheme.surface;
-  Color get _subscriptionInfoSurface =>
-      Color.alphaBlend(Colors.white.withValues(alpha: .035), _surface);
   Color get _accent => Theme.of(context).colorScheme.primary;
   Color get _foreground => Theme.of(context).colorScheme.onSurface;
   Color get _line => Theme.of(context).colorScheme.outlineVariant;
@@ -104,6 +104,7 @@ class _HomePageState extends State<HomePage>
   String? _draggingProfileId;
   String? _lastReorderedProfileId;
   bool powerHovered = false;
+  bool _serverEditMode = false;
   Map<String, Object?> androidKillSwitchStatus = const <String, Object?>{};
   bool readingAndroidKillSwitchStatus = false;
   bool killSwitchActive = false;
@@ -132,6 +133,10 @@ class _HomePageState extends State<HomePage>
   final GlobalKey _bottomNavKey = GlobalKey();
   final GlobalKey _sideNavKey = GlobalKey();
   bool _draggingTabIndicator = false;
+  int? _pendingNavTab;
+  double? _tabDragPosition;
+  Offset? _tabDragStartGlobal;
+  int _tabDragStartIndex = 0;
   int? _hoveredNavTab;
   bool _headerButtonHovered = false;
   int get _tabIndex => settings
@@ -267,25 +272,39 @@ class _HomePageState extends State<HomePage>
   String _text(String ru, String en) => english ? en : ru;
   String _localized(String value) => _messageText(value);
 
-  Duration _motion(Duration normal) => reduceAnimations
-      ? Duration(milliseconds: math.min(90, normal.inMilliseconds))
-      : normal;
+  Duration _motion(Duration normal) {
+    final speed = ThemeController.instance.transitionSpeed.clamp(.5, 1.5);
+    final milliseconds = (normal.inMilliseconds / speed).round();
+    return reduceAnimations
+        ? Duration(milliseconds: math.min(90, milliseconds))
+        : Duration(milliseconds: milliseconds);
+  }
 
+  Curve get _transitionCurve =>
+      switch (ThemeController.instance.transitionStyle) {
+        'smooth' => Curves.easeInOutCubic,
+        'spring' => Curves.easeOutBack,
+        _ => Curves.easeOutCubic,
+      };
+
+  final Map<double, ui.ImageFilter> _blurFilters = {};
+  double get _glassOpacity =>
+      .94 - ThemeController.instance.glassStrength * .48;
   Widget _backdropBlur({required double sigma, required Widget child}) {
     if (optimizedMode || sigma <= 0) return child;
-    // Large blur radii make the GPU sample a much wider area. Keep decorative
-    // glass subtle and constrain the filter to the widget's own paint bounds.
-    final effectiveSigma = sigma.clamp(0.0, 10.0).toDouble();
+    final effectiveSigma =
+        (sigma * (.65 + ThemeController.instance.glassStrength * .7))
+            .clamp(0.0, 10.0)
+            .roundToDouble();
+    final filter = _blurFilters.putIfAbsent(
+        effectiveSigma,
+        () => ui.ImageFilter.blur(
+            sigmaX: effectiveSigma,
+            sigmaY: effectiveSigma,
+            tileMode: TileMode.decal));
     return ClipRect(
-      child: BackdropFilter(
-        filter: ui.ImageFilter.blur(
-          sigmaX: effectiveSigma,
-          sigmaY: effectiveSigma,
-          tileMode: TileMode.decal,
-        ),
-        child: child,
-      ),
-    );
+        child: BackdropFilter.grouped(
+            filter: filter, child: RepaintBoundary(child: child)));
   }
 
   static const _englishLabels = <String, String>{
@@ -1759,8 +1778,10 @@ class _HomePageState extends State<HomePage>
         if (mounted) {
           setState(() {});
           _message(message);
-          if (_shouldOfferAndroidVpnRecovery(e.toString())) {
+          if (Platform.isAndroid && !_suppressAndroidVpnRecoveryPrompt) {
             await _offerAndroidVpnRecovery();
+          } else if (!Platform.isIOS) {
+            await _offerCoreCleanup();
           }
         }
       }
@@ -1858,7 +1879,7 @@ class _HomePageState extends State<HomePage>
     _syncDiscordPresence();
     final connected = backend.state == VpnState.connected;
     if (connected || backend.state == VpnState.connecting) {
-      if (connected && !glow.isAnimating) glow.forward(from: 0);
+      glow.stop();
       if (!connected) glow.stop();
       uptimeTicker = Timer.periodic(const Duration(seconds: 1), (_) {
         if (!mounted) return;
@@ -2050,7 +2071,7 @@ class _HomePageState extends State<HomePage>
       late final List<String> lines;
       try {
         final length = await handle.length();
-        const tailLimit = 1024 * 1024;
+        const tailLimit = 64 * 1024;
         final offset = math.max(0, length - tailLimit);
         await handle.setPosition(offset);
         var tail = utf8.decode(await handle.read(length - offset),
@@ -2099,7 +2120,7 @@ class _HomePageState extends State<HomePage>
                           80;
                   try {
                     final refreshed = await readRecentEntries();
-                    if (refreshed.join('\n') != entries.join('\n')) {
+                    if (!listEquals(refreshed, entries)) {
                       updateSheet?.call(() => entries = refreshed);
                       if (wasAtBottom) {
                         WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -2128,127 +2149,155 @@ class _HomePageState extends State<HomePage>
                 expand: false,
                 builder: (context, scrollController) {
                   logScrollController = scrollController;
-                  return Container(
-                      decoration: BoxDecoration(
-                          color: _surface,
+                  return BackdropGroup(
+                      child: ClipRRect(
                           borderRadius: const BorderRadius.vertical(
                               top: Radius.circular(26)),
-                          border: Border.all(
-                              color: Colors.white.withValues(alpha: .12))),
-                      padding: const EdgeInsets.fromLTRB(18, 12, 18, 16),
-                      child: Column(children: [
-                        const SizedBox(height: 4),
-                        Row(children: [
-                          Expanded(
-                              child: Text(_localized('Журнал соединения'),
-                                  style: TextStyle(
-                                      fontSize: 17,
-                                      fontWeight: FontWeight.w700))),
-                          IconButton(
-                              tooltip: live
-                                  ? _text('Остановить live-обновление',
-                                      'Pause live updates')
-                                  : _text('Возобновить live-обновление',
-                                      'Resume live updates'),
-                              onPressed: () {
-                                setSheetState(() => live = !live);
-                                if (live) {
-                                  unawaited(() async {
-                                    try {
-                                      final latest = await readRecentEntries();
-                                      updateSheet?.call(() => entries = latest);
-                                    } on Object {
-                                      // Keep live mode active after a read error.
-                                    }
-                                  }());
-                                }
-                              },
-                              icon: _animatedIconSwap(
-                                live
-                                    ? Icons.sensors_rounded
-                                    : Icons.pause_circle_outline_rounded,
-                                state: live,
-                                color: live ? _mint : _muted,
-                              )),
-                          IconButton(
-                              tooltip: _localized('Скопировать журнал'),
-                              onPressed: () => Clipboard.setData(ClipboardData(
-                                  text: entries
-                                      .map(_localizeJournalLine)
-                                      .join('\n'))),
-                              icon: const Icon(Icons.copy)),
-                          IconButton(
-                              tooltip: _localized('Экспорт полного журнала'),
-                              onPressed: _exportFullLog,
-                              icon: const Icon(Icons.file_download_outlined)),
-                          IconButton(
-                              tooltip: _localized('Очистить журнал'),
-                              onPressed: () async {
-                                await _clearJournal();
-                                setSheetState(() => entries = <String>[]);
-                              },
-                              icon: const Icon(Icons.delete_sweep_outlined)),
-                          IconButton(
-                              tooltip: _localized('Закрыть'),
-                              onPressed: () => Navigator.pop(context),
-                              icon: const Icon(Icons.close)),
-                        ]),
-                        Align(
-                            alignment: Alignment.centerLeft,
-                            child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                      '${logFilePath ?? file.path}\n${core?.name ?? coreSettings.core} · ${backend.state.name} · ${core?.executable ?? _text('ядро не выбрано', 'core not selected')}',
-                                      maxLines: 2,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: TextStyle(
-                                          color: _muted, fontSize: 11)),
-                                  const SizedBox(height: 3),
-                                  Text(
-                                      live
-                                          ? _text(
-                                              'LIVE · обновление раз в секунду',
-                                              'LIVE · refreshes every second')
-                                          : _text('ПАУЗА', 'PAUSED'),
-                                      style: TextStyle(
-                                          color: live ? _mint : _muted,
-                                          fontSize: 10,
-                                          fontWeight: FontWeight.w700)),
-                                ])),
-                        const SizedBox(height: 10),
-                        Expanded(
-                            child: entries.isEmpty
-                                ? Center(
-                                    child: Text(_localized('Записей пока нет'),
-                                        style: TextStyle(color: _muted)))
-                                : ListView.separated(
-                                    controller: scrollController,
-                                    itemCount: entries.length,
-                                    separatorBuilder: (_, __) => Divider(
-                                        height: 1,
-                                        color: Colors.white
-                                            .withValues(alpha: .07)),
-                                    itemBuilder: (context, index) => Padding(
-                                        padding: const EdgeInsets.symmetric(
-                                            vertical: 8),
-                                        child: SelectableText(_localizeJournalLine(entries[index]),
-                                            style: TextStyle(
-                                                fontFamily: 'monospace',
-                                                fontSize: 11,
-                                                height: 1.4,
-                                                color: entries[index].toLowerCase().contains('ошибка') ||
-                                                        entries[index]
-                                                            .toLowerCase()
-                                                            .contains(
-                                                                'error') ||
-                                                        entries[index].toLowerCase().contains('failed')
-                                                    ? Colors.orangeAccent
-                                                    : _muted))))),
-                      ]));
+                          child: _backdropBlur(
+                              sigma: 8,
+                              child: Container(
+                                  decoration: BoxDecoration(
+                                      color: _surface.withValues(
+                                          alpha: optimizedMode
+                                              ? 1
+                                              : _glassOpacity),
+                                      borderRadius: const BorderRadius.vertical(
+                                          top: Radius.circular(26)),
+                                      border: Border.all(
+                                          color: Colors.white
+                                              .withValues(alpha: .12))),
+                                  padding:
+                                      const EdgeInsets.fromLTRB(18, 12, 18, 16),
+                                  child: Column(children: [
+                                    const SizedBox(height: 4),
+                                    Row(children: [
+                                      Expanded(
+                                          child: Text(
+                                              _localized('Журнал соединения'),
+                                              style: TextStyle(
+                                                  fontSize: 17,
+                                                  fontWeight:
+                                                      FontWeight.w700))),
+                                      IconButton(
+                                          tooltip: live
+                                              ? _text(
+                                                  'Остановить live-обновление',
+                                                  'Pause live updates')
+                                              : _text(
+                                                  'Возобновить live-обновление',
+                                                  'Resume live updates'),
+                                          onPressed: () {
+                                            setSheetState(() => live = !live);
+                                            if (live) {
+                                              unawaited(() async {
+                                                try {
+                                                  final latest =
+                                                      await readRecentEntries();
+                                                  updateSheet?.call(
+                                                      () => entries = latest);
+                                                } on Object {
+                                                  // Keep live mode active after a read error.
+                                                }
+                                              }());
+                                            }
+                                          },
+                                          icon: _animatedIconSwap(
+                                            live
+                                                ? Icons.sensors_rounded
+                                                : Icons
+                                                    .pause_circle_outline_rounded,
+                                            state: live,
+                                            color: live ? _mint : _muted,
+                                          )),
+                                      IconButton(
+                                          tooltip:
+                                              _localized('Скопировать журнал'),
+                                          onPressed: () => Clipboard.setData(
+                                              ClipboardData(
+                                                  text: entries
+                                                      .map(_localizeJournalLine)
+                                                      .join('\n'))),
+                                          icon: const Icon(Icons.copy)),
+                                      IconButton(
+                                          tooltip: _localized(
+                                              'Экспорт полного журнала'),
+                                          onPressed: _exportFullLog,
+                                          icon: const Icon(
+                                              Icons.file_download_outlined)),
+                                      IconButton(
+                                          tooltip:
+                                              _localized('Очистить журнал'),
+                                          onPressed: () async {
+                                            await _clearJournal();
+                                            setSheetState(
+                                                () => entries = <String>[]);
+                                          },
+                                          icon: const Icon(
+                                              Icons.delete_sweep_outlined)),
+                                      IconButton(
+                                          tooltip: _localized('Закрыть'),
+                                          onPressed: () =>
+                                              Navigator.pop(context),
+                                          icon: const Icon(Icons.close)),
+                                    ]),
+                                    Align(
+                                        alignment: Alignment.centerLeft,
+                                        child: Column(
+                                            crossAxisAlignment:
+                                                CrossAxisAlignment.start,
+                                            children: [
+                                              Text(
+                                                  '${logFilePath ?? file.path}\n${core?.name ?? coreSettings.core} · ${backend.state.name} · ${core?.executable ?? _text('ядро не выбрано', 'core not selected')}',
+                                                  maxLines: 2,
+                                                  overflow:
+                                                      TextOverflow.ellipsis,
+                                                  style: TextStyle(
+                                                      color: _muted,
+                                                      fontSize: 11)),
+                                              const SizedBox(height: 3),
+                                              Text(
+                                                  live
+                                                      ? _text(
+                                                          'LIVE · обновление раз в секунду',
+                                                          'LIVE · refreshes every second')
+                                                      : _text(
+                                                          'ПАУЗА', 'PAUSED'),
+                                                  style: TextStyle(
+                                                      color:
+                                                          live ? _mint : _muted,
+                                                      fontSize: 10,
+                                                      fontWeight:
+                                                          FontWeight.w700)),
+                                            ])),
+                                    const SizedBox(height: 10),
+                                    Expanded(
+                                        child: entries.isEmpty
+                                            ? Center(
+                                                child: Text(_localized('Записей пока нет'),
+                                                    style: TextStyle(
+                                                        color: _muted)))
+                                            : ListView.separated(
+                                                controller: scrollController,
+                                                itemCount: entries.length,
+                                                separatorBuilder: (_, __) => Divider(
+                                                    height: 1,
+                                                    color: Colors.white.withValues(
+                                                        alpha: .07)),
+                                                itemBuilder: (context, index) => Padding(
+                                                    padding:
+                                                        const EdgeInsets.symmetric(
+                                                            vertical: 8),
+                                                    child: SelectableText(_localizeJournalLine(entries[index]),
+                                                        style: TextStyle(
+                                                            fontFamily: 'monospace',
+                                                            fontSize: 11,
+                                                            height: 1.4,
+                                                            color: entries[index].toLowerCase().contains('ошибка') || entries[index].toLowerCase().contains('error') || entries[index].toLowerCase().contains('failed') ? Colors.orangeAccent : _muted))))),
+                                  ])))));
                 },
               );
             }));
+    updateSheet = null;
     refreshTimer?.cancel();
   }
 
@@ -4146,103 +4195,111 @@ foreach ($route in $routes) {
   Future<String?> _scanQrCode(BuildContext parentContext) => showDialog<String>(
         context: parentContext,
         builder: (scanContext) => Dialog(
-          backgroundColor: _surface,
+          backgroundColor: Colors.transparent,
           clipBehavior: Clip.antiAlias,
-          child: SizedBox(
-            width: 420,
-            height: 500,
-            child: Column(
-              children: [
-                ListTile(
-                  title: Text(_localized('Сканировать QR-код')),
-                  trailing: IconButton(
-                    onPressed: () => Navigator.pop(scanContext),
-                    icon: const Icon(Icons.close_rounded),
-                  ),
+          child: GlassDialogSurface(
+              optimizedMode: optimizedMode,
+              glassStrength: ThemeController.instance.glassStrength,
+              padding: EdgeInsets.zero,
+              child: SizedBox(
+                width: 420,
+                height: 500,
+                child: Column(
+                  children: [
+                    ListTile(
+                      title: Text(_localized('Сканировать QR-код')),
+                      trailing: IconButton(
+                        onPressed: () => Navigator.pop(scanContext),
+                        icon: const Icon(Icons.close_rounded),
+                      ),
+                    ),
+                    Expanded(
+                      child: MobileScanner(
+                        onDetect: (capture) {
+                          final value = capture.barcodes
+                              .map((barcode) => barcode.rawValue)
+                              .firstWhere(
+                                (value) =>
+                                    value != null && value.trim().isNotEmpty,
+                                orElse: () => null,
+                              );
+                          if (value != null && scanContext.mounted) {
+                            Navigator.pop(scanContext, value.trim());
+                          }
+                        },
+                      ),
+                    ),
+                  ],
                 ),
-                Expanded(
-                  child: MobileScanner(
-                    onDetect: (capture) {
-                      final value = capture.barcodes
-                          .map((barcode) => barcode.rawValue)
-                          .firstWhere(
-                            (value) => value != null && value.trim().isNotEmpty,
-                            orElse: () => null,
-                          );
-                      if (value != null && scanContext.mounted) {
-                        Navigator.pop(scanContext, value.trim());
-                      }
-                    },
-                  ),
-                ),
-              ],
-            ),
-          ),
+              )),
         ),
       );
 
   Future<void> _showSubscriptionQr(String url) => showDialog<void>(
         context: context,
         builder: (dialogContext) => Dialog(
-          backgroundColor: _surface,
+          backgroundColor: Colors.transparent,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(24),
             side: BorderSide(color: Colors.white.withValues(alpha: .12)),
           ),
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 360),
-            child: Padding(
+          child: GlassDialogSurface(
+              optimizedMode: optimizedMode,
+              glassStrength: ThemeController.instance.glassStrength,
               padding: const EdgeInsets.all(22),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Row(
-                    children: [
-                      Icon(Icons.qr_code_2_rounded, color: _accent),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: Text(
-                          _localized('QR-код подписки'),
-                          style: const TextStyle(
-                              fontSize: 17, fontWeight: FontWeight.w700),
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 360),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(Icons.qr_code_2_rounded, color: _accent),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            _localized('QR-код подписки'),
+                            style: const TextStyle(
+                                fontSize: 17, fontWeight: FontWeight.w700),
+                          ),
                         ),
-                      ),
-                      IconButton(
-                        onPressed: () => Navigator.pop(dialogContext),
-                        icon: const Icon(Icons.close_rounded),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 14),
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(18),
+                        IconButton(
+                          onPressed: () => Navigator.pop(dialogContext),
+                          icon: const Icon(Icons.close_rounded),
+                        ),
+                      ],
                     ),
-                    child: QrImageView(
-                      data: url,
-                      version: QrVersions.auto,
-                      size: 244,
-                      errorCorrectionLevel: QrErrorCorrectLevel.M,
+                    const SizedBox(height: 14),
+                    GlassDialogSurface(
+                      optimizedMode: optimizedMode,
+                      glassStrength: ThemeController.instance.glassStrength,
+                      radius: 18,
+                      sigma: 6,
+                      padding: const EdgeInsets.all(11),
                       backgroundColor: Colors.white,
-                      eyeStyle: const QrEyeStyle(
-                          eyeShape: QrEyeShape.square, color: Colors.black),
-                      dataModuleStyle: const QrDataModuleStyle(
-                          dataModuleShape: QrDataModuleShape.square,
-                          color: Colors.black),
+                      child: QrImageView(
+                          data: url,
+                          version: QrVersions.auto,
+                          size: 244,
+                          errorCorrectionLevel: QrErrorCorrectLevel.M,
+                          // Keep the QR itself opaque for reliable camera scans;
+                          // the surrounding plate gets the glass treatment.
+                          backgroundColor: Colors.white,
+                          eyeStyle: const QrEyeStyle(
+                              eyeShape: QrEyeShape.square, color: Colors.black),
+                          dataModuleStyle: const QrDataModuleStyle(
+                              dataModuleShape: QrDataModuleShape.square,
+                              color: Colors.black)),
                     ),
-                  ),
-                  const SizedBox(height: 12),
-                  SelectableText(
-                    url,
-                    textAlign: TextAlign.center,
-                    style: TextStyle(color: _muted, fontSize: 11),
-                  ),
-                ],
-              ),
-            ),
-          ),
+                    const SizedBox(height: 12),
+                    SelectableText(
+                      url,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: _muted, fontSize: 11),
+                    ),
+                  ],
+                ),
+              )),
         ),
       );
 
@@ -4255,14 +4312,16 @@ foreach ($route in $routes) {
       showDialog<String>(
           context: context,
           builder: (ctx) => Dialog(
-              backgroundColor: _surface,
+              backgroundColor: Colors.transparent,
               shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(28),
                   side: BorderSide(color: Colors.white.withOpacity(.18))),
-              child: ConstrainedBox(
-                  constraints: BoxConstraints(maxWidth: 520),
-                  child: Padding(
-                      padding: EdgeInsets.all(24),
+              child: GlassDialogSurface(
+                  optimizedMode: optimizedMode,
+                  glassStrength: ThemeController.instance.glassStrength,
+                  padding: const EdgeInsets.all(24),
+                  child: ConstrainedBox(
+                      constraints: BoxConstraints(maxWidth: 520),
                       child: Column(
                           mainAxisSize: MainAxisSize.min,
                           crossAxisAlignment: CrossAxisAlignment.start,
@@ -4415,8 +4474,9 @@ foreach ($route in $routes) {
         final controller = TextEditingController(text: url);
         final nextUrl = await showDialog<String>(
             context: context,
-            builder: (context) => AlertDialog(
-                    backgroundColor: _surface,
+            builder: (context) => GlassAlertDialog(
+                    optimizedMode: optimizedMode,
+                    glassStrength: ThemeController.instance.glassStrength,
                     title: Text(_localized('Путь подписки')),
                     content: TextField(
                         controller: controller,
@@ -4454,8 +4514,9 @@ foreach ($route in $routes) {
         final controller = TextEditingController(text: '${sub['name'] ?? ''}');
         final name = await showDialog<String>(
             context: context,
-            builder: (context) => AlertDialog(
-                    backgroundColor: _surface,
+            builder: (context) => GlassAlertDialog(
+                    optimizedMode: optimizedMode,
+                    glassStrength: ThemeController.instance.glassStrength,
                     title: Text(_localized('Название подписки')),
                     content: TextField(controller: controller, autofocus: true),
                     actions: [
@@ -4681,12 +4742,74 @@ foreach ($route in $routes) {
     );
   }
 
-  bool _shouldOfferAndroidVpnRecovery(String error) {
-    if (!Platform.isAndroid || _suppressAndroidVpnRecoveryPrompt) return false;
-    final normalized = error.toLowerCase();
-    return normalized.contains('process is bad') ||
-        normalized.contains('cleanup_failed') ||
-        normalized.contains('reason=') && normalized.contains('status=');
+  Future<void> _offerCoreCleanup() async {
+    final clean = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+                title: Text(_text('Ошибка ядра', 'Core error')),
+                content: Text(_text(
+                    'Завершить оставшиеся процессы Xray / sing-box, запущенные GhostBox? После очистки можно подключиться снова.',
+                    'Stop remaining Xray / sing-box processes started by GhostBox? You can reconnect after cleanup.')),
+                actions: [
+                  TextButton(
+                      onPressed: () => Navigator.pop(context),
+                      child: Text(_text('Закрыть', 'Close'))),
+                  FilledButton(
+                      onPressed: () => Navigator.pop(context, true),
+                      child: Text(_text('Завершить ядра', 'Stop cores')))
+                ]));
+    if (clean != true) return;
+    try {
+      await _disconnectActive();
+      await _cleanupWindowsCoreProcesses();
+      if (mounted)
+        _message(_text('Ядра GhostBox остановлены', 'GhostBox cores stopped'));
+    } on Object catch (error) {
+      if (mounted) _message('$error');
+    }
+  }
+
+  Future<void> _androidRecovery(String action) async {
+    final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+                title:
+                    Text(_text('Восстановление Android', 'Android recovery')),
+                content: Text(action == 'stop'
+                    ? _text('Завершить ядра и VPN-службы GhostBox?',
+                        'Stop GhostBox cores and VPN services?')
+                    : _text(
+                        'Удалить рабочую конфигурацию VPN и остановить ядра? Сохранённые серверы останутся.',
+                        'Remove the VPN runtime configuration and stop cores? Saved servers will remain.')),
+                actions: [
+                  TextButton(
+                      onPressed: () => Navigator.pop(context),
+                      child: Text(_text('Отмена', 'Cancel'))),
+                  FilledButton(
+                      onPressed: () => Navigator.pop(context, true),
+                      child: Text(_text('Продолжить', 'Continue')))
+                ]));
+    if (confirmed != true) return;
+    try {
+      await _disconnectActive();
+      final ok = await const MethodChannel('app.ghostbox.ghostbox/vpn')
+          .invokeMethod<bool>(
+              action == 'stop' ? 'forceCleanupVpn' : 'resetVpnConfiguration');
+      if (ok != true) throw StateError('VPN cleanup failed');
+      final storage = prefs ??= await SharedPreferences.getInstance();
+      await storage.remove('activeProfileId');
+      if (action == 'setup')
+        await storage.setBool('welcomeSetupCompleted', false);
+      if (!mounted) return;
+      setState(() {
+        activeProfileId = null;
+        connectionIssue = null;
+        if (action == 'setup') showWelcomeSetup = true;
+      });
+      _message(_text('VPN остановлен', 'VPN stopped'));
+    } on Object catch (error) {
+      if (mounted) _message('$error');
+    }
   }
 
   Future<void> _offerAndroidVpnRecovery() async {
@@ -5057,7 +5180,9 @@ foreach ($route in $routes) {
         ],
       );
 
-  Widget _buildMainPage(BuildContext context) => AnnotatedRegion<
+  Widget _buildMainPage(BuildContext context) => _mainPageContents(context);
+
+  Widget _mainPageContents(BuildContext context) => AnnotatedRegion<
           SystemUiOverlayStyle>(
       value: SystemUiOverlayStyle(
         statusBarColor: Colors.transparent,
@@ -5087,6 +5212,17 @@ foreach ($route in $routes) {
                   child: SafeArea(
                     top: false,
                     child: Stack(children: [
+                      if (ThemeController.instance.backgroundImage != null)
+                        Positioned.fill(
+                            child: IgnorePointer(
+                                child: Opacity(
+                                    opacity: .32,
+                                    child: Image.memory(
+                                        ThemeController
+                                            .instance.backgroundImage!,
+                                        fit: BoxFit.cover,
+                                        cacheWidth: 1920,
+                                        gaplessPlayback: true)))),
                       Positioned.fill(
                           child: IgnorePointer(
                               child: RepaintBoundary(
@@ -5346,7 +5482,7 @@ foreach ($route in $routes) {
   Widget _header({required bool wideLayout}) => SizedBox(
       height: 48,
       child: Stack(alignment: Alignment.center, children: [
-        if (!wideLayout)
+        if (!wideLayout || (!settings && !routingTab && !routeListOpen))
           Positioned(
             left: 0,
             child: SizedBox(
@@ -5375,21 +5511,31 @@ foreach ($route in $routes) {
                     ),
                   );
                 },
-                child: _topButton(
-                    routeListOpen || settings || routingTab
-                        ? Icons.arrow_back_ios_new_rounded
-                        : Icons.settings_rounded, () {
-                  if (routeListOpen) {
-                    setState(() => routeListOpen = false);
-                  } else if (settings && settingsSubpage != null) {
-                    if (settingsScroll.hasClients) settingsScroll.jumpTo(0);
-                    setState(() => settingsSubpage = null);
-                  } else {
-                    _openTab(settings || routingTab ? 0 : 2);
-                  }
-                },
-                    key: ValueKey(
-                        'header-button-${routeListOpen || settings || routingTab ? 'back' : 'settings'}')),
+                child: Tooltip(
+                    message: _serverEditMode
+                        ? _text('Готово', 'Done')
+                        : _text('Переместить серверы', 'Move servers'),
+                    child: _topButton(
+                        routeListOpen || settings || routingTab
+                            ? Icons.arrow_back_ios_new_rounded
+                            : _serverEditMode
+                                ? Icons.done_rounded
+                                : Icons.drag_indicator_rounded, () {
+                      if (routeListOpen) {
+                        setState(() => routeListOpen = false);
+                      } else if (settings && settingsSubpage != null) {
+                        if (settingsScroll.hasClients) settingsScroll.jumpTo(0);
+                        setState(() => settingsSubpage = null);
+                      } else {
+                        if (settings || routingTab) {
+                          _openTab(0);
+                        } else {
+                          setState(() => _serverEditMode = !_serverEditMode);
+                        }
+                      }
+                    },
+                        key: ValueKey(
+                            'header-button-${routeListOpen || settings || routingTab ? 'back' : 'edit'}'))),
               ),
             ),
           ),
@@ -5548,8 +5694,13 @@ foreach ($route in $routes) {
                 padding: EdgeInsets.symmetric(
                     horizontal: expanded ? 16 : 12, vertical: 5),
                 decoration: BoxDecoration(
-                  color: Color.alphaBlend(_accent.withValues(alpha: .075),
-                      _surface.withValues(alpha: .82)),
+                  color: Color.alphaBlend(
+                      _accent.withValues(alpha: .075),
+                      _surface.withValues(
+                          alpha: ThemeController.instance.glassButtonsEnabled
+                              ? .58 -
+                                  ThemeController.instance.glassStrength * .10
+                              : .86)),
                   borderRadius: BorderRadius.circular(20),
                   border: Border.all(
                       color: Color.alphaBlend(_accent.withValues(alpha: .16),
@@ -5594,8 +5745,12 @@ foreach ($route in $routes) {
             width: 44,
             height: 44,
             decoration: BoxDecoration(
-              color: Color.alphaBlend(_accent.withValues(alpha: .065),
-                  _surface.withValues(alpha: .68)),
+              color: Color.alphaBlend(
+                  _accent.withValues(alpha: .065),
+                  _surface.withValues(
+                      alpha: ThemeController.instance.glassButtonsEnabled
+                          ? .58 - ThemeController.instance.glassStrength * .10
+                          : .86)),
               borderRadius: BorderRadius.circular(circular ? 22 : 16),
               border: Border.all(color: Colors.white.withValues(alpha: .12)),
               gradient: LinearGradient(
@@ -5707,7 +5862,10 @@ foreach ($route in $routes) {
   Widget
       _topButton(IconData icon, VoidCallback onTap, {Key? key}) => MouseRegion(
             cursor: SystemMouseCursors.click,
-            onEnter: (_) => setState(() => _headerButtonHovered = true),
+            onEnter: (_) {
+              if (!_draggingTabIndicator)
+                setState(() => _headerButtonHovered = true);
+            },
             onExit: (_) => setState(() => _headerButtonHovered = false),
             child: AnimatedScale(
               scale: _headerButtonHovered ? 1.045 : 1,
@@ -5900,7 +6058,14 @@ foreach ($route in $routes) {
           alignment: Alignment.topCenter,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
-            children: profiles.isEmpty ? [_empty()] : _profileSections(),
+            children: profiles.isEmpty
+                ? [_empty()]
+                : [
+                    BackdropGroup(
+                        child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: _profileSections()))
+                  ],
           ),
         ),
         SizedBox(height: 14),
@@ -6485,12 +6650,10 @@ foreach ($route in $routes) {
                     CustomPaint(
                       size: const Size(226, 226),
                       painter: _OrbRings(
-                        progress: glow.value,
+                        progress: 0,
                         color: _accent,
-                        active: backend.state == VpnState.connected ||
-                            switchingServer,
-                        connecting: backend.state == VpnState.connecting ||
-                            switchingServer,
+                        active: false,
+                        connecting: false,
                       ),
                     ),
                     child!,
@@ -6750,8 +6913,7 @@ foreach ($route in $routes) {
     if (reduceAnimations) {
       return FadeTransition(opacity: animation, child: child);
     }
-    final motion =
-        CurvedAnimation(parent: animation, curve: Curves.easeOutCubic);
+    final motion = CurvedAnimation(parent: animation, curve: _transitionCurve);
     return FadeTransition(
       opacity: motion,
       child: SlideTransition(
@@ -6765,14 +6927,31 @@ foreach ($route in $routes) {
   }
 
   Widget _tabPageTransition(Widget child, Animation<double> animation) {
+    if (ThemeController.instance.motionBlur &&
+        !optimizedMode &&
+        !reduceAnimations &&
+        !MediaQuery.of(context).disableAnimations) {
+      child = AnimatedBuilder(
+          animation: animation,
+          child: child,
+          builder: (_, content) {
+            final sigma = ((1 - animation.value) * 8).clamp(0.0, 8.0);
+            return ImageFiltered(
+                enabled: sigma > 0,
+                imageFilter: ui.ImageFilter.blur(sigmaX: sigma, sigmaY: .1),
+                child: content);
+          });
+    }
     if (reduceAnimations) {
       return FadeTransition(opacity: animation, child: child);
     }
 
     final motion = CurvedAnimation(
       parent: animation,
-      curve: Curves.easeOutCubic,
-      reverseCurve: Curves.easeInCubic,
+      curve: _transitionCurve,
+      reverseCurve: ThemeController.instance.transitionStyle == 'spring'
+          ? Curves.easeInBack
+          : Curves.easeInCubic,
     );
     return FadeTransition(
       opacity: motion,
@@ -7033,7 +7212,10 @@ foreach ($route in $routes) {
               child: Container(
                   margin: EdgeInsets.only(bottom: 12),
                   decoration: BoxDecoration(
-                      color: _surface.withValues(alpha: .76),
+                      color: _surface.withValues(
+                          alpha: ThemeController.instance.glassPanelsEnabled
+                              ? _glassOpacity
+                              : .94),
                       borderRadius: BorderRadius.circular(22),
                       border: Border.all(color: Colors.white.withOpacity(.16)),
                       boxShadow: [
@@ -7268,266 +7450,157 @@ foreach ($route in $routes) {
 
   Widget _subscriptionInfo(Map<String, dynamic> sub,
       {required int serverCount, required bool collapsed}) {
-    final serverCountLabel =
-        _text('Серверов: $serverCount', 'Servers: $serverCount');
     final raw = sub['metadata'];
     final metadata = SubscriptionMetadata.fromJson(
         raw is Map ? Map<String, dynamic>.from(raw) : {});
     final used = metadata.usedBytes;
     final total = metadata.total;
     final expires = metadata.expiresAt;
-    final now = DateTime.now();
-    final expired = expires != null && expires.isBefore(now);
-    final expiryText = metadata.neverExpires
-        ? _text('∞ · Без срока', '∞ · No expiry')
+    final expired = expires != null && expires.isBefore(DateTime.now());
+    final expiry = metadata.neverExpires
+        ? _text('Без срока', 'No expiry')
         : expires == null
             ? null
             : _expiryLabel(expires);
-    final hasInfo = used != null ||
-        total != null ||
-        metadata.expire != null ||
-        expires != null ||
-        metadata.deviceLimit != null ||
-        metadata.announcement != null ||
-        metadata.description != null ||
-        metadata.supportUrl != null ||
-        metadata.websiteUrl != null ||
-        metadata.updateIntervalHours != null;
-    final hasProviderLinks =
-        metadata.websiteUrl != null || metadata.supportUrl != null;
-    final linksAtTop = MediaQuery.sizeOf(context).width >= 900;
-    final updatedAtValue = sub['updatedAt'];
-    final updatedAt = updatedAtValue is String ? updatedAtValue : null;
-    final updatedAtInline = MediaQuery.sizeOf(context).width >= 720;
     final progress = total != null && total > 0 && used != null
         ? (used / total).clamp(0.0, 1.0)
         : null;
-    if (collapsed) {
-      final summary = total == 0 && used != null
-          ? _text('Без лимита · ${_formatBytes(used)} использовано',
-              'Unlimited · ${_formatBytes(used)} used')
-          : used != null && total != null
-              ? _text('${_formatBytes(used)} из ${_formatBytes(total)}',
-                  '${_formatBytes(used)} of ${_formatBytes(total)}')
-              : used != null
-                  ? _text('${_formatBytes(used)} использовано',
-                      '${_formatBytes(used)} used')
-                  : _text('Данные подписки', 'Subscription details');
-      return Padding(
-          padding: const EdgeInsets.fromLTRB(14, 0, 14, 10),
-          child: InkWell(
-              borderRadius: BorderRadius.circular(14),
-              onTap: () => setState(() {
-                    final url = sub['url'] as String;
-                    if (collapsedSubscriptionInfo.contains(url)) {
-                      collapsedSubscriptionInfo.remove(url);
-                    } else {
-                      collapsedSubscriptionInfo.add(url);
-                    }
-                  }),
-              child: Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                  decoration: BoxDecoration(
-                      color: _subscriptionInfoSurface,
-                      borderRadius: BorderRadius.circular(17),
-                      border: Border.all(
-                          color: Colors.white.withValues(alpha: .11))),
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Expanded(
-                        child: Wrap(
-                          spacing: 12,
-                          runSpacing: 8,
-                          crossAxisAlignment: WrapCrossAlignment.center,
-                          children: [
-                            Text.rich(
-                              TextSpan(children: [
-                                WidgetSpan(
-                                    alignment: PlaceholderAlignment.middle,
-                                    child: Icon(Icons.data_usage_rounded,
-                                        color: _accent, size: 15)),
-                                TextSpan(text: '  $summary'),
-                              ]),
-                              maxLines: 2,
-                              style: const TextStyle(
-                                  fontSize: 11, fontWeight: FontWeight.w600),
-                            ),
-                            if (expiryText != null)
-                              Text(expiryText,
-                                  maxLines: 2,
-                                  style: TextStyle(
-                                      fontSize: 10,
-                                      color:
-                                          expired ? Colors.redAccent : _muted)),
-                            Text(serverCountLabel,
-                                style: TextStyle(color: _muted, fontSize: 10)),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Icon(Icons.expand_more_rounded, color: _muted, size: 20),
-                    ],
-                  ))));
-    }
+    final summary = total == 0
+        ? _text('∞ · Без лимита', '∞ · Unlimited')
+        : total != null
+            ? _text('из ${_formatBytes(total)}', 'of ${_formatBytes(total)}')
+            : _text('Использовано', 'Used');
+    final url = sub['url'] as String;
+    void toggle() => setState(() {
+          if (collapsedSubscriptionInfo.contains(url)) {
+            collapsedSubscriptionInfo.remove(url);
+          } else {
+            collapsedSubscriptionInfo.add(url);
+          }
+        });
     return Padding(
-        padding: EdgeInsets.fromLTRB(14, 0, 14, 8),
+        padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
         child: Container(
             width: double.infinity,
-            padding: EdgeInsets.symmetric(horizontal: 11, vertical: 8),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
             decoration: BoxDecoration(
-                color: _subscriptionInfoSurface,
-                borderRadius: BorderRadius.circular(17),
-                border: Border.all(color: Colors.white.withOpacity(.11))),
+                color: _surface.withValues(alpha: .42),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: _line)),
             child:
                 Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Row(children: [
-                Icon(Icons.layers_rounded, color: _accent, size: 15),
-                const SizedBox(width: 7),
-                Text(serverCountLabel,
-                    style: TextStyle(
-                        color: _muted,
-                        fontSize: 10,
-                        fontWeight: FontWeight.w600)),
-                const Spacer(),
-                IconButton(
-                    tooltip: _localized('Свернуть детали'),
-                    visualDensity: VisualDensity.compact,
-                    padding: EdgeInsets.zero,
-                    constraints:
-                        const BoxConstraints.tightFor(width: 28, height: 28),
-                    onPressed: () => setState(() =>
-                        collapsedSubscriptionInfo.add(sub['url'] as String)),
-                    icon: Icon(Icons.expand_less_rounded,
-                        size: 19, color: _muted)),
-              ]),
-              const SizedBox(height: 3),
-              if (!hasInfo)
-                Text(
-                    _text('Провайдер не передал данные о трафике и сроке',
-                        'The provider did not share usage or expiry details'),
-                    style: TextStyle(color: _muted, fontSize: 11)),
-              if (used != null || total != null) ...[
-                Row(children: [
-                  Icon(Icons.data_usage_rounded, color: _accent, size: 17),
-                  SizedBox(width: 7),
-                  Expanded(
-                      child: Text(
-                          total == 0
-                              ? _text(
-                                  'Без лимита · ${_formatBytes(used ?? 0)} использовано',
-                                  'Unlimited · ${_formatBytes(used ?? 0)} used')
-                              : total != null
-                                  ? _text(
-                                      '${_formatBytes(used ?? 0)} из ${_formatBytes(total)}',
-                                      '${_formatBytes(used ?? 0)} of ${_formatBytes(total)}')
-                                  : _text(
-                                      'Использовано ${_formatBytes(used ?? 0)}',
-                                      '${_formatBytes(used ?? 0)} used'),
-                          style: TextStyle(
-                              fontSize: 12, fontWeight: FontWeight.w600))),
-                  if (total != null && total > 0 && used != null)
-                    Text('${(progress! * 100).round()}%',
+              InkWell(
+                  onTap: toggle,
+                  borderRadius: BorderRadius.circular(8),
+                  child: Row(children: [
+                    Icon(Icons.data_usage_rounded, color: _accent, size: 16),
+                    const SizedBox(width: 7),
+                    Expanded(
+                        child: Text(
+                            _text('Трафик подписки', 'Subscription usage'),
+                            style: const TextStyle(
+                                fontSize: 12, fontWeight: FontWeight.w600))),
+                    Text('$serverCount ${_text('серверов', 'servers')}',
                         style: TextStyle(color: _muted, fontSize: 11)),
-                  if (linksAtTop && hasProviderLinks) ...[
-                    const SizedBox(width: 6),
-                    _subscriptionProviderLinks(metadata),
-                  ],
-                ]),
-                if (progress != null) ...[
-                  SizedBox(height: 6),
-                  ClipRRect(
-                      borderRadius: BorderRadius.circular(10),
-                      child: LinearProgressIndicator(
+                    const SizedBox(width: 8),
+                    AnimatedRotation(
+                        turns: collapsed ? 0 : .5,
+                        duration: _motion(const Duration(milliseconds: 220)),
+                        child: Icon(Icons.expand_more_rounded,
+                            color: _muted, size: 20)),
+                  ])),
+              const SizedBox(height: 3),
+              Row(children: [
+                Text(used == null ? '—' : _formatBytes(used),
+                    style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w700,
+                        fontFeatures: const [ui.FontFeature.tabularFigures()])),
+                const SizedBox(width: 7),
+                Flexible(
+                    child: Text(summary,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(color: _muted, fontSize: 11))),
+              ]),
+              const SizedBox(height: 5),
+              ClipRRect(
+                  borderRadius: BorderRadius.circular(4),
+                  child: progress != null
+                      ? LinearProgressIndicator(
                           value: progress,
-                          minHeight: 5,
-                          backgroundColor: Colors.white.withOpacity(.1),
-                          valueColor: AlwaysStoppedAnimation(
-                              progress >= .9 ? Color(0xFFFFB087) : _accent))),
-                ],
-              ],
-              if (expiryText != null ||
-                  metadata.deviceLimit != null ||
-                  metadata.updateIntervalHours != null ||
-                  (updatedAtInline && updatedAt != null)) ...[
-                SizedBox(height: 6),
-                Wrap(spacing: 8, runSpacing: 3, children: [
-                  if (expiryText != null)
-                    _metadataBadge(Icons.event_rounded, expiryText,
-                        expired ? Color(0xFFFFA3A3) : _muted),
-                  if (metadata.deviceLimit != null)
-                    _metadataBadge(
-                        Icons.devices_rounded,
-                        _text('До ${metadata.deviceLimit} устройств',
-                            'Up to ${metadata.deviceLimit} devices'),
-                        _muted),
-                  if (metadata.updateIntervalHours != null)
-                    _metadataBadge(
-                        Icons.sync_rounded,
-                        _text(
-                            'Совет провайдера: ${metadata.updateIntervalHours} ч',
-                            'Provider recommends ${metadata.updateIntervalHours} h'),
-                        _muted),
-                  if (updatedAtInline && updatedAt != null)
-                    _metadataBadge(
-                        Icons.update_rounded,
-                        _text('Обновлено ${_updatedLabel(updatedAt)}',
-                            'Updated ${_updatedLabel(updatedAt)}'),
-                        _muted),
-                ]),
-              ],
-              if (linksAtTop &&
-                  hasProviderLinks &&
-                  used == null &&
-                  total == null)
-                Align(
-                    alignment: Alignment.centerRight,
-                    child: _subscriptionProviderLinks(metadata)),
-              if (metadata.description?.isNotEmpty == true) ...[
-                SizedBox(height: 6),
-                Text(metadata.description!,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(color: _muted, fontSize: 11)),
-              ],
-              if (metadata.announcement?.isNotEmpty == true) ...[
-                SizedBox(height: 6),
-                InkWell(
-                    onTap: () => showDialog<void>(
-                        context: context,
-                        builder: (_) => AlertDialog(
-                                title: Text(_localized('Сообщение провайдера')),
-                                content: SelectableText(metadata.announcement!),
-                                actions: [
-                                  TextButton(
-                                      onPressed: () => Navigator.pop(context),
-                                      child: Text(_localized('Закрыть')))
-                                ])),
-                    child: Row(children: [
-                      Icon(Icons.campaign_outlined, color: _accent, size: 17),
-                      SizedBox(width: 7),
-                      Expanded(
-                          child: Text(metadata.announcement!,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(color: _accent, fontSize: 11))),
-                      Icon(Icons.chevron_right_rounded,
-                          color: _accent, size: 16),
-                    ])),
-              ],
-              if (updatedAt != null && !updatedAtInline) ...[
-                SizedBox(height: 4),
-                _metadataBadge(
-                    Icons.update_rounded,
-                    _text('Обновлено ${_updatedLabel(updatedAt)}',
-                        'Updated ${_updatedLabel(updatedAt)}'),
-                    _muted),
-              ],
-              if (hasProviderLinks && !linksAtTop) ...[
-                SizedBox(height: 4),
-                _subscriptionProviderLinks(metadata),
-              ],
+                          minHeight: 4,
+                          color: progress >= .9 ? Colors.orangeAccent : _accent,
+                          backgroundColor: _line)
+                      : Container(
+                          height: 4, color: _accent.withValues(alpha: .16))),
+              AnimatedSize(
+                  duration: _motion(const Duration(milliseconds: 220)),
+                  curve: Curves.easeOutCubic,
+                  alignment: Alignment.topCenter,
+                  child: collapsed
+                      ? const SizedBox(width: double.infinity)
+                      : Padding(
+                          padding: const EdgeInsets.only(top: 6),
+                          child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Wrap(spacing: 10, runSpacing: 4, children: [
+                                  if (expiry != null)
+                                    _metadataBadge(Icons.event_outlined, expiry,
+                                        expired ? Colors.redAccent : _muted),
+                                  if (metadata.deviceLimit != null)
+                                    _metadataBadge(
+                                        Icons.devices_outlined,
+                                        _text(
+                                            'До ${metadata.deviceLimit} устройств',
+                                            'Up to ${metadata.deviceLimit} devices'),
+                                        _muted),
+                                  if (metadata.updateIntervalHours != null)
+                                    _metadataBadge(
+                                        Icons.sync_rounded,
+                                        _text(
+                                            'Обновление: ${metadata.updateIntervalHours} ч',
+                                            'Refresh: ${metadata.updateIntervalHours} h'),
+                                        _muted),
+                                ]),
+                                if (metadata.description?.isNotEmpty == true)
+                                  Padding(
+                                      padding: const EdgeInsets.only(top: 4),
+                                      child: Tooltip(
+                                          message: metadata.description!,
+                                          child: Text(metadata.description!,
+                                              maxLines: 2,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: TextStyle(
+                                                  color: _muted,
+                                                  fontSize: 11)))),
+                                if (metadata.announcement?.isNotEmpty == true)
+                                  Padding(
+                                      padding: const EdgeInsets.only(top: 4),
+                                      child: Tooltip(
+                                          message: metadata.announcement!,
+                                          child: Text(metadata.announcement!,
+                                              maxLines: 2,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: TextStyle(
+                                                  color: _foreground,
+                                                  fontSize: 11)))),
+                                if (sub['updatedAt'] is String)
+                                  Padding(
+                                      padding: const EdgeInsets.only(top: 4),
+                                      child: Text(
+                                          _text(
+                                              'Обновлено ${_updatedLabel(sub['updatedAt'] as String)}',
+                                              'Updated ${_updatedLabel(sub['updatedAt'] as String)}'),
+                                          style: TextStyle(
+                                              color: _muted, fontSize: 10))),
+                                if (metadata.websiteUrl != null ||
+                                    metadata.supportUrl != null)
+                                  Padding(
+                                      padding: const EdgeInsets.only(top: 4),
+                                      child:
+                                          _subscriptionProviderLinks(metadata)),
+                              ]))),
             ])));
   }
 
@@ -7644,8 +7717,9 @@ foreach ($route in $routes) {
     await showDialog<void>(
         context: context,
         builder: (context) => StatefulBuilder(
-              builder: (context, setDialogState) => AlertDialog(
-                backgroundColor: _surface,
+              builder: (context, setDialogState) => GlassAlertDialog(
+                optimizedMode: optimizedMode,
+                glassStrength: ThemeController.instance.glassStrength,
                 title: Text(profile.name,
                     maxLines: 1, overflow: TextOverflow.ellipsis),
                 content: SizedBox(
@@ -7714,10 +7788,13 @@ foreach ($route in $routes) {
                             style: TextStyle(color: _muted, fontSize: 11)),
                       const SizedBox(height: 8),
                       Expanded(
-                        child: DecoratedBox(
-                          decoration: BoxDecoration(
-                              color: Colors.black.withValues(alpha: .18),
-                              borderRadius: BorderRadius.circular(14)),
+                        child: GlassDialogSurface(
+                          optimizedMode: optimizedMode,
+                          glassStrength: ThemeController.instance.glassStrength,
+                          radius: 14,
+                          sigma: 5,
+                          padding: EdgeInsets.zero,
+                          backgroundColor: _surface,
                           child: SingleChildScrollView(
                             padding: const EdgeInsets.all(12),
                             child: SelectableText(json,
@@ -7732,6 +7809,64 @@ foreach ($route in $routes) {
                   ),
                 ),
                 actions: [
+                  if (selectedConfig != 'Профиль' &&
+                      selectedConfig != 'TUN · sing-box')
+                    TextButton.icon(
+                        icon: const Icon(Icons.edit_outlined),
+                        label: Text(_text('Редактировать', 'Edit')),
+                        onPressed: () async {
+                          final edited = await showProfileJsonEditor(context,
+                              title: selectedConfig,
+                              initial: configs[selectedConfig]!,
+                              english: english,
+                              optimizedMode: optimizedMode);
+                          if (edited == null || !mounted) return;
+                          final key = selectedConfig.startsWith('Xray')
+                              ? '_customXrayConfig'
+                              : '_customSingBoxConfig';
+                          final current = profiles
+                              .where((p) => p.id == profile.id)
+                              .firstOrNull;
+                          if (current == null) return;
+                          final updated = ServerProfile.fromJson({
+                            ...current.toJson(),
+                            'raw': {...current.raw, key: edited}
+                          });
+                          setState(() {
+                            profiles[profiles.indexWhere(
+                                (p) => p.id == profile.id)] = updated;
+                            if (activeProfileId == profile.id)
+                              pendingReconnect = true;
+                          });
+                          await _persist();
+                          setDialogState(() {
+                            configs[selectedConfig] = edited;
+                            json = configText();
+                          });
+                        }),
+                  if (profile.raw.containsKey('_customXrayConfig') ||
+                      profile.raw.containsKey('_customSingBoxConfig'))
+                    TextButton(
+                        onPressed: () async {
+                          final current = profiles
+                              .where((p) => p.id == profile.id)
+                              .firstOrNull;
+                          if (current == null) return;
+                          final raw = Map<String, dynamic>.from(current.raw)
+                            ..remove('_customXrayConfig')
+                            ..remove('_customSingBoxConfig');
+                          setState(() {
+                            profiles[profiles
+                                    .indexWhere((p) => p.id == profile.id)] =
+                                ServerProfile.fromJson(
+                                    {...current.toJson(), 'raw': raw});
+                            if (activeProfileId == profile.id)
+                              pendingReconnect = true;
+                          });
+                          await _persist();
+                          if (context.mounted) Navigator.pop(context);
+                        },
+                        child: Text(_text('Сбросить JSON', 'Reset JSON'))),
                   TextButton.icon(
                       onPressed: () async {
                         await Clipboard.setData(ClipboardData(text: json));
@@ -7806,9 +7941,10 @@ foreach ($route in $routes) {
         child: Padding(
             padding: EdgeInsets.symmetric(vertical: 1),
             child: AnimatedContainer(
-              duration: _motion(const Duration(milliseconds: 380)),
-              curve: Curves.easeInOutCubic,
-              margin: const EdgeInsets.symmetric(horizontal: 5, vertical: 3),
+              duration: _motion(const Duration(milliseconds: 260)),
+              curve: Curves.easeOutCubic,
+              margin: EdgeInsets.symmetric(
+                  horizontal: selectedServer ? 2 : 5, vertical: 3),
               padding: const EdgeInsets.fromLTRB(11, 9, 5, 9),
               decoration: BoxDecoration(
                   gradient: LinearGradient(
@@ -7837,8 +7973,8 @@ foreach ($route in $routes) {
                   width: 3,
                   height: 28,
                   child: AnimatedContainer(
-                    duration: _motion(const Duration(milliseconds: 380)),
-                    curve: Curves.easeInOutCubic,
+                    duration: _motion(const Duration(milliseconds: 260)),
+                    curve: Curves.easeOutCubic,
                     decoration: BoxDecoration(
                       color: _accent.withValues(alpha: selectedServer ? 1 : 0),
                       borderRadius: BorderRadius.circular(4),
@@ -7853,6 +7989,11 @@ foreach ($route in $routes) {
                   ),
                 ),
                 const SizedBox(width: 5),
+                if (_serverEditMode)
+                  Padding(
+                      padding: const EdgeInsets.only(right: 6),
+                      child: Icon(Icons.drag_indicator_rounded,
+                          color: _muted, size: 16)),
                 _countryBadge(profile),
                 SizedBox(width: 8),
                 Expanded(
@@ -7956,15 +8097,7 @@ foreach ($route in $routes) {
                         return;
                       }
                       if (value == 'delete') {
-                        if (backend.state != VpnState.disconnected) {
-                          _message('Сначала отключите ядро');
-                          return;
-                        }
-                        setState(() =>
-                            profiles.removeWhere((p) => p.id == profile.id));
-                        if (selectedId == profile.id)
-                          selectedId = profiles.firstOrNull?.id;
-                        await _persist();
+                        await _removeServer(profile);
                       }
                     },
                     entries: [
@@ -8038,7 +8171,7 @@ foreach ($route in $routes) {
                     curve: Curves.easeOutCubic,
                     margin: EdgeInsets.only(bottom: 7),
                     decoration: BoxDecoration(
-                        color: _surface.withValues(alpha: .76),
+                        color: _surface.withValues(alpha: _glassOpacity),
                         borderRadius: BorderRadius.circular(18),
                         border:
                             Border.all(color: Colors.white.withOpacity(.12)),
@@ -8049,7 +8182,73 @@ foreach ($route in $routes) {
                               offset: Offset(0, 8))
                         ]),
                     child: tile)));
-    return _profileDragSurface(profile, card, selectedServer);
+    return Dismissible(
+      key: ValueKey('swipe-${profile.id}'),
+      background: Container(
+          alignment: Alignment.centerLeft,
+          padding: const EdgeInsets.all(18),
+          color: _accent.withValues(alpha: .12),
+          child: Icon(Icons.speed_rounded, color: _accent)),
+      secondaryBackground: Container(
+          alignment: Alignment.centerRight,
+          padding: const EdgeInsets.all(18),
+          color: Colors.redAccent.withValues(alpha: .12),
+          child: const Icon(Icons.delete_outline_rounded,
+              color: Colors.redAccent)),
+      confirmDismiss: (direction) async {
+        if (direction == DismissDirection.startToEnd) {
+          unawaited(_quickPingProfile(profile));
+        } else {
+          await _removeServer(profile);
+        }
+        return false;
+      },
+      child: _profileDragSurface(profile, card, selectedServer),
+    );
+  }
+
+  Future<void> _quickPingProfile(ServerProfile profile) async {
+    if (_checkingProfileIds.contains(profile.id)) return;
+    setState(() => _checkingProfileIds.add(profile.id));
+    Socket? socket;
+    final watch = Stopwatch()..start();
+    try {
+      socket = await Socket.connect(profile.address, profile.port,
+          timeout: const Duration(seconds: 3));
+      if (!mounted) return;
+      setState(() {
+        profileLatencies[profile.id] = watch.elapsedMilliseconds;
+        failedLatencies.remove(profile.id);
+        latencyErrors.remove(profile.id);
+      });
+    } on Object catch (error) {
+      if (mounted)
+        setState(() {
+          profileLatencies.remove(profile.id);
+          failedLatencies.add(profile.id);
+          latencyErrors[profile.id] = error.toString();
+        });
+    } finally {
+      socket?.destroy();
+      if (mounted) setState(() => _checkingProfileIds.remove(profile.id));
+    }
+  }
+
+  Future<void> _removeServer(ServerProfile profile) async {
+    if (activeProfileId == profile.id &&
+        backend.state != VpnState.disconnected) {
+      _message(_text(
+          'Сначала отключите этот сервер', 'Disconnect this server first'));
+      return;
+    }
+    setState(() {
+      profiles.removeWhere((p) => p.id == profile.id);
+      if (selectedId == profile.id) selectedId = profiles.firstOrNull?.id;
+    });
+    await _persist();
+    if (mounted)
+      _message(_text('Сервер удалён до обновления подписки',
+          'Server removed until subscription refresh'));
   }
 
   String _profileGroupKey(String profileId) {
@@ -8061,7 +8260,8 @@ foreach ($route in $routes) {
   }
 
   void _reorderProfile(String sourceId, String targetId) {
-    if (sourceId == targetId ||
+    if (!_serverEditMode ||
+        sourceId == targetId ||
         _profileGroupKey(sourceId) != _profileGroupKey(targetId)) {
       return;
     }
@@ -8071,7 +8271,7 @@ foreach ($route in $routes) {
     setState(() {
       _lastReorderedProfileId = sourceId;
       final moved = profiles.removeAt(from);
-      final insertAt = from < to ? to - 1 : to;
+      final insertAt = to;
       profiles.insert(insertAt.clamp(0, profiles.length), moved);
     });
     unawaited(_persist());
@@ -8079,7 +8279,7 @@ foreach ($route in $routes) {
 
   Widget _profileDragSurface(
       ServerProfile profile, Widget child, bool selectedServer) {
-    final draggable = selectedServer;
+    if (!_serverEditMode) return child;
     final feedback = Material(
       color: Colors.transparent,
       child: Transform.scale(
@@ -8141,6 +8341,7 @@ foreach ($route in $routes) {
             child: dragChild,
           )
         : Draggable<String>(
+            affinity: Axis.vertical,
             data: profile.id,
             feedback: feedback,
             childWhenDragging: Opacity(opacity: .28, child: dragChild),
@@ -8159,12 +8360,39 @@ foreach ($route in $routes) {
         scale: candidates.isEmpty ? 1 : 1.018,
         duration: const Duration(milliseconds: 160),
         curve: Curves.easeOutBack,
-        child: draggable ? drag : child,
+        child: drag,
       ),
     );
   }
 
   Widget _countryBadge(ServerProfile profile) {
+    final logoUrl = profile.srvLogoUrl;
+    if (logoUrl != null) {
+      return Container(
+        width: 36,
+        height: 30,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: _line),
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(7),
+          child: Image.network(
+            logoUrl,
+            width: 36,
+            height: 30,
+            fit: BoxFit.cover,
+            filterQuality: FilterQuality.medium,
+            errorBuilder: (_, __, ___) => Container(
+              color: _surface,
+              alignment: Alignment.center,
+              child:
+                  Icon(_serverIcon(profile.protocol), color: _muted, size: 15),
+            ),
+          ),
+        ),
+      );
+    }
     final name = profile.name;
     String code = '';
     final runes = name.runes.take(2).toList();
@@ -9390,6 +9618,37 @@ foreach ($route in $routes) {
                     'Kill Switch and network protection')),
             const SizedBox(height: 16),
           ],
+          if (Platform.isAndroid) ...[
+            _row(
+                Icons.stop_circle_outlined,
+                _text('Завершить ядра', 'Stop cores'),
+                'Xray / sing-box',
+                IconButton(
+                    onPressed: () => _androidRecovery('stop'),
+                    icon: const Icon(Icons.stop_rounded))),
+            _row(
+                Icons.delete_sweep_outlined,
+                _text('Удалить конфигурацию VPN', 'Remove VPN configuration'),
+                _text('Остановить службы и очистить рабочее состояние',
+                    'Stop services and clear runtime state'),
+                IconButton(
+                    onPressed: () => _androidRecovery('reset'),
+                    icon: const Icon(Icons.delete_outline))),
+            _row(
+                Icons.restart_alt_rounded,
+                _text('Настроить заново', 'Run setup again'),
+                _text('Открыть начальную настройку', 'Open initial setup'),
+                IconButton(
+                    onPressed: () => _androidRecovery('setup'),
+                    icon: const Icon(Icons.chevron_right))),
+          ],
+          _row(
+              Icons.settings_backup_restore,
+              _text('Сбросить настройки', 'Reset settings'),
+              _text('Серверы останутся', 'Keep saved servers'),
+              IconButton(
+                  onPressed: _resetCoreSettings,
+                  icon: const Icon(Icons.restore))),
           _section('KILL SWITCH'),
           _row(
               Icons.shield_moon_outlined,
@@ -9892,7 +10151,7 @@ foreach ($route in $routes) {
                             boxShadow: [
                               BoxShadow(
                                   color: _accent.withOpacity(.10),
-                                  blurRadius: 12,
+                                  blurRadius: 8,
                                   offset: const Offset(0, 2)),
                             ],
                           ),
@@ -11603,7 +11862,9 @@ foreach ($route in $routes) {
     final accepted = await showDialog<String>(
         context: context,
         builder: (dialogContext) => StatefulBuilder(
-            builder: (context, setDialogState) => AlertDialog(
+            builder: (context, setDialogState) => GlassAlertDialog(
+                  optimizedMode: optimizedMode,
+                  glassStrength: ThemeController.instance.glassStrength,
                   title: Text(_localized('JSON настроек ядра')),
                   content: SizedBox(
                     width:
@@ -12110,7 +12371,11 @@ foreach ($route in $routes) {
             inactiveTrackColor: Colors.white.withValues(alpha: .16),
             thumbColor: Colors.white,
             overlayColor: _accent.withValues(alpha: .14),
-            thumbShape: _OutlinedSliderThumbShape(outlineColor: _accent),
+            thumbShape: _OutlinedSliderThumbShape(
+              outlineColor: _accent,
+              glassEnabled: ThemeController.instance.glassSliderThumbEnabled,
+              glassStrength: ThemeController.instance.glassStrength,
+            ),
             overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
             trackShape: const RoundedRectSliderTrackShape(),
           ),
@@ -12130,22 +12395,59 @@ foreach ($route in $routes) {
   }) =>
       GestureDetector(
         behavior: HitTestBehavior.opaque,
-        onPanStart: (_) => setState(() => _draggingTabIndicator = true),
+        onPanStart: (details) => setState(() {
+          _draggingTabIndicator = true;
+          _hoveredNavTab = null;
+          _headerButtonHovered = false;
+          _pendingNavTab = _tabIndex;
+          _tabDragPosition = _tabIndex.toDouble();
+          _tabDragStartIndex = _tabIndex;
+          _tabDragStartGlobal = details.globalPosition;
+        }),
         onPanUpdate: (details) =>
             _dragTabIndicator(details.globalPosition, vertical: vertical),
-        onPanEnd: (_) => setState(() => _draggingTabIndicator = false),
-        onPanCancel: () => setState(() => _draggingTabIndicator = false),
+        onPanEnd: (_) => _finishTabDrag(),
+        onPanCancel: () => _finishTabDrag(cancelled: true),
         child: AnimatedScale(
-          scale: _draggingTabIndicator ? .98 : 1,
+          scale: 1,
           duration: const Duration(milliseconds: 140),
           curve: Curves.easeOutCubic,
           child: AnimatedContainer(
             duration: const Duration(milliseconds: 180),
             curve: Curves.easeOutCubic,
-            decoration: decoration,
+            decoration: _draggingTabIndicator
+                ? decoration.copyWith(
+                    color: _surface.withValues(alpha: .50),
+                    gradient: LinearGradient(colors: [
+                      Colors.white.withValues(alpha: .16),
+                      _surface.withValues(alpha: .46)
+                    ]),
+                    border:
+                        Border.all(color: Colors.white.withValues(alpha: .28)),
+                    boxShadow: [
+                      BoxShadow(
+                          color: Colors.black.withValues(alpha: .15),
+                          blurRadius: 12,
+                          offset: const Offset(0, 4))
+                    ],
+                  )
+                : decoration,
           ),
         ),
       );
+
+  void _finishTabDrag({bool cancelled = false}) {
+    final target = _pendingNavTab;
+    setState(() {
+      _draggingTabIndicator = false;
+      _hoveredNavTab = null;
+      _headerButtonHovered = false;
+      _pendingNavTab = null;
+      _tabDragPosition = null;
+      _tabDragStartGlobal = null;
+    });
+    if (!cancelled && target != null && target != _tabIndex) _openTab(target);
+  }
 
   void _dragSettingsMode(Offset globalPosition) {
     final renderObject = _settingsModeKey.currentContext?.findRenderObject();
@@ -12159,23 +12461,19 @@ foreach ($route in $routes) {
     final key = vertical ? _sideNavKey : _bottomNavKey;
     final box = key.currentContext?.findRenderObject();
     if (box is! RenderBox || !box.hasSize) return;
-    final local = box.globalToLocal(globalPosition);
-    int? target;
-    if (vertical) {
-      const inset = 6.0;
-      const rowStride = 80.0;
-      const tabAreaHeight = 3 * 72.0 + 2 * 8.0;
-      final offset = local.dy - inset;
-      if (offset < 0 || offset >= tabAreaHeight) return;
-      target = (offset / rowStride).floor().clamp(0, 2);
-    } else {
-      const inset = 6.0;
-      final contentWidth = box.size.width - inset * 2;
-      final offset = local.dx - inset;
-      if (offset < 0 || offset >= contentWidth) return;
-      target = (offset / (contentWidth / 3)).floor().clamp(0, 2);
+    final start = _tabDragStartGlobal ??= globalPosition;
+    final delta = globalPosition - start;
+    final position = vertical
+        ? (_tabDragStartIndex + delta.dy / 80.0).clamp(0.0, 2.0)
+        : (_tabDragStartIndex + delta.dx / ((box.size.width - 12) / 3))
+            .clamp(0.0, 2.0);
+    final target = position.round();
+    if (target != _pendingNavTab || position != _tabDragPosition) {
+      setState(() {
+        _pendingNavTab = target;
+        _tabDragPosition = position;
+      });
     }
-    if (target != _tabIndex) _openTab(target);
   }
 
   Widget _draggableTabSurface(
@@ -12183,13 +12481,21 @@ foreach ($route in $routes) {
       GestureDetector(
         behavior: HitTestBehavior.opaque,
         onPanStart: (details) {
-          setState(() => _draggingTabIndicator = true);
+          setState(() {
+            _draggingTabIndicator = true;
+            _hoveredNavTab = null;
+            _headerButtonHovered = false;
+            _pendingNavTab = _tabIndex;
+            _tabDragPosition = _tabIndex.toDouble();
+            _tabDragStartGlobal = details.globalPosition;
+            _tabDragStartIndex = _tabIndex;
+          });
           _dragTabIndicator(details.globalPosition, vertical: vertical);
         },
         onPanUpdate: (details) =>
             _dragTabIndicator(details.globalPosition, vertical: vertical),
-        onPanEnd: (_) => setState(() => _draggingTabIndicator = false),
-        onPanCancel: () => setState(() => _draggingTabIndicator = false),
+        onPanEnd: (_) => _finishTabDrag(),
+        onPanCancel: () => _finishTabDrag(cancelled: true),
         child: child,
       );
 
@@ -12218,9 +12524,12 @@ foreach ($route in $routes) {
                 final itemWidth = bounds.maxWidth / 3;
                 return Stack(children: [
                   AnimatedPositioned(
-                      duration: const Duration(milliseconds: 205),
-                      curve: Curves.easeOutQuart,
-                      left: itemWidth * _tabIndex,
+                      duration: Duration(
+                          milliseconds: _draggingTabIndicator ? 64 : 260),
+                      curve: Curves.easeOutCubic,
+                      left: itemWidth *
+                          (_tabDragPosition ??
+                              (_pendingNavTab ?? _tabIndex).toDouble()),
                       top: 0,
                       bottom: 0,
                       width: itemWidth,
@@ -12275,9 +12584,12 @@ foreach ($route in $routes) {
                 const selectedHeight = 72.0;
                 return Stack(children: [
                   AnimatedPositioned(
-                      duration: const Duration(milliseconds: 210),
+                      duration: Duration(
+                          milliseconds: _draggingTabIndicator ? 64 : 260),
                       curve: Curves.easeOutCubic,
-                      top: (itemHeight + itemGap) * _tabIndex +
+                      top: (itemHeight + itemGap) *
+                              (_tabDragPosition ??
+                                  (_pendingNavTab ?? _tabIndex).toDouble()) +
                           (itemHeight - selectedHeight) / 2,
                       left: 0,
                       right: 0,
@@ -12352,7 +12664,7 @@ foreach ($route in $routes) {
             child: TextButton(
               onPressed: busy ? null : onTap,
               style: ButtonStyle(
-                animationDuration: optimizedMode
+                animationDuration: optimizedMode || _draggingTabIndicator
                     ? Duration.zero
                     : _motion(const Duration(milliseconds: 180)),
                 padding: const WidgetStatePropertyAll(EdgeInsets.all(6)),
@@ -12360,7 +12672,8 @@ foreach ($route in $routes) {
                     borderRadius: BorderRadius.circular(16))),
                 foregroundColor: WidgetStateProperty.resolveWith((states) =>
                     busy ||
-                            states.contains(WidgetState.hovered) ||
+                            (!_draggingTabIndicator &&
+                                states.contains(WidgetState.hovered)) ||
                             states.contains(WidgetState.focused) ||
                             states.contains(WidgetState.pressed)
                         ? _accent
@@ -12372,7 +12685,8 @@ foreach ($route in $routes) {
                   if (busy || states.contains(WidgetState.focused)) {
                     return _accent.withValues(alpha: .13);
                   }
-                  if (states.contains(WidgetState.hovered)) {
+                  if ((!_draggingTabIndicator &&
+                      states.contains(WidgetState.hovered))) {
                     return _accent.withValues(alpha: .10);
                   }
                   return Colors.transparent;
@@ -12382,7 +12696,8 @@ foreach ($route in $routes) {
                             states.contains(WidgetState.focused) ||
                             states.contains(WidgetState.pressed)
                         ? _accent.withValues(alpha: .4)
-                        : states.contains(WidgetState.hovered)
+                        : (!_draggingTabIndicator &&
+                                states.contains(WidgetState.hovered))
                             ? _accent.withValues(alpha: .23)
                             : Colors.transparent)),
                 overlayColor: const WidgetStatePropertyAll(Colors.transparent),
@@ -12422,16 +12737,20 @@ foreach ($route in $routes) {
   Widget _sideNavItem(IconData icon, String label, int index) => MouseRegion(
       cursor: SystemMouseCursors.click,
       onEnter: (_) {
-        if (_hoveredNavTab != index) setState(() => _hoveredNavTab = index);
+        if (!_draggingTabIndicator && _hoveredNavTab != index)
+          setState(() => _hoveredNavTab = index);
       },
       onExit: (_) {
-        if (_hoveredNavTab == index) setState(() => _hoveredNavTab = null);
+        if (!_draggingTabIndicator && _hoveredNavTab == index)
+          setState(() => _hoveredNavTab = null);
       },
       child: GestureDetector(
           behavior: HitTestBehavior.opaque,
           onTap: () => _openTab(index),
           child: AnimatedContainer(
-              duration: const Duration(milliseconds: 150),
+              duration: _draggingTabIndicator
+                  ? Duration.zero
+                  : const Duration(milliseconds: 150),
               curve: Curves.easeOutCubic,
               decoration: BoxDecoration(
                   color: _hoveredNavTab == index && _tabIndex != index
@@ -12442,7 +12761,7 @@ foreach ($route in $routes) {
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     AnimatedScale(
-                      scale: _tabIndex == index ? 1.08 : 1,
+                      scale: 1,
                       duration: const Duration(milliseconds: 220),
                       curve: Curves.easeOutBack,
                       child: Icon(icon,
@@ -12461,10 +12780,9 @@ foreach ($route in $routes) {
                               fontWeight: _tabIndex == index
                                   ? FontWeight.w600
                                   : FontWeight.w400),
-                          child: Text(label,
-                              textAlign: TextAlign.center,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis),
+                          child: FittedBox(
+                              fit: BoxFit.scaleDown,
+                              child: Text(label, maxLines: 1, softWrap: false)),
                         ))
                   ]))));
 
@@ -12472,15 +12790,19 @@ foreach ($route in $routes) {
       child: MouseRegion(
           cursor: SystemMouseCursors.click,
           onEnter: (_) {
-            if (_hoveredNavTab != index) setState(() => _hoveredNavTab = index);
+            if (!_draggingTabIndicator && _hoveredNavTab != index)
+              setState(() => _hoveredNavTab = index);
           },
           onExit: (_) {
-            if (_hoveredNavTab == index) setState(() => _hoveredNavTab = null);
+            if (!_draggingTabIndicator && _hoveredNavTab == index)
+              setState(() => _hoveredNavTab = null);
           },
           child: GestureDetector(
               onTap: () => _openTab(index),
               child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 150),
+                  duration: _draggingTabIndicator
+                      ? Duration.zero
+                      : const Duration(milliseconds: 150),
                   curve: Curves.easeOutCubic,
                   margin: const EdgeInsets.symmetric(horizontal: 4),
                   decoration: BoxDecoration(
@@ -12492,7 +12814,7 @@ foreach ($route in $routes) {
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
                         AnimatedScale(
-                          scale: _tabIndex == index ? 1.08 : 1,
+                          scale: 1,
                           duration: const Duration(milliseconds: 190),
                           curve: Curves.easeOutBack,
                           child: Icon(icon,
@@ -12510,7 +12832,9 @@ foreach ($route in $routes) {
                               fontWeight: _tabIndex == index
                                   ? FontWeight.w600
                                   : FontWeight.w400),
-                          child: Text(label),
+                          child: FittedBox(
+                              fit: BoxFit.scaleDown,
+                              child: Text(label, maxLines: 1, softWrap: false)),
                         )
                       ])))));
   Widget _segment(String label, bool active, VoidCallback onTap) => Expanded(
@@ -12608,7 +12932,7 @@ class _TextFadeSlideState extends State<_TextFadeSlide>
         alignment: widget.alignment,
         widthFactor: 1,
         heightFactor: 1,
-        child: _current,
+        child: FittedBox(fit: BoxFit.scaleDown, child: _current),
       );
     }
     final outgoingOpacity = _controller.drive(
@@ -12633,13 +12957,13 @@ class _TextFadeSlideState extends State<_TextFadeSlide>
           alignment: widget.alignment,
           children: [
             _transition(
-              _current,
+              FittedBox(fit: BoxFit.scaleDown, child: _current),
               opacity: Tween<double>(begin: 0, end: 1).animate(incomingOpacity),
               position: incomingPosition,
             ),
             Positioned.fill(
               child: _transition(
-                _outgoing!,
+                FittedBox(fit: BoxFit.scaleDown, child: _outgoing!),
                 opacity:
                     Tween<double>(begin: 1, end: 0).animate(outgoingOpacity),
                 position: outgoingPosition,
@@ -13160,9 +13484,15 @@ class _OrbRings extends CustomPainter {
 }
 
 class _OutlinedSliderThumbShape extends SliderComponentShape {
-  const _OutlinedSliderThumbShape({required this.outlineColor});
+  const _OutlinedSliderThumbShape({
+    required this.outlineColor,
+    this.glassEnabled = false,
+    this.glassStrength = 0,
+  });
 
   final Color outlineColor;
+  final bool glassEnabled;
+  final double glassStrength;
 
   @override
   Size getPreferredSize(bool isEnabled, bool isDiscrete) =>
@@ -13184,7 +13514,7 @@ class _OutlinedSliderThumbShape extends SliderComponentShape {
     required Size sizeWithOverflow,
   }) {
     final canvas = context.canvas;
-    final radius = 9.5 + activationAnimation.value * .5;
+    final radius = 9.5 + activationAnimation.value * (glassEnabled ? 2.5 : .5);
     canvas.drawCircle(
       center,
       radius,
@@ -13196,7 +13526,14 @@ class _OutlinedSliderThumbShape extends SliderComponentShape {
       center,
       radius,
       Paint()
-        ..color = sliderTheme.thumbColor ?? Colors.white
+        ..shader = ui.Gradient.linear(
+          center.translate(-radius, -radius),
+          center.translate(radius, radius),
+          [
+            Colors.white,
+            Color.lerp(Colors.white, outlineColor, glassStrength * .65)!,
+          ],
+        )
         ..style = PaintingStyle.fill,
     );
     canvas.drawCircle(

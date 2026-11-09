@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -11,6 +12,10 @@ class GhostBoxLogStore {
   int _retainedConnections = 10;
   int _maxBytes = 5 * 1024 * 1024;
   bool _includeCoreOutput = true;
+  final List<String> _pending = <String>[];
+  Timer? _flushTimer;
+  bool _writing = false;
+  int _dropped = 0;
 
   Future<File> file() async {
     final env = Platform.environment;
@@ -54,29 +59,59 @@ class GhostBoxLogStore {
 
   Future<void> append(String line, {bool core = false}) {
     if (core && !_includeCoreOutput) return Future<void>.value();
-    return _enqueue(() async {
+    // A malformed core can emit an enormous line; cap both memory and disk cost.
+    if (_pending.length >= 512) {
+      _pending.removeAt(0);
+      _dropped++;
+    }
+    _pending.add(line.length > 16 * 1024 ? line.substring(0, 16 * 1024) : line);
+    if (_pending.length >= 64 && !_writing) return _flushPending();
+    _flushTimer ??= Timer(const Duration(milliseconds: 250), () {
+      _flushTimer = null;
+      _flushPending();
+    });
+    return Future<void>.value();
+  }
+
+  Future<void> clear() async {
+    await flush();
+    await _enqueue(() async {
       final log = await file();
-      if (line.contains('  Подключение: ')) {
-        final old = await log.exists() ? await log.readAsString() : '';
-        final retained = _retainConnectionBlocks(
-            old, (_retainedConnections - 1).clamp(0, 100));
-        await log.writeAsString(retained, flush: true);
-      }
-      await log.writeAsString('$line\n', mode: FileMode.append, flush: true);
-      final length = await log.length();
-      if (length > _maxBytes) {
-        final text = await log.readAsString();
-        await log.writeAsString(_trimToMaxSize(text), flush: true);
-      }
+      await log.writeAsString('', flush: true);
     });
   }
 
-  Future<void> clear() => _enqueue(() async {
-        final log = await file();
-        await log.writeAsString('', flush: true);
-      });
+  Future<void> flush() {
+    _flushTimer?.cancel();
+    _flushTimer = null;
+    return _queue.then((_) => _flushPending());
+  }
 
-  Future<void> flush() => _queue;
+  Future<void> _flushPending() {
+    if (_writing || _pending.isEmpty) return _queue;
+    final batch = <String>[
+      if (_dropped > 0)
+        '[GhostBox] Skipped $_dropped log lines during output flood',
+      ..._pending
+    ];
+    _dropped = 0;
+    _writing = true;
+    _pending.clear();
+    return _enqueue(() async {
+      final log = await file();
+      await log.writeAsString('${batch.join('\n')}\n', mode: FileMode.append);
+      if (batch.any((line) => line.contains('  Подключение: ')) ||
+          await log.length() > _maxBytes) await _compact();
+    }).whenComplete(() {
+      _writing = false;
+      if (_pending.isNotEmpty) {
+        _flushTimer ??= Timer(const Duration(milliseconds: 250), () {
+          _flushTimer = null;
+          _flushPending();
+        });
+      }
+    });
+  }
 
   Future<void> _compact() async {
     final log = await file();

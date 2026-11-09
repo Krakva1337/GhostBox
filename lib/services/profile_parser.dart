@@ -491,6 +491,7 @@ class ProfileParser {
         'network': data['net'] ?? 'tcp',
         'security': data['tls'] == 'tls' ? 'tls' : null,
         'sni': data['sni'],
+        'srv-logo': data['srv-logo'] ?? data['srv_logo'],
         'path': data['path'],
         'host': data['host'],
         'mode': data['mode'],
@@ -521,6 +522,8 @@ class ProfileParser {
       password ??= userInfo;
     }
     final raw = <String, dynamic>{...query};
+    final fragment = uri.fragment.isEmpty ? uri.host : uri.fragment;
+    final name = _nameAndLogoFromFragment(fragment, raw);
     if (password != null) raw['password'] = password;
     return ServerProfile(
       id: _stableId(source, [
@@ -534,7 +537,7 @@ class ProfileParser {
         query['path'],
         query['serviceName']
       ]),
-      name: _decodeName(uri.fragment.isEmpty ? uri.host : uri.fragment),
+      name: name,
       protocol: protocol,
       address: uri.host,
       port: uri.port,
@@ -546,6 +549,20 @@ class ProfileParser {
               : null),
       raw: raw,
     );
+  }
+
+  String _nameAndLogoFromFragment(String fragment, Map<String, dynamic> raw) {
+    final decoded = _decodeName(fragment);
+    final match = RegExp(
+      r'(?:^|[;|,\s])srv-logo=(https?://[^;|,\s]+)',
+      caseSensitive: false,
+    ).firstMatch(decoded);
+    if (match == null) return decoded;
+    raw['srv-logo'] ??= match.group(1);
+    return decoded
+        .replaceRange(match.start, match.end, '')
+        .replaceAll(RegExp(r'^[;|,\s]+|[;|,\s]+$'), '')
+        .trim();
   }
 
   String _normalizeNetwork(String value) => switch (value.toLowerCase()) {
@@ -601,16 +618,23 @@ class ProfileParser {
       throw const FormatException('Некорректный сервер Shadowsocks');
     }
     final query = uri.queryParameters;
+    final raw = <String, dynamic>{
+      'method': method,
+      'password': password,
+      ...query
+    };
+    final fragment = uri.fragment.isEmpty ? endpoint.host : uri.fragment;
+    final name = _nameAndLogoFromFragment(fragment, raw);
     return ServerProfile(
       id: _stableId(source,
           ['shadowsocks', endpoint.host, endpoint.port, method, password]),
-      name: _decodeName(uri.fragment.isEmpty ? endpoint.host : uri.fragment),
+      name: name,
       protocol: 'shadowsocks',
       address: endpoint.host,
       port: endpoint.port,
       network: _normalizeNetwork(query['type'] ?? 'tcp'),
       security: query['security']?.toLowerCase(),
-      raw: {'method': method, 'password': password, ...query},
+      raw: raw,
     );
   }
 

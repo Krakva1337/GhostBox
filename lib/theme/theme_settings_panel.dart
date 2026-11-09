@@ -1,4 +1,6 @@
 import 'dart:io';
+import 'package:flutter/services.dart';
+import 'package:file_selector/file_selector.dart';
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -49,12 +51,248 @@ class _ThemeSettingsPanelState extends State<ThemeSettingsPanel> {
         _ => value,
       };
 
+  bool _importing = false;
+  Future<void> _importFile(bool font) async {
+    setState(() => _importing = true);
+    try {
+      String? name;
+      Uint8List? bytes;
+      if (Platform.isAndroid) {
+        final result = await const MethodChannel('app.ghostbox.ghostbox/vpn')
+            .invokeMapMethod<String, dynamic>(
+                'pickAppearanceFile', {'kind': font ? 'font' : 'background'});
+        name = result?['name'] as String?;
+        bytes = result?['bytes'] as Uint8List?;
+      } else {
+        final file = await openFile(acceptedTypeGroups: [
+          XTypeGroup(
+            label: font ? 'Font' : 'Image',
+            extensions: font ? ['ttf', 'otf'] : ['png', 'jpg', 'jpeg', 'webp'],
+            uniformTypeIdentifiers: font ? ['public.font'] : ['public.image'],
+          )
+        ]);
+        if (file == null) return;
+        if (await file.length() > (font ? 5 : 12) * 1024 * 1024)
+          throw const FormatException('File is too large');
+        name = file.name;
+        bytes = await file.readAsBytes();
+      }
+      if (name != null && bytes != null)
+        await ThemeController.instance
+            .importAppearanceFile(name, bytes, font: font);
+    } on Object catch (error) {
+      if (mounted)
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(
+                '${_s('Не удалось импортировать', 'Import failed')}: $error')));
+    } finally {
+      if (mounted) setState(() => _importing = false);
+    }
+  }
+
+  Widget _animatedValue(String value) => AnimatedSwitcher(
+        duration: const Duration(milliseconds: 160),
+        switchInCurve: Curves.easeOutCubic,
+        switchOutCurve: Curves.easeInCubic,
+        transitionBuilder: (child, animation) => FadeTransition(
+          opacity: animation,
+          child: ScaleTransition(
+            scale: Tween<double>(begin: .92, end: 1).animate(animation),
+            child: child,
+          ),
+        ),
+        child: Container(
+          key: ValueKey(value),
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+          decoration: BoxDecoration(
+            color: Theme.of(context)
+                .colorScheme
+                .surfaceContainerHighest
+                .withValues(alpha: .55),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Text(value,
+              style: const TextStyle(
+                  fontFeatures: [FontFeature.tabularFigures()],
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600)),
+        ),
+      );
+
+  Widget _animatedSlider({
+    required double value,
+    required double min,
+    required double max,
+    required int divisions,
+    required String label,
+    required ValueChanged<double> onChanged,
+  }) =>
+      SliderTheme(
+        data: SliderTheme.of(context).copyWith(
+          trackHeight: 4,
+          thumbShape: const RoundSliderThumbShape(
+              enabledThumbRadius: 9, pressedElevation: 3),
+          overlayShape: const RoundSliderOverlayShape(overlayRadius: 17),
+        ),
+        child: Slider(
+          value: value,
+          min: min,
+          max: max,
+          divisions: divisions,
+          label: label,
+          onChanged: onChanged,
+        ),
+      );
+
+  Widget _transitionPreview(String style) {
+    final details = switch (style) {
+      'smooth' => (
+          _s('Плавно затухает', 'Fades smoothly'),
+          Icons.blur_on_rounded,
+          Curves.easeInOutCubic,
+        ),
+      'spring' => (
+          _s('Мягко пружинит', 'Bounces softly'),
+          Icons.animation_rounded,
+          Curves.easeOutBack,
+        ),
+      _ => (
+          _s('Спокойное движение', 'Calm movement'),
+          Icons.motion_photos_on_rounded,
+          Curves.easeOutCubic,
+        ),
+    };
+    final accent = Theme.of(context).colorScheme.primary;
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 220),
+      curve: details.$3,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+      decoration: BoxDecoration(
+        color: accent.withValues(alpha: .07),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: accent.withValues(alpha: .16)),
+      ),
+      child: TweenAnimationBuilder<double>(
+        key: ValueKey(style),
+        tween: Tween(begin: 0, end: 1),
+        duration: const Duration(milliseconds: 320),
+        curve: details.$3,
+        builder: (context, progress, child) => Opacity(
+          opacity: progress.clamp(0, 1),
+          child: Transform.translate(
+            offset: Offset((1 - progress) * 12, 0),
+            child: child,
+          ),
+        ),
+        child: Row(children: [
+          Icon(details.$2, size: 17, color: accent),
+          const SizedBox(width: 8),
+          Expanded(
+            child:
+                Text(details.$1, style: Theme.of(context).textTheme.bodySmall),
+          ),
+          Icon(Icons.circle,
+              size: 8 + (style == 'spring' ? 2 : 0), color: accent),
+        ]),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final controller = ThemeScope.of(context);
     final theme = Theme.of(context);
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Text(_s('Оформление', 'Appearance'), style: theme.textTheme.titleMedium),
+      ListTile(
+          contentPadding: EdgeInsets.zero,
+          leading: const Icon(Icons.font_download_outlined),
+          title: Text(_s('Свой шрифт', 'Custom font')),
+          subtitle: Text(controller.customFontName ?? 'TTF / OTF · ≤ 5 MB'),
+          onTap: _importing ? null : () => _importFile(true),
+          trailing: controller.customFontName == null
+              ? const Icon(Icons.add)
+              : IconButton(
+                  tooltip: _s('Сбросить шрифт', 'Reset font'),
+                  icon: const Icon(Icons.close),
+                  onPressed: () => controller.clearAppearanceFile(font: true))),
+      ListTile(
+          contentPadding: EdgeInsets.zero,
+          leading: const Icon(Icons.image_outlined),
+          title: Text(_s('Картинка на фоне', 'Background image')),
+          subtitle: Text(
+              controller.backgroundImageName ?? 'PNG / JPG / WebP · ≤ 12 MB'),
+          onTap: _importing ? null : () => _importFile(false),
+          trailing: controller.backgroundImage == null
+              ? const Icon(Icons.add)
+              : IconButton(
+                  tooltip: _s('Убрать картинку', 'Remove image'),
+                  icon: const Icon(Icons.close),
+                  onPressed: () =>
+                      controller.clearAppearanceFile(font: false))),
+      if (_importing) const LinearProgressIndicator(),
+      SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('Motion blur'),
+          subtitle: Text(_s('Лёгкое размытие при переходах',
+              'Subtle blur during transitions')),
+          value: controller.motionBlur,
+          onChanged: (value) => controller.setGlass(motion: value)),
+      Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+        Text(_s('Больше стекла', 'More glass')),
+        _animatedValue('${(controller.glassStrength * 100).round()}%'),
+      ]),
+      _animatedSlider(
+        value: controller.glassStrength,
+        min: 0,
+        max: 1,
+        divisions: 10,
+        label: '${(controller.glassStrength * 100).round()}%',
+        onChanged: (value) => controller.setGlass(strength: value),
+      ),
+      if (controller.glassStrength >= .9) ...[
+        SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: Text(_s('Стеклянные панели', 'Glass panels')),
+            value: controller.glassPanelsEnabled,
+            onChanged: (value) => controller.setGlass(panels: value)),
+        SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: Text(_s('Стеклянные кнопки', 'Glass buttons')),
+            value: controller.glassButtonsEnabled,
+            onChanged: (value) => controller.setGlass(buttons: value)),
+        SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: Text(_s('Круглый бегунок при перетягивании',
+                'Round thumb while dragging')),
+            value: controller.glassSliderThumbEnabled,
+            onChanged: (value) => controller.setGlass(sliderThumb: value)),
+      ],
+      Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+        Text(_s('Скорость переходов', 'Transition speed')),
+        _animatedValue('${controller.transitionSpeed.toStringAsFixed(2)}×'),
+      ]),
+      _animatedSlider(
+        value: controller.transitionSpeed,
+        min: .5,
+        max: 1.5,
+        divisions: 4,
+        label: '${controller.transitionSpeed.toStringAsFixed(2)}×',
+        onChanged: (value) => controller.setGlass(speed: value),
+      ),
+      Text(_s('Стиль перехода', 'Transition style')),
+      SegmentedButton<String>(
+        segments: [
+          ButtonSegment(value: 'soft', label: Text(_s('Мягкий', 'Soft'))),
+          ButtonSegment(value: 'smooth', label: Text(_s('Плавный', 'Smooth'))),
+          ButtonSegment(value: 'spring', label: Text(_s('Упругий', 'Spring'))),
+        ],
+        selected: {controller.transitionStyle},
+        onSelectionChanged: (values) =>
+            controller.setGlass(style: values.first),
+      ),
+      const SizedBox(height: 8),
+      _transitionPreview(controller.transitionStyle),
       const SizedBox(height: 6),
       Text(
           _s('Тёмные и светлые темы с настраиваемым акцентом.',
