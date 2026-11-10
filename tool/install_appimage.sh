@@ -58,7 +58,15 @@ fi
 
 # Run the extracted AppDir directly. This avoids FUSE and AppImage runtime
 # extraction quirks in Rofi and other desktop launchers.
-printf '#!/usr/bin/env bash\nset -e\nexec %q "$@"\n' "$APP_DIR/AppDir/AppRun" > "$LAUNCHER"
+cat > "$LAUNCHER" <<EOF_LAUNCHER
+#!/usr/bin/env bash
+set -euo pipefail
+APP_DIR="$APP_DIR"
+if [[ "\${1:-}" != --ghostbox-updated=* && -x "$UPDATER" ]]; then
+  "$UPDATER" --recover || true
+fi
+exec "\$APP_DIR/AppDir/AppRun" "\$@"
+EOF_LAUNCHER
 chmod 0755 "$LAUNCHER"
 
 cat > "$DESKTOP_DIR/ghostbox.desktop" <<EOF

@@ -40,23 +40,6 @@ bool IsCore(const std::wstring& path) {
   return _wcsicmp(filename.c_str(), L"xray.exe") == 0 ||
       _wcsicmp(filename.c_str(), L"sing-box.exe") == 0;
 }
-bool HasLiveOwner(DWORD parent_pid, HANDLE child) {
-  // The caller disconnected its own backends before requesting cleanup. A
-  // still-running child of this UI is therefore a leftover to reclaim.
-  if (parent_pid == GetCurrentProcessId()) return false;
-  HANDLE parent = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE,
-      FALSE, parent_pid);
-  if (!parent) return GetLastError() == ERROR_ACCESS_DENIED;
-  const auto filename = std::filesystem::path(ImagePath(parent)).filename().wstring();
-  FILETIME parent_created{}, child_created{}, exit{}, kernel{}, user{};
-  const bool owner = WaitForSingleObject(parent, 0) == WAIT_TIMEOUT &&
-      _wcsicmp(filename.c_str(), L"GhostBox.exe") == 0 &&
-      GetProcessTimes(parent, &parent_created, &exit, &kernel, &user) &&
-      GetProcessTimes(child, &child_created, &exit, &kernel, &user) &&
-      CompareFileTime(&parent_created, &child_created) <= 0;
-  CloseHandle(parent);
-  return owner;
-}
 }  // namespace
 
 CoreLifecycle::CoreLifecycle(flutter::BinaryMessenger* messenger) {
@@ -120,6 +103,9 @@ CoreLifecycle::CoreLifecycle(flutter::BinaryMessenger* messenger) {
         }
         paths.push_back(Wide(*text));
       }
+      if (paths.empty()) {
+        result->Error("arguments", "At least one VPN core executable is required."); return;
+      }
       HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
       if (snapshot == INVALID_HANDLE_VALUE) {
         result->Error("snapshot", "Cannot inspect running VPN cores."); return;
@@ -132,26 +118,44 @@ CoreLifecycle::CoreLifecycle(flutter::BinaryMessenger* messenger) {
         if (!IsCore(process_entry.szExeFile)) continue;
         HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION |
             PROCESS_TERMINATE | SYNCHRONIZE, FALSE, process_entry.th32ProcessID);
-        if (!process) continue;
+        if (!process) {
+          if (GetLastError() == ERROR_INVALID_PARAMETER) continue;
+          // A matching image name we cannot inspect might be a bundled core.
+          // Abort the connection instead of claiming that all cores stopped.
+          failed = true;
+          continue;
+        }
         const auto path = ImagePath(process);
+        if (path.empty()) {
+          failed = true;
+          CloseHandle(process);
+          continue;
+        }
         bool matches = false;
         for (const auto& expected : paths) matches = matches || SamePath(path, expected);
-        if (matches && !HasLiveOwner(process_entry.th32ParentProcessID, process)) {
-          // TerminateProcess is forceful; a three-second grace period made a
-          // reconnect wait feel stuck when Windows was slow to reap stale
-          // cores. Keep a short bound so a genuinely wedged process still
-          // fails visibly without serially blocking the next profile start.
-          if (TerminateProcess(process, 0) &&
-              WaitForSingleObject(process, 500) == WAIT_OBJECT_0) {
-            ++stopped;
-          } else {
-            failed = true;
+        if (matches) {
+          // Do not exempt a core just because a GhostBox instance is still its
+          // parent. Switching profiles must leave no copy of the selected
+          // bundled Xray/sing-box executable alive before the next starts.
+          if (WaitForSingleObject(process, 0) != WAIT_OBJECT_0) {
+            if (!TerminateProcess(process, 0) &&
+                WaitForSingleObject(process, 0) != WAIT_OBJECT_0) {
+              failed = true;
+              CloseHandle(process);
+              continue;
+            }
+            if (WaitForSingleObject(process, 5000) != WAIT_OBJECT_0) {
+              failed = true;
+              CloseHandle(process);
+              continue;
+            }
           }
+          ++stopped;
         }
         CloseHandle(process);
       } while (Process32NextW(snapshot, &process_entry));
       CloseHandle(snapshot);
-      if (failed) { result->Error("cleanup", "A stale VPN core did not stop."); return; }
+      if (failed) { result->Error("cleanup", "Could not confirm that every matching VPN core stopped."); return; }
       result->Success(Value(stopped));
       return;
     }

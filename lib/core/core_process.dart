@@ -15,6 +15,9 @@ import 'split_routing.dart';
 /// platform adapter can add TUN setup before [start] and tear it down after
 /// [stop].
 class CoreProcessBackend implements VpnBackend {
+  static Future<void> _coreOperationQueue = Future<void>.value();
+  static final Set<CoreProcessBackend> _runningCores = <CoreProcessBackend>{};
+
   static const MethodChannel _macKeychainChannel =
       MethodChannel('app.ghostbox.ghostbox/macos_keychain');
   CoreProcessBackend({
@@ -51,6 +54,242 @@ class CoreProcessBackend implements VpnBackend {
   void Function(String message, {bool error})? onRecoveryNotice;
   Future<void> Function(int pid, String executable)? onProcessStarted;
 
+  /// Serializes connect/stop work across Xray and sing-box backend instances.
+  /// This prevents two cores from racing through pre-connect cleanup.
+  static Future<void> _serializeCoreOperation(
+      Future<void> Function() operation) async {
+    final previous = _coreOperationQueue;
+    final release = Completer<void>();
+    _coreOperationQueue = release.future;
+    await previous;
+    try {
+      await operation();
+    } finally {
+      release.complete();
+    }
+  }
+
+  Future<void> _stopAllRunningCores() async {
+    for (final core in _runningCores.toList()) {
+      await core._disconnect();
+    }
+    await _stopLinuxGhostBoxOrphanCores();
+    if (Platform.isMacOS) await _stopMacGhostBoxOrphanCores();
+  }
+
+  /// Starts a sibling core that belongs to the already-cleaned user session,
+  /// such as the sing-box TUN bridge alongside an Xray proxy.
+  Future<void> connectInSession(String profile) =>
+      _connectWithoutGlobalDrain(profile);
+
+  /// Starts a short-lived diagnostic core while the user's VPN stays active.
+  Future<void> connectProbe(String profile) =>
+      _connectWithoutGlobalDrain(profile);
+
+  Future<void> _connectWithoutGlobalDrain(String profile) =>
+      _serializeCoreOperation(() async {
+        await _disconnect();
+        await _connect(profile);
+      });
+
+  /// Stops app-owned cores and exact-path orphaned GhostBox processes. This is
+  /// also used by the user's core-recovery action on desktop platforms.
+  Future<void> cleanupGhostBoxCores() => _serializeCoreOperation(() async {
+        await _stopAllRunningCores();
+        await _disconnect();
+      });
+
+  /// App shutdown can leave a bundled core alive after the Flutter parent is
+  /// gone. On Linux, match only executable paths inside GhostBox's known
+  /// vendor directories; never signal unrelated system/user Xray processes.
+  static Future<void> _stopLinuxGhostBoxOrphanCores() async {
+    if (!Platform.isLinux) return;
+    final home = Platform.environment['HOME'];
+    final vendorDirectories = <String>{};
+    void addVendorDirectory(String? path) {
+      if (path == null || path.isEmpty) return;
+      vendorDirectories.add(File(path).absolute.path);
+    }
+
+    final override = Platform.environment['GHOSTBOX_VENDOR_DIR'];
+    if (override != null && override.isNotEmpty) {
+      addVendorDirectory('$override/bin');
+    }
+    String? installedReleaseRoot;
+    if (home != null && home.isNotEmpty) {
+      final dataHome =
+          Platform.environment['XDG_DATA_HOME'] ?? '$home/.local/share';
+      addVendorDirectory('$dataHome/ghostbox-appimage/vendor/bin');
+      addVendorDirectory('$home/.local/opt/ghostbox/AppDir/vendor/bin');
+      addVendorDirectory('$home/.local/opt/ghostbox/vendor/bin');
+      installedReleaseRoot =
+          Directory('$home/.local/opt/ghostbox/releases').absolute.path;
+      final releases = Directory(installedReleaseRoot);
+      if (await releases.exists()) {
+        await for (final entity in releases.list(followLinks: false)) {
+          if (entity is Directory) {
+            addVendorDirectory('${entity.path}/vendor/bin');
+          }
+        }
+      }
+    }
+
+    final corePaths = <String>{};
+    for (final directory in vendorDirectories) {
+      for (final name in const ['xray', 'sing-box']) {
+        final path = '$directory/$name';
+        final file = File(path);
+        corePaths.add(file.absolute.path);
+        if (await file.exists()) {
+          try {
+            corePaths.add(await file.resolveSymbolicLinks());
+          } on FileSystemException {
+            corePaths.add(file.absolute.path);
+          }
+        }
+      }
+    }
+    if (corePaths.isEmpty) return;
+
+    final proc = Directory('/proc');
+    if (!await proc.exists()) return;
+    await for (final entry in proc.list(followLinks: false)) {
+      final pid = int.tryParse(entry.uri.pathSegments.last);
+      if (pid == null || pid <= 1) continue;
+      final executableLink = Link('/proc/$pid/exe');
+      String target;
+      try {
+        target = await executableLink.target();
+      } on FileSystemException {
+        continue;
+      }
+      final deletedSuffix = ' (deleted)';
+      if (target.endsWith(deletedSuffix)) {
+        target = target.substring(0, target.length - deletedSuffix.length);
+      }
+      final absoluteTarget = File(target).absolute.path;
+      final isKnownInstalledRelease = installedReleaseRoot != null &&
+          absoluteTarget.startsWith('$installedReleaseRoot/') &&
+          RegExp(r'^.+/[^/]+/vendor/bin/(xray|sing-box)$')
+              .hasMatch(absoluteTarget.substring(installedReleaseRoot.length));
+      if (!corePaths.contains(absoluteTarget) && !isKnownInstalledRelease) {
+        continue;
+      }
+      await _terminateLinuxCore(pid, absoluteTarget);
+    }
+  }
+
+  Future<void> _stopMacGhostBoxOrphanCores() async {
+    final binaryDirectory = File(executable).absolute.parent.path;
+    final executables = <String>{};
+    for (final name in const ['xray', 'sing-box']) {
+      final file = File('$binaryDirectory/$name');
+      if (await file.exists()) {
+        try {
+          executables.add(await file.resolveSymbolicLinks());
+        } on FileSystemException {
+          executables.add(file.absolute.path);
+        }
+      }
+    }
+    if (executables.isEmpty) return;
+
+    final listing = await Process.run('/bin/ps', ['-axo', 'pid=,command=']);
+    if (listing.exitCode != 0) {
+      throw StateError('Не удалось проверить процессы ядер GhostBox в macOS.');
+    }
+    final tempPrefix = '${Directory.systemTemp.path}/ghostbox-core-';
+    for (final line in listing.stdout.toString().split('\n')) {
+      final match = RegExp(r'^\s*(\d+)\s+(.+)$').firstMatch(line);
+      if (match == null) continue;
+      final pid = int.tryParse(match.group(1)!);
+      final command = match.group(2)!.trim();
+      if (pid == null || pid <= 1) continue;
+      final executablePath = executables.cast<String?>().firstWhere(
+            (path) =>
+                path != null &&
+                command.startsWith('$path run -c $tempPrefix') &&
+                command.endsWith('/config.json') &&
+                !command
+                    .substring('$path run -c $tempPrefix'.length)
+                    .replaceFirst(RegExp(r'[^/]+/config\.json$'), '')
+                    .contains('/'),
+            orElse: () => null,
+          );
+      if (executablePath == null) continue;
+      await _terminateMacCore(pid, command);
+    }
+  }
+
+  Future<void> _terminateMacCore(int pid, String observedCommand) async {
+    Future<bool> isStillOwned() async =>
+        await _macProcessCommand(pid) == observedCommand;
+
+    if (!await isStillOwned()) return;
+    Process.killPid(pid, ProcessSignal.sigterm);
+    for (var attempt = 0; attempt < 20; attempt++) {
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      if (!await isStillOwned()) return;
+    }
+
+    final expected = _shellQuote(observedCommand);
+    final command =
+        'owned() { [ "\$(/bin/ps -ww -p $pid -o command=)" = $expected ]; }; '
+        'if owned; then /bin/kill -TERM $pid 2>/dev/null || true; '
+        'i=0; while [ \$i -lt 120 ] && owned; do '
+        '/bin/sleep 0.1; i=\$((i + 1)); done; fi';
+    await _runMacAdminCommand(command);
+    for (var attempt = 0; attempt < 20; attempt++) {
+      if (!await isStillOwned()) return;
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    }
+    throw StateError(
+        'Не удалось завершить GhostBox-ядро macOS (PID $pid); новое подключение отменено.');
+  }
+
+  Future<String?> _macProcessCommand(int pid) async {
+    try {
+      final result =
+          await Process.run('/bin/ps', ['-ww', '-p', '$pid', '-o', 'command=']);
+      if (result.exitCode != 0) return null;
+      final command = result.stdout.toString().trim();
+      return command.isEmpty ? null : command;
+    } on Object {
+      return null;
+    }
+  }
+
+  static Future<void> _terminateLinuxCore(int pid, String executable) async {
+    Future<bool> isStillThisCore() async {
+      try {
+        var target = await Link('/proc/$pid/exe').target();
+        if (target.endsWith(' (deleted)')) {
+          target = target.substring(0, target.length - ' (deleted)'.length);
+        }
+        return File(target).absolute.path == executable;
+      } on FileSystemException {
+        return false;
+      }
+    }
+
+    bool remains = await isStillThisCore();
+    if (!remains) return;
+    Process.killPid(pid, ProcessSignal.sigterm);
+    for (var attempt = 0; attempt < 20; attempt++) {
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      remains = await isStillThisCore();
+      if (!remains) return;
+    }
+    Process.killPid(pid, ProcessSignal.sigkill);
+    for (var attempt = 0; attempt < 20; attempt++) {
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      remains = await isStillThisCore();
+      if (!remains) return;
+    }
+    throw StateError(
+        'Не удалось завершить GhostBox-ядро $executable (PID $pid); новое подключение отменено.');
+  }
+
   @override
   VpnState get state => _state;
   DateTime? get startedAt => _startedAt;
@@ -74,18 +313,18 @@ class CoreProcessBackend implements VpnBackend {
       : DateTime.now().difference(_startedAt!);
 
   @override
-  Future<void> connect(String profile) async {
+  Future<void> connect(String profile) => _serializeCoreOperation(() async {
+        await _stopAllRunningCores();
+        await _connect(profile);
+      });
+
+  Future<void> _connect(String profile) async {
     if (Platform.isAndroid || Platform.isIOS) {
       _state = VpnState.error;
       _lastError = Platform.isAndroid
           ? 'Android cores must run through the native VpnService backend.'
           : 'iOS cores must run through the native VPN extension backend.';
       throw UnsupportedError(_lastError!);
-    }
-    if (_process != null ||
-        _state == VpnState.connecting ||
-        _state == VpnState.connected) {
-      return;
     }
     if (Platform.isMacOS &&
         (_macElevatedPid != null || _macTunnelInterface != null)) {
@@ -205,6 +444,7 @@ class CoreProcessBackend implements VpnBackend {
       runInShell: false,
       environment: {'GOMEMLIMIT': '${settings.memoryMb}MiB'},
     );
+    _runningCores.add(this);
     try {
       await onProcessStarted?.call(_process!.pid, executable);
     } on Object {
@@ -212,6 +452,7 @@ class CoreProcessBackend implements VpnBackend {
       _process = null;
       unsupervised.kill(ProcessSignal.sigkill);
       await unsupervised.exitCode;
+      _runningCores.remove(this);
       rethrow;
     }
     _stderr = _process!.stderr
@@ -231,6 +472,7 @@ class CoreProcessBackend implements VpnBackend {
     running.exitCode.then((code) async {
       if (_process != running) return;
       _process = null;
+      _runningCores.remove(this);
       _startedAt = null;
       await _cleanupConfig();
       if (!_shouldStayConnected) {
@@ -289,6 +531,7 @@ class CoreProcessBackend implements VpnBackend {
           'Не удалось получить PID привилегированного ядра: $output');
     }
     _macElevatedPid = pid;
+    _runningCores.add(this);
     _startedAt = DateTime.now();
     await Future<void>.delayed(const Duration(milliseconds: 500));
     await _readMacElevatedLog(profile);
@@ -449,6 +692,7 @@ class CoreProcessBackend implements VpnBackend {
     _macPreviousRouteInterface = null;
     _macTunnelInterface = null;
     _macPreviousTunInterfaces.clear();
+    _runningCores.remove(this);
   }
 
   Future<void> _monitorMacElevatedProcess(
@@ -608,9 +852,17 @@ end try
       await Future<void>.delayed(Duration(milliseconds: delayMs));
       if (!_shouldStayConnected) break;
       try {
-        await _startProcess(profile);
-        _recoveryInProgress = false;
-        return;
+        var restarted = false;
+        await _serializeCoreOperation(() async {
+          if (!_shouldStayConnected) return;
+          await _startProcess(profile);
+          restarted = true;
+        });
+        if (restarted) {
+          _recoveryInProgress = false;
+          return;
+        }
+        break;
       } on Object catch (error) {
         _lastError = _formatStartError(error);
         _writeLifecycleLog(
@@ -671,7 +923,9 @@ end try
   }
 
   @override
-  Future<void> disconnect() async {
+  Future<void> disconnect() => _serializeCoreOperation(_disconnect);
+
+  Future<void> _disconnect() async {
     _shouldStayConnected = false;
     _initializing = false;
     _macElevatedMonitor?.cancel();
@@ -683,11 +937,15 @@ end try
     await _stdout?.cancel();
     _stdout = null;
     process?.kill(ProcessSignal.sigterm);
-    if (process != null)
-      await process.exitCode.timeout(const Duration(seconds: 2), onTimeout: () {
+    if (process != null) {
+      try {
+        await process.exitCode.timeout(const Duration(seconds: 2));
+      } on TimeoutException {
         process.kill(ProcessSignal.sigkill);
-        return -1;
-      });
+        await process.exitCode.timeout(const Duration(seconds: 2));
+      }
+      _runningCores.remove(this);
+    }
     final elevatedPid = _macElevatedPid;
     if (Platform.isMacOS && elevatedPid != null) {
       try {
@@ -709,6 +967,7 @@ end try
         throw StateError(_lastError!);
       }
       _macElevatedPid = null;
+      _runningCores.remove(this);
     }
     final stoppedTunnelInterface = _macTunnelInterface;
     if (Platform.isMacOS && stoppedTunnelInterface != null) {
@@ -739,6 +998,7 @@ end try
     _macPreviousRouteInterface = null;
     _macTunnelInterface = null;
     _macPreviousTunInterfaces.clear();
+    _runningCores.remove(this);
   }
 
   Future<void> _stopMacElevated(int pid) async {

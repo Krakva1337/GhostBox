@@ -37,10 +37,8 @@ Name: "desktopicon"; Description: "Создать ярлык на рабочем
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\windows\runner\resources\app_icon.ico"; DestDir: "{localappdata}\GhostBox"; DestName: "ghostbox-current.ico"
 
-[InstallDelete]
-; Remove files left behind by older releases before installing the new bundle.
-; User data is stored outside {app} and is preserved.
-Type: filesandordirs; Name: "{app}\*"
+; Do not recursively delete {app} before upgrade. Inno Setup replaces files
+; shipped by this package and preserves user files and unknown newer files.
 
 [Registry]
 Root: HKCU; Subkey: "Software\Classes\ghostbox"; ValueType: string; ValueName: ""; ValueData: "URL:GhostBox Link"; Flags: uninsdeletekey
@@ -54,4 +52,4 @@ Name: "{group}\Удалить GhostBox"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\GhostBox"; Filename: "{app}\GhostBox.exe"; IconFilename: "{localappdata}\GhostBox\ghostbox-current.ico"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\GhostBox.exe"; Description: "Запустить GhostBox"; Verb: "runas"; Flags: shellexec nowait postinstall skipifsilent
+Filename: "{app}\GhostBox.exe"; Description: "Запустить GhostBox"; Flags: shellexec nowait postinstall skipifsilent

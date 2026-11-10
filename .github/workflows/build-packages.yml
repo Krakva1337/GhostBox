@@ -65,9 +65,17 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  macos-arm64:
-    name: macOS ARM64 app
-    runs-on: macos-15
+  macos-app:
+    name: macOS ${{ matrix.arch }} app
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - uses: subosito/flutter-action@v2
@@ -88,16 +96,16 @@ jobs:
           "$app/Contents/MacOS/vendor/bin/sing-box" version
           "$app/Contents/MacOS/vendor/bin/xray" version
           version="$(awk '/^version:/ {split($2, parts, "+"); print parts[1]}' pubspec.yaml)"
-          archive="dist/GhostBox-${version}-macOS-arm64.zip"
+          archive="dist/GhostBox-${version}-macOS-${{ matrix.arch }}.zip"
           mkdir -p dist
           ditto -c -k --sequesterRsrc --keepParent "$app" "$archive"
           shasum -a 256 "$archive" > "$archive.sha256"
       - uses: actions/upload-artifact@v4
         with:
-          name: GhostBox-macOS-arm64
+          name: GhostBox-macOS-${{ matrix.arch }}
           path: |
-            dist/GhostBox-*-macOS-arm64.zip
-            dist/GhostBox-*-macOS-arm64.zip.sha256
+            dist/GhostBox-*-macOS-${{ matrix.arch }}.zip
+            dist/GhostBox-*-macOS-${{ matrix.arch }}.zip.sha256
           if-no-files-found: error
           retention-days: 14
 
@@ -198,7 +206,7 @@ jobs:
           retention-days: 14
 
   android-universal:
-    name: Android universal unsigned APK
+    name: Android universal APK
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -221,21 +229,57 @@ jobs:
         run: |
           for _ in {1..50}; do echo y; done | sdkmanager --licenses
           sdkmanager 'platform-tools' 'platforms;android-36' 'build-tools;36.0.0' 'ndk;28.2.13676358' 'cmake;3.22.1'
-      - name: Build universal unsigned APK and Android cores
+      - name: Build universal APK and Android cores
         env:
           GHOSTBOX_ANDROID_UNSIGNED: 'true'
         run: ./tool/build_android.sh
-      - name: Verify APK is unsigned
+      - name: Sign Android APK when the release keystore is configured
+        env:
+          GHOSTBOX_ANDROID_KEYSTORE_BASE64: ${{ secrets.GHOSTBOX_ANDROID_KEYSTORE_BASE64 }}
+          GHOSTBOX_ANDROID_KEY_ALIAS: ${{ secrets.GHOSTBOX_ANDROID_KEY_ALIAS }}
+          GHOSTBOX_ANDROID_STORE_PASSWORD: ${{ secrets.GHOSTBOX_ANDROID_STORE_PASSWORD }}
+          GHOSTBOX_ANDROID_KEY_PASSWORD: ${{ secrets.GHOSTBOX_ANDROID_KEY_PASSWORD }}
         run: |
           apk=dist/android/GhostBox-Android-universal.apk
-          test -s "$apk"
-          if unzip -Z1 "$apk" | grep -Eiq '^META-INF/.*\.(RSA|DSA|EC|SF)$'; then
-            echo 'Expected an unsigned APK, but a signature was found.' >&2
+          apksigner="$ANDROID_HOME/build-tools/36.0.0/apksigner"
+          configured=0
+          for value in "$GHOSTBOX_ANDROID_KEYSTORE_BASE64" "$GHOSTBOX_ANDROID_KEY_ALIAS" \
+                       "$GHOSTBOX_ANDROID_STORE_PASSWORD" "$GHOSTBOX_ANDROID_KEY_PASSWORD"; do
+            if [[ -n "$value" ]]; then configured=$((configured + 1)); fi
+          done
+          if [[ "$configured" -eq 0 ]]; then
+            echo 'Android signing secrets are not configured; publishing the APK for manual download only.'
+          elif [[ "$configured" -ne 4 ]]; then
+            echo 'All four Android signing secrets are required.' >&2
             exit 1
+          else
+            keystore="$RUNNER_TEMP/ghostbox-release.jks"
+            printf '%s' "$GHOSTBOX_ANDROID_KEYSTORE_BASE64" | base64 --decode > "$keystore"
+            export GHOSTBOX_SIGN_STORE_PASSWORD="$GHOSTBOX_ANDROID_STORE_PASSWORD"
+            export GHOSTBOX_SIGN_KEY_PASSWORD="$GHOSTBOX_ANDROID_KEY_PASSWORD"
+            "$apksigner" sign --ks "$keystore" --ks-key-alias "$GHOSTBOX_ANDROID_KEY_ALIAS" \
+              --ks-pass env:GHOSTBOX_SIGN_STORE_PASSWORD \
+              --key-pass env:GHOSTBOX_SIGN_KEY_PASSWORD "$apk"
+            "$apksigner" verify --verbose "$apk"
+            rm -f "$keystore"
+          fi
+          sha256sum "$apk" > "$apk.sha256"
+      - name: Verify APK signature state
+        run: |
+          apk=dist/android/GhostBox-Android-universal.apk
+          apksigner="$ANDROID_HOME/build-tools/36.0.0/apksigner"
+          test -s "$apk"
+          if "$apksigner" verify "$apk" >/dev/null 2>&1; then
+            "$apksigner" verify --print-certs "$apk"
+          elif unzip -Z1 "$apk" | grep -Eiq '^META-INF/.*\.(RSA|DSA|EC|SF)$'; then
+            echo 'APK signature files exist, but apksigner could not verify the APK.' >&2
+            exit 1
+          else
+            echo 'APK is unsigned; Android PackageInstaller will require a matching signing certificate before an update can install.'
           fi
       - uses: actions/upload-artifact@v4
         with:
-          name: GhostBox-Android-universal-unsigned
+          name: GhostBox-Android-universal
           path: |
             dist/android/GhostBox-Android-universal.apk
             dist/android/GhostBox-Android-universal.apk.sha256
@@ -244,7 +288,7 @@ jobs:
 
   publish-alpha-release:
     if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish_release)
-    needs: [linux-appimage, macos-arm64, windows-x64, android-universal]
+    needs: [linux-appimage, macos-app, windows-x64, android-universal]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -270,7 +314,11 @@ jobs:
           path: dist/macos-arm64
       - uses: actions/download-artifact@v4
         with:
-          name: GhostBox-Android-universal-unsigned
+          name: GhostBox-macOS-x86_64
+          path: dist/macos-x86_64
+      - uses: actions/download-artifact@v4
+        with:
+          name: GhostBox-Android-universal
           path: dist/android
       - name: Prepare release notes
         id: release-context
@@ -316,9 +364,9 @@ jobs:
             echo
             echo '- Linux x86_64 AppImage'
             echo '- Linux ARM64 AppImage'
-            echo '- macOS ARM64 app (.zip)'
+            echo '- macOS ARM64 and Intel x86_64 apps (.zip)'
             echo '- Windows x64 installer (.exe) and portable ZIP'
-            echo '- Android universal unsigned APK'
+            echo '- Android universal APK (auto-install requires the configured matching release signing key)'
             echo
             echo '## Файлы релиза'
             echo
@@ -334,4 +382,4 @@ jobs:
           if [[ "$RELEASE_TAG" == *alpha* ]]; then args+=(--prerelease); fi
           gh release create "$RELEASE_TAG" "${args[@]}" \
             dist/linux-x86_64/* dist/linux-ARM64/* dist/windows-x64/* \
-            dist/macos-arm64/* dist/android/*
+            dist/macos-arm64/* dist/macos-x86_64/* dist/android/*

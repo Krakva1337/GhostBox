@@ -148,3 +148,8 @@ endif()
 # adapter resolves it relative to GhostBox.exe, so shortcut launch paths work.
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/../tool/windows_killswitch.ps1"
   DESTINATION "${CMAKE_INSTALL_PREFIX}/vendor/bin" COMPONENT Runtime)
+
+# The Windows update handoff must be copied to the per-user updater directory
+# before the bundle is replaced, so the helper itself survives the swap.
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/../tool/ghostbox-update-windows.ps1"
+  DESTINATION "${CMAKE_INSTALL_PREFIX}" COMPONENT Runtime)

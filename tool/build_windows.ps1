@@ -169,6 +169,8 @@ try {
   }
   Copy-Item -Force (Join-Path $PSScriptRoot 'windows_killswitch.ps1') `
     (Join-Path $releaseCoreDirectory 'windows_killswitch.ps1')
+  Copy-Item -Force (Join-Path $PSScriptRoot 'ghostbox-update-windows.ps1') `
+    (Join-Path $releaseDirectory 'ghostbox-update-windows.ps1')
 
   $packageDirectory = Join-Path $ProjectRoot 'dist'
   New-Item -ItemType Directory -Force -Path $packageDirectory | Out-Null
@@ -188,6 +190,9 @@ try {
     }
     foreach ($core in @('vendor/bin/xray.exe', 'vendor/bin/sing-box.exe', 'vendor/bin/wintun.dll', 'vendor/bin/windows_killswitch.ps1')) {
       if ($entryNames -notcontains $core) { throw "Windows ZIP is missing required core file: $core" }
+    }
+    if ($entryNames -notcontains 'ghostbox-update-windows.ps1') {
+      throw 'Windows ZIP is missing the independent updater helper.'
     }
   } finally {
     $package.Dispose()

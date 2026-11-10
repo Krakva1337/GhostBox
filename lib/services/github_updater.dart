@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:flutter/services.dart';
 
 import 'app_version.dart';
+import 'update_transaction.dart';
 
 class GhostBoxRelease {
   const GhostBoxRelease({
@@ -39,8 +40,17 @@ class GhostBoxReleaseAsset {
 enum UpdateDownloadStage {
   downloading,
   verifying,
+  staging,
+  stopping,
+  installing,
+  relaunching,
+  healthCheck,
+  commit,
+  cleanup,
+  failed,
+  rollback,
   savingToDownloads,
-  launchingInstaller
+  launchingInstaller,
 }
 
 class UpdateDownloadProgress {
@@ -119,10 +129,16 @@ class GitHubUpdater {
         .map(_parseRelease)
         .whereType<GhostBoxRelease>()
         .toList();
-    releases.sort((a, b) => _compareVersions(b.version, a.version));
+    releases.sort((a, b) => compareVersions(b.version, a.version));
     for (final release in releases) {
-      final versionOrder = _compareVersions(release.version, currentVersion);
+      final versionOrder = compareVersions(release.version, currentVersion);
       if (!includeCurrent && versionOrder <= 0) continue;
+      final compatibleAsset = await platformAssetName(release);
+      if (compatibleAsset == null ||
+          release.asset(compatibleAsset) == null ||
+          release.asset('$compatibleAsset.sha256') == null) {
+        continue;
+      }
       if (await _isCommitOnBranch(release, branchSha)) return release;
     }
     return null;
@@ -184,9 +200,8 @@ class GitHubUpdater {
       throw HttpException(
           'Не удалось скачать ${asset.name}: HTTP ${response.statusCode}');
     }
-    final downloadDirectory = Platform.isMacOS
-        ? await Directory.systemTemp.createTemp('ghostbox-download-')
-        : Directory.systemTemp;
+    final downloadDirectory =
+        await Directory.systemTemp.createTemp('ghostbox-download-');
     final destination =
         File('${downloadDirectory.path}${Platform.pathSeparator}$name');
     final sink = destination.openWrite();
@@ -301,13 +316,9 @@ class GitHubUpdater {
 
   Future<void> _removeDownload(File file) async {
     if (await file.exists()) await file.delete();
-    if ((Platform.isAndroid &&
-            file.parent.path.split('/').last.startsWith('ghostbox-update-')) ||
-        (Platform.isMacOS &&
-            file.parent.path
-                .split('/')
-                .last
-                .startsWith('ghostbox-download-'))) {
+    final parentName = file.parent.path.split(RegExp(r'[/\\]')).last;
+    if ((Platform.isAndroid && parentName.startsWith('ghostbox-update-')) ||
+        (!Platform.isAndroid && parentName.startsWith('ghostbox-download-'))) {
       if (await file.parent.exists()) await file.parent.delete(recursive: true);
     }
   }
@@ -316,10 +327,38 @@ class GitHubUpdater {
     GhostBoxRelease release,
     GhostBoxReleaseAsset asset, {
     void Function(UpdateDownloadProgress progress)? onProgress,
+    bool installAndroidPackage = true,
+    Future<void> Function()? beforeHandoff,
   }) async {
-    final package = await download(asset, onProgress: onProgress);
-    var packageVerified = false;
+    final transaction = await UpdateTransaction.create(
+      targetVersion: release.version,
+      assetName: asset.name,
+    );
+    await transaction.update(UpdateTransactionStatus.downloading);
+    late final File package;
     try {
+      package = await _downloadWithRetry(asset, onProgress: onProgress);
+    } on Object catch (error) {
+      await transaction.update(UpdateTransactionStatus.failed,
+          error: error.toString());
+      rethrow;
+    }
+    var packageVerified = false;
+    String? packageHash;
+    void emitStage(UpdateDownloadStage stage) {
+      onProgress?.call(UpdateDownloadProgress(
+        assetName: asset.name,
+        path: package.path,
+        downloadedBytes: 0,
+        totalBytes: 0,
+        bytesPerSecond: 0,
+        stage: stage,
+      ));
+    }
+
+    try {
+      await transaction.update(UpdateTransactionStatus.verifying,
+          packagePath: package.absolute.path);
       onProgress?.call(UpdateDownloadProgress(
         assetName: asset.name,
         path: package.path,
@@ -333,7 +372,7 @@ class GitHubUpdater {
         throw FileSystemException(
             'В релизе ${release.tagName} нет файла ${asset.name}.sha256. Загрузите пакет и созданный рядом checksum-файл в один релиз.');
       }
-      final checksumFile = await download(checksumAsset);
+      final checksumFile = await _downloadWithRetry(checksumAsset);
       try {
         final expected = RegExp(r'\b([0-9a-fA-F]{64})\b')
             .firstMatch(await checksumFile.readAsString())
@@ -342,8 +381,8 @@ class GitHubUpdater {
         if (expected == null) {
           throw const FormatException('Некорректный SHA-256');
         }
-        final actual = await _sha256(package);
-        if (actual != expected) {
+        packageHash = await _sha256(package);
+        if (packageHash != expected) {
           throw const FormatException('SHA-256 пакета не совпал');
         }
         packageVerified = true;
@@ -351,20 +390,56 @@ class GitHubUpdater {
         await _removeDownload(checksumFile);
       }
 
+      emitStage(UpdateDownloadStage.staging);
+      if (!Platform.isAndroid || installAndroidPackage) {
+        await beforeHandoff?.call();
+        emitStage(UpdateDownloadStage.stopping);
+      }
+
       if (Platform.isLinux) {
+        await transaction.update(UpdateTransactionStatus.staging,
+            packagePath: package.absolute.path, sha256: packageHash);
         final helper =
             File('${Platform.environment['HOME']}/.local/bin/ghostbox-update');
         if (!await helper.exists()) {
           throw const FileSystemException(
               'Обновлятор не найден. Переустановите приложение через tool/install_appimage.sh.');
         }
-        await Process.start(helper.path, [package.path, pid.toString()],
-            mode: ProcessStartMode.detached);
+        await transaction.update(UpdateTransactionStatus.stopping);
+        await Process.start(
+          helper.path,
+          [
+            package.absolute.path,
+            '$pid',
+            transaction.id,
+            transaction.file.parent.path
+          ],
+          mode: ProcessStartMode.detached,
+        );
+        final deadline = DateTime.now().add(const Duration(seconds: 90));
+        final ready = File('${transaction.file.parent.path}/ready');
+        final failed = File('${transaction.file.parent.path}/failed');
+        while (!await ready.exists()) {
+          if (await failed.exists()) {
+            final error = File('${transaction.file.parent.path}/error');
+            throw FileSystemException(
+                'Linux could not prepare the update: ${await error.exists() ? await error.readAsString() : 'helper failed'}');
+          }
+          if (DateTime.now().isAfter(deadline)) {
+            await File('${transaction.file.parent.path}/cancelled')
+                .writeAsString('handoff timeout');
+            throw TimeoutException(
+                'Linux update helper did not confirm staging.');
+          }
+          await Future<void>.delayed(const Duration(milliseconds: 150));
+        }
         // The detached helper waits for this process, swaps the extracted AppDir,
         // then starts the stable desktop launcher again.
         exit(0);
       }
       if (Platform.isWindows) {
+        await transaction.update(UpdateTransactionStatus.staging,
+            packagePath: package.absolute.path, sha256: packageHash);
         onProgress?.call(UpdateDownloadProgress(
           assetName: asset.name,
           path: package.path,
@@ -373,11 +448,55 @@ class GitHubUpdater {
           bytesPerSecond: 0,
           stage: UpdateDownloadStage.launchingInstaller,
         ));
+        final helper = await _windowsHelperPath(transaction.file.parent);
+        await transaction.update(UpdateTransactionStatus.stopping);
+        final installRoot = File(Platform.resolvedExecutable).parent.path;
         await Process.start(
-          package.path,
-          const ['/CLOSEAPPLICATIONS=1'],
-          mode: ProcessStartMode.detached,
-        );
+            'powershell.exe',
+            [
+              '-NoProfile',
+              '-NonInteractive',
+              '-ExecutionPolicy',
+              'Bypass',
+              '-File',
+              helper,
+              '-Package',
+              package.absolute.path,
+              '-Mode',
+              asset.name.endsWith('-Setup.exe') ? 'installer' : 'portable',
+              '-OldPid',
+              '$pid',
+              '-TransactionId',
+              transaction.id,
+              '-HandoffDir',
+              transaction.file.parent.path,
+              '-InstallRoot',
+              installRoot,
+              '-ExpectedSha256',
+              packageHash,
+            ],
+            mode: ProcessStartMode.detached);
+        final deadline = DateTime.now().add(const Duration(seconds: 90));
+        final ready = File(
+            '${transaction.file.parent.path}${Platform.pathSeparator}ready');
+        final failed = File(
+            '${transaction.file.parent.path}${Platform.pathSeparator}failed');
+        while (!await ready.exists()) {
+          if (await failed.exists()) {
+            final error = File(
+                '${transaction.file.parent.path}${Platform.pathSeparator}error');
+            throw FileSystemException(
+                'Windows could not prepare the update: ${await error.exists() ? await error.readAsString() : 'helper failed'}');
+          }
+          if (DateTime.now().isAfter(deadline)) {
+            await File(
+                    '${transaction.file.parent.path}${Platform.pathSeparator}cancelled')
+                .writeAsString('handoff timeout');
+            throw TimeoutException(
+                'Windows update helper did not confirm staging.');
+          }
+          await Future<void>.delayed(const Duration(milliseconds: 150));
+        }
         exit(0);
       }
       if (Platform.isMacOS) {
@@ -398,8 +517,9 @@ class GitHubUpdater {
           stage: UpdateDownloadStage.launchingInstaller,
         ));
         // The updater must survive replacing the bundle that contains it.
-        final handoff =
-            await Directory.systemTemp.createTemp('ghostbox-update-handoff-');
+        final handoff = transaction.file.parent;
+        await transaction.update(UpdateTransactionStatus.staging,
+            packagePath: package.absolute.path, sha256: packageHash);
         try {
           final stagedHelper =
               await helper.copy('${handoff.path}/ghostbox-update-macos.sh');
@@ -410,8 +530,9 @@ class GitHubUpdater {
               stagedHelper.path,
               package.absolute.path,
               '$pid',
-              '/Applications/GhostBox.app',
+              appBundle,
               handoff.path,
+              transaction.id,
             ],
             mode: ProcessStartMode.detached,
           );
@@ -447,26 +568,49 @@ class GitHubUpdater {
           downloadedBytes: size,
           totalBytes: size,
           bytesPerSecond: 0,
-          stage: UpdateDownloadStage.savingToDownloads,
+          stage: installAndroidPackage
+              ? UpdateDownloadStage.installing
+              : UpdateDownloadStage.savingToDownloads,
         ));
-        final result = await _androidUpdateChannel
-            .invokeMethod<String>('saveApkToDownloads', {
-          'path': package.absolute.path,
-          'fileName': 'GhostBox-${release.version}.apk',
-        });
-        final prefix = result?.startsWith('downloads_saved:') == true
-            ? 'downloads_saved:'
-            : 'downloads_opened:';
-        if (result == null || !result.startsWith(prefix)) {
-          throw const FileSystemException(
-              'Android не подтвердил сохранение APK в «Загрузки».');
+        if (!installAndroidPackage) {
+          final saved = await _androidUpdateChannel
+              .invokeMethod<String>('saveApkToDownloads', {
+            'path': package.absolute.path,
+            'fileName': 'GhostBox-${release.version}.apk',
+          });
+          if (saved == null || !saved.startsWith('downloads_')) {
+            throw const FileSystemException(
+                'Android did not confirm saving the APK to Downloads.');
+          }
+          await transaction.update(UpdateTransactionStatus.commit);
+          await transaction.update(UpdateTransactionStatus.cleanup);
+          await _removeDownload(package);
+          return saved.substring(saved.indexOf(':') + 1);
         }
-        await _removeDownload(package);
-        return result.substring(prefix.length);
+        await transaction.update(UpdateTransactionStatus.installing,
+            packagePath: package.absolute.path, sha256: packageHash);
+        final result =
+            await _androidUpdateChannel.invokeMethod<Object?>('installApk', {
+          'path': package.absolute.path,
+          'sha256': packageHash,
+          'transactionId': transaction.id,
+          'transactionPath': transaction.file.absolute.path,
+          'targetVersion': release.version,
+        });
+        final status = result is Map ? result['status'] : result;
+        if (status != 'session_created') {
+          throw const FileSystemException(
+              'Android не подтвердил создание сессии PackageInstaller.');
+        }
+        return null;
       }
       throw UnsupportedError(
           'Автоустановка не поддерживается на этой платформе');
-    } on Object {
+    } on Object catch (error) {
+      try {
+        await transaction.update(UpdateTransactionStatus.failed,
+            error: error.toString());
+      } on Object {/* Preserve the update error. */}
       if (!Platform.isMacOS || !packageVerified) {
         await _removeDownload(package);
       }
@@ -504,7 +648,12 @@ class GitHubUpdater {
 
   Future<String?> platformAssetName(GhostBoxRelease release) async {
     if (Platform.isWindows) {
-      return 'GhostBox-${release.version}-Windows-x64-Setup.exe';
+      final executable =
+          File(Platform.resolvedExecutable).absolute.path.toLowerCase();
+      final installerInstall = executable.contains('\\programs\\ghostbox\\');
+      return installerInstall
+          ? 'GhostBox-${release.version}-Windows-x64-Setup.exe'
+          : 'GhostBox-${release.version}-Windows-x64.zip';
     }
     if (Platform.isLinux) {
       final result = await Process.run('uname', ['-m']);
@@ -541,12 +690,48 @@ class GitHubUpdater {
               asset.name.toLowerCase().contains('android') &&
               asset.name.toLowerCase().endsWith('.apk'))
           .toList();
-      for (final asset in apkAssets) {
-        if (asset.name.toLowerCase().contains('universal')) return asset.name;
+      final abis = await _androidUpdateChannel
+              .invokeMethod<List<Object?>>('getSupportedAbis') ??
+          const <Object?>[];
+      for (final abiValue in abis) {
+        final abi = '$abiValue'.toLowerCase();
+        final tokens = switch (abi) {
+          'arm64-v8a' => const ['arm64-v8a', 'arm64', 'aarch64'],
+          'armeabi-v7a' => const ['armeabi-v7a', 'armv7'],
+          'x86_64' => const ['x86_64', 'amd64'],
+          'x86' => const ['x86'],
+          _ => const <String>[],
+        };
+        for (final token in tokens) {
+          for (final candidate in apkAssets) {
+            if (candidate.name.toLowerCase().contains(token)) {
+              return candidate.name;
+            }
+          }
+        }
       }
-      return apkAssets.firstOrNull?.name;
+      return null;
     }
     return null;
+  }
+
+  Future<File> _downloadWithRetry(
+    GhostBoxReleaseAsset asset, {
+    void Function(UpdateDownloadProgress progress)? onProgress,
+  }) async {
+    Object? lastError;
+    for (var attempt = 0; attempt < 3; attempt++) {
+      try {
+        return await download(asset, onProgress: onProgress);
+      } on Object catch (error) {
+        lastError = error;
+        if (attempt < 2) {
+          await Future<void>.delayed(
+              Duration(milliseconds: 400 * (attempt + 1)));
+        }
+      }
+    }
+    Error.throwWithStackTrace(lastError!, StackTrace.current);
   }
 
   String _macOSAppBundlePath() {
@@ -559,10 +744,32 @@ class GitHubUpdater {
         'Не удалось определить расположение GhostBox.app');
   }
 
+  Future<String> _windowsHelperPath(Directory handoff) async {
+    final executableDirectory = File(Platform.resolvedExecutable).parent;
+    final candidates = <File>[
+      File(
+          '${executableDirectory.path}${Platform.pathSeparator}ghostbox-update-windows.ps1'),
+      File(
+          '${executableDirectory.path}${Platform.pathSeparator}data${Platform.pathSeparator}flutter_assets${Platform.pathSeparator}assets${Platform.pathSeparator}ghostbox-update-windows.ps1'),
+    ];
+    for (final candidate in candidates) {
+      if (await candidate.exists()) {
+        final staged = File(
+            '${handoff.path}${Platform.pathSeparator}ghostbox-update-windows.ps1');
+        await candidate.copy(staged.path);
+        return staged.path;
+      }
+    }
+    throw const FileSystemException(
+        'Windows update helper was not found beside the installed app.');
+  }
+
   GhostBoxRelease? _parseRelease(Map row) {
     final tag = row['tag_name'];
     final page = row['html_url'];
     if (tag is! String || page is! String) return null;
+    final version = normalizeReleaseTag(tag);
+    if (!_isSemVer(version)) return null;
     final assets = (row['assets'] as List? ?? const [])
         .whereType<Map>()
         .where((asset) =>
@@ -574,7 +781,7 @@ class GitHubUpdater {
             ))
         .toList();
     return GhostBoxRelease(
-      version: normalizeReleaseTag(tag),
+      version: version,
       tagName: tag,
       pageUrl: page,
       assets: assets,
@@ -583,13 +790,13 @@ class GitHubUpdater {
   }
 
   String normalizeReleaseTag(String tag) {
-    final value = tag.replaceFirst(RegExp(r'^v'), '');
+    final value = tag.replaceFirst(RegExp(r'^[vV]'), '');
     final shortTag = RegExp(r'^(\d+)\.(\d+)(-.+)$').firstMatch(value);
     if (shortTag == null) return value;
     return '${shortTag.group(1)}.${shortTag.group(2)}.0${shortTag.group(3)}';
   }
 
-  int _compareVersions(String left, String right) {
+  int compareVersions(String left, String right) {
     final a = _versionParts(left);
     final b = _versionParts(right);
     for (var i = 0; i < 3; i++) {
@@ -619,10 +826,20 @@ class GitHubUpdater {
   }
 
   (List<int>, List<String>) _versionParts(String value) {
-    final match =
-        RegExp(r'^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?').firstMatch(value);
+    final match = RegExp(
+      r'^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)'
+      r'(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?'
+      r'(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$',
+    ).firstMatch(value);
     if (match == null) return ([0, 0, 0], const []);
     final pre = match.group(4);
+    if (pre != null &&
+        pre.split('.').any((part) =>
+            RegExp(r'^\d+$').hasMatch(part) &&
+            part.length > 1 &&
+            part.startsWith('0'))) {
+      return ([0, 0, 0], const []);
+    }
     return (
       [
         int.parse(match.group(1)!),
@@ -631,5 +848,19 @@ class GitHubUpdater {
       ],
       pre == null ? const [] : pre.split('.')
     );
+  }
+
+  bool _isSemVer(String value) {
+    if (!RegExp(
+      r'^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)'
+      r'(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?'
+      r'(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$',
+    ).hasMatch(value)) return false;
+    final pre = value.split('+').first.split('-');
+    if (pre.length < 2) return true;
+    return !pre[1].split('.').any((part) =>
+        RegExp(r'^\d+$').hasMatch(part) &&
+        part.length > 1 &&
+        part.startsWith('0'));
   }
 }

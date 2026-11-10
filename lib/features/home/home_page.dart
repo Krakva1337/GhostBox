@@ -35,6 +35,8 @@ import '../../services/device_identity.dart';
 import '../../services/app_version.dart';
 import '../../services/dns_ad_blocklist.dart';
 import '../../services/github_updater.dart';
+import '../../services/update_startup.dart';
+import '../../services/update_transaction.dart';
 import '../../services/log_store.dart';
 import '../../services/traffic_stats.dart';
 import '../../services/speed_test_activity.dart';
@@ -184,6 +186,8 @@ class _HomePageState extends State<HomePage>
   bool discordPresenceEnabled = false;
   bool checkingAppUpdate = false;
   bool installingAppUpdate = false;
+  bool appUpdateFailed = false;
+  String? lastAndroidUpdateFailureId;
   String? appUpdateStatus;
   UpdateDownloadProgress? appUpdateProgress;
   final ValueNotifier<UpdateDownloadProgress?> _updateProgressNotifier =
@@ -229,6 +233,11 @@ class _HomePageState extends State<HomePage>
     );
     if (stale > 0) {
       _recordAppLog('Очищены оставшиеся процессы VPN-ядер: $stale');
+    }
+    final removedTunAdapter =
+        await WindowsCoreLifecycle.cleanupGhostBoxTunAdapter();
+    if (removedTunAdapter) {
+      _recordAppLog('Удалён оставшийся Wintun-адаптер GhostBox ghostbox0');
     }
   }
 
@@ -1098,9 +1107,30 @@ class _HomePageState extends State<HomePage>
   Future<void> _load() async {
     if (Platform.isMacOS) await _migrateMacContainerPreferences();
     final p = await SharedPreferences.getInstance();
+    final startupHealthCheck = UpdateStartup.healthCheck;
+    if (startupHealthCheck != null) await startupHealthCheck;
+    final updatedVersion = p.getString('updateCompletedVersion');
+    if (updatedVersion != null) await p.remove('updateCompletedVersion');
+    final latestUpdateFailure = await UpdateTransaction.latestFailure();
+    final failureId = latestUpdateFailure?['id'];
+    final updateFailureToReport = failureId != null &&
+            failureId != p.getString('lastNotifiedUpdateFailureId')
+        ? latestUpdateFailure
+        : null;
+    if (failureId != null && updateFailureToReport != null) {
+      await p.setString('lastNotifiedUpdateFailureId', failureId);
+      if (Platform.isAndroid) lastAndroidUpdateFailureId = failureId;
+    }
     final resumeAfterElevation =
         Platform.isWindows && (p.getBool('connectAfterElevation') ?? false);
     if (resumeAfterElevation) await p.setBool('connectAfterElevation', false);
+    final resumeAfterUpdate = p.getBool('updateReconnectAfter') ?? false;
+    if (resumeAfterUpdate) await p.setBool('updateReconnectAfter', false);
+    final cleanupCoresAfterElevation = Platform.isWindows &&
+        (p.getBool('cleanupCoresAfterElevation') ?? false);
+    if (cleanupCoresAfterElevation) {
+      await p.setBool('cleanupCoresAfterElevation', false);
+    }
     final disableKillSwitchAfterElevation = Platform.isWindows &&
         (p.getBool('disableKillSwitchAfterElevation') ?? false);
     if (disableKillSwitchAfterElevation) {
@@ -1400,6 +1430,18 @@ class _HomePageState extends State<HomePage>
       await _setKillSwitch(true);
     }
     if (disableKillSwitchAfterElevation) await _setKillSwitch(false);
+    if (cleanupCoresAfterElevation && mounted) {
+      try {
+        await _cleanupWindowsCoreProcesses();
+        _message(_text('Ядра и оставшийся TUN-адаптер GhostBox очищены',
+            'GhostBox cores and any stale TUN adapter cleaned up'));
+      } on Object catch (error) {
+        connectionIssue = error.toString();
+        _recordAppLog('Не удалось завершить ядра после запроса UAC: $error');
+        _message(connectionIssue!);
+      }
+      return;
+    }
     // Import protocol links before a possible update exits/restarts the app,
     // then let the updater finish before auto-connect brings the VPN up.
     await _drainPendingAppLinks();
@@ -1414,10 +1456,30 @@ class _HomePageState extends State<HomePage>
     }
     _syncMacTrayConnectionState();
     if (mounted &&
-        (coreSettings.autoConnect || resumeAfterElevation) &&
+        (coreSettings.autoConnect ||
+            resumeAfterElevation ||
+            resumeAfterUpdate) &&
         selected != null &&
         backend.state == VpnState.disconnected) {
       await _toggle();
+    }
+    if (mounted && updatedVersion != null) {
+      _message(_text(
+        'GhostBox обновлён до ${GitHubUpdater.displayVersion(updatedVersion)}',
+        'GhostBox updated to ${GitHubUpdater.displayVersion(updatedVersion)}',
+      ));
+    }
+    if (mounted && updateFailureToReport != null) {
+      final failedVersion = updateFailureToReport['targetVersion'];
+      final details = updateFailureToReport['error'];
+      final versionText = failedVersion == null || failedVersion.isEmpty
+          ? ''
+          : ' ${GitHubUpdater.displayVersion(failedVersion)}';
+      final errorText = details == null || details.isEmpty ? '' : ': $details';
+      _message(_text(
+        'Обновление$versionText не завершилось$errorText. Можно повторить попытку.',
+        'Update$versionText did not complete$errorText. You can retry.',
+      ));
     }
   }
 
@@ -1444,11 +1506,48 @@ class _HomePageState extends State<HomePage>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed && Platform.isAndroid) {
       unawaited(_refreshAndroidKillSwitchStatus());
+      unawaited(_refreshAndroidUpdateStatus());
     }
     if (state == AppLifecycleState.resumed &&
         autoRefreshSubscriptions &&
         prefs != null) {
       unawaited(_refreshDueSubscriptions());
+    }
+  }
+
+  Future<void> _refreshAndroidUpdateStatus() async {
+    if (!Platform.isAndroid) return;
+    try {
+      final status =
+          await const MethodChannel('app.ghostbox.ghostbox/app_update')
+              .invokeMapMethod<String, dynamic>('getAndroidUpdateStatus');
+      if (status == null || status['status'] != 'FAILED') return;
+      final id = status['id'] as String? ?? '';
+      final storage = prefs ??= await SharedPreferences.getInstance();
+      if (id.isEmpty ||
+          id == lastAndroidUpdateFailureId ||
+          id == storage.getString('lastAndroidUpdateFailureId')) return;
+      lastAndroidUpdateFailureId = id;
+      await storage.setString('lastAndroidUpdateFailureId', id);
+      if (mounted) setState(() => appUpdateFailed = true);
+      final resumeAfterFailure =
+          storage.getBool('updateReconnectAfter') ?? false;
+      if (resumeAfterFailure) {
+        await storage.setBool('updateReconnectAfter', false);
+      }
+      final error = status['error'] as String?;
+      _message(_text(
+        'Android отменил установку обновления${error == null || error.isEmpty ? '' : ': $error'}',
+        'Android did not install the update${error == null || error.isEmpty ? '' : ': $error'}',
+      ));
+      if (resumeAfterFailure &&
+          mounted &&
+          selected != null &&
+          backend.state == VpnState.disconnected) {
+        await _toggle();
+      }
+    } on Object catch (error) {
+      _recordAppLog('Не удалось прочитать результат установки APK: $error');
     }
   }
 
@@ -1780,7 +1879,7 @@ class _HomePageState extends State<HomePage>
           _message(message);
           if (Platform.isAndroid && !_suppressAndroidVpnRecoveryPrompt) {
             await _offerAndroidVpnRecovery();
-          } else if (!Platform.isIOS) {
+          } else {
             await _offerCoreCleanup();
           }
         }
@@ -2508,9 +2607,9 @@ class _HomePageState extends State<HomePage>
       const script = r'''
 $ErrorActionPreference = 'SilentlyContinue'
 for ($i = 0; $i -lt 80; $i++) {
-  $adapter = Get-NetAdapter -IncludeHidden | Where-Object {
-    $_.Name -eq 'ghostbox0' -or $_.InterfaceDescription -match 'Wintun'
-  } | Select-Object -First 1
+  $adapter = Get-NetAdapter -Name 'ghostbox0' -IncludeHidden -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -eq 'ghostbox0' -and $_.InterfaceDescription -match 'Wintun' } |
+    Select-Object -First 1
   if ($adapter -and $adapter.Status -eq 'Up') {
     Write-Output "$($adapter.Name)|$($adapter.InterfaceDescription)"
     exit 0
@@ -2698,7 +2797,7 @@ exit 1
     _configureCoreLifecycle(bridge);
     _bindCoreRecoveryNotices(bridge);
     tunnelBridgeBackend = bridge;
-    await bridge.connect(jsonEncode(bridgeProfile.toJson()));
+    await bridge.connectInSession(jsonEncode(bridgeProfile.toJson()));
   }
 
   Future<void> _verifyTunRoute(String probeIp) async {
@@ -2710,7 +2809,7 @@ $routes = Get-NetRoute -AddressFamily IPv4 | Where-Object {
 }
 foreach ($route in $routes) {
   $adapter = Get-NetAdapter -InterfaceIndex $route.InterfaceIndex -IncludeHidden
-  if ($adapter -and ($adapter.Name -eq 'ghostbox0' -or $adapter.InterfaceDescription -match 'Wintun')) {
+  if ($adapter -and $adapter.Name -eq 'ghostbox0' -and $adapter.InterfaceDescription -match 'Wintun') {
     Write-Output "$($route.DestinationPrefix)|$($adapter.Name)|$($adapter.Status)"
   }
 }
@@ -2820,14 +2919,19 @@ foreach ($route in $routes) {
     return 'Не удалось включить подключение: $error';
   }
 
-  Future<void> _disconnectActive() async {
+  Future<void> _disconnectActive({bool requireCoreStop = false}) async {
     final failures = <String>[];
+    final coreStopFailures = <String>[];
 
     Future<void> cleanup(String label, Future<void> Function() action) async {
       try {
         await action();
       } on Object catch (error) {
         failures.add('$label: $error');
+        if (label == 'остановка TUN-моста' ||
+            label == 'остановка основного ядра') {
+          coreStopFailures.add('$label: $error');
+        }
         _recordAppLog('Ошибка очистки ($label): $error');
       }
     }
@@ -2852,6 +2956,10 @@ foreach ($route in $routes) {
     if (failures.isNotEmpty) {
       _recordAppLog(
           'Очистка подключения завершена с ошибками: ${failures.join(' | ')}');
+    }
+    if (requireCoreStop && coreStopFailures.isNotEmpty) {
+      throw StateError(
+          'Не удалось подтвердить остановку всех VPN-ядер: ${coreStopFailures.join(' | ')}');
     }
   }
 
@@ -3026,13 +3134,10 @@ foreach ($route in $routes) {
 
   Future<void> _switchActiveServer() async {
     final target = selected;
-    final previousActiveProfileId = activeProfileId;
     if (switchingServer ||
         backend.state != VpnState.connected ||
         target == null ||
         activeProfileId == target.id) return;
-    var androidInPlaceSwitch = false;
-    var androidSwitchCommitted = false;
     switchingServer = true;
     pendingReconnect = false;
     connectionIssue = null;
@@ -3040,29 +3145,6 @@ foreach ($route in $routes) {
     if (mounted) setState(() {});
     _syncMacTrayConnectionState();
     try {
-      final androidBackend = backend;
-      if (Platform.isAndroid &&
-          androidBackend is AndroidVpnBackend &&
-          androidBackend.canSwitchServerInPlace) {
-        androidInPlaceSwitch = true;
-        final started = DateTime.now();
-        final runtimeProfile = await _withDeviceMetadata(target);
-        await androidBackend.switchServer(jsonEncode(runtimeProfile.toJson()));
-        activeProfileId = target.id;
-        androidSwitchCommitted = true;
-        await prefs?.setString('activeProfileId', target.id);
-        connectionIssue = null;
-        _recordAppLog('Переключено на ${target.name} · Xray · Android TUN');
-        await _collectAndroidCoreLogs();
-        await _saveConnectionAttempt(
-            profile: target.name,
-            core: 'xray',
-            mode: 'tun',
-            started: started,
-            success: true,
-            message: 'Подключено после переключения сервера');
-        return;
-      }
       if ((Platform.isLinux || Platform.isWindows) &&
           coreSettings.killSwitchEnabled) {
         final endpoint = await _armKillSwitchForProfile(target,
@@ -3075,7 +3157,7 @@ foreach ($route in $routes) {
             requiresReconnect: false);
         killSwitchActive = true;
       }
-      await _disconnectActive();
+      await _disconnectActive(requireCoreStop: true);
       activeProfileId = null;
       // The VPN remains active from the user's perspective and reconnects
       // automatically. TUN has a brief traffic pause while its single
@@ -3083,21 +3165,6 @@ foreach ($route in $routes) {
       if (mounted) setState(() {});
       await _toggle(allowDuringSwitch: true);
     } on Object catch (error) {
-      if (androidInPlaceSwitch && !androidSwitchCommitted) {
-        if (backend.state == VpnState.connected &&
-            previousActiveProfileId != null) {
-          selectedId = previousActiveProfileId;
-          await _persist();
-        } else {
-          try {
-            await _disconnectActive();
-          } on Object {
-            // Keep surfacing the switch failure if cleanup also fails.
-          }
-          activeProfileId = null;
-          await prefs?.remove('activeProfileId');
-        }
-      }
       _recordAppLog('Не удалось переключить сервер: $error');
       _message('Не удалось переключить сервер: $error');
     } finally {
@@ -3218,7 +3285,7 @@ foreach ($route in $routes) {
             '_ghostboxHttpProbePort': httpProxyPort,
           },
         );
-        await probeBackend.connect(jsonEncode(probeProfile.toJson()));
+        await probeBackend.connectProbe(jsonEncode(probeProfile.toJson()));
         await _waitForProxyListener(proxyPort, timeout);
         await _waitForProxyListener(httpProxyPort, timeout);
       }
@@ -3462,7 +3529,7 @@ foreach ($route in $routes) {
           );
           final testBackend = probeBackend!;
           final startup =
-              testBackend.connect(jsonEncode(probeProfile.toJson()));
+              testBackend.connectProbe(jsonEncode(probeProfile.toJson()));
           // A timed-out startup may still finish asynchronously. Close its core
           // again if it starts after the test has already failed.
           unawaited(startup.then<void>((_) async {
@@ -4748,24 +4815,75 @@ foreach ($route in $routes) {
         builder: (context) => AlertDialog(
                 title: Text(_text('Ошибка ядра', 'Core error')),
                 content: Text(_text(
-                    'Завершить оставшиеся процессы Xray / sing-box, запущенные GhostBox? После очистки можно подключиться снова.',
-                    'Stop remaining Xray / sing-box processes started by GhostBox? You can reconnect after cleanup.')),
+                    'Завершить оставшиеся процессы Xray / sing-box и очистить адаптер GhostBox TUN, если он завис? После очистки можно подключиться снова.',
+                    'Stop remaining Xray / sing-box processes and remove a stale GhostBox TUN adapter? You can reconnect after cleanup.')),
                 actions: [
                   TextButton(
                       onPressed: () => Navigator.pop(context),
                       child: Text(_text('Закрыть', 'Close'))),
                   FilledButton(
                       onPressed: () => Navigator.pop(context, true),
-                      child: Text(_text('Завершить ядра', 'Stop cores')))
+                      child:
+                          Text(_text('Очистить подключение', 'Clean up VPN')))
                 ]));
     if (clean != true) return;
     try {
-      await _disconnectActive();
+      await _disconnectActive(requireCoreStop: true);
+      await process?.cleanupGhostBoxCores();
       await _cleanupWindowsCoreProcesses();
       if (mounted)
-        _message(_text('Ядра GhostBox остановлены', 'GhostBox cores stopped'));
+        _message(_text('Ядра и TUN-адаптер GhostBox очищены',
+            'GhostBox cores and TUN adapter cleaned up'));
     } on Object catch (error) {
+      if (Platform.isWindows) {
+        try {
+          if (!await WindowsElevation.isElevated()) {
+            await _offerWindowsAdminCoreCleanup(error);
+            return;
+          }
+        } on Object catch (elevationError) {
+          if (mounted) _message('$error\n$elevationError');
+          return;
+        }
+      }
       if (mounted) _message('$error');
+    }
+  }
+
+  Future<void> _offerWindowsAdminCoreCleanup(Object cause) async {
+    final approved = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(_text(
+            'Нужны права администратора', 'Administrator permission needed')),
+        content: Text(_text(
+          'Windows не разрешила завершить ядро или удалить TUN-адаптер. Перезапустить GhostBox с запросом UAC и повторить очистку подключения?\n\n$cause',
+          'Windows did not allow a core to stop or the TUN adapter to be removed. Restart GhostBox with a UAC prompt and retry VPN cleanup?\n\n$cause',
+        )),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: Text(_text('Отмена', 'Cancel')),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            icon: const Icon(Icons.admin_panel_settings_outlined),
+            label: Text(_text('Запросить права', 'Request permission')),
+          ),
+        ],
+      ),
+    );
+    if (approved != true || !mounted) return;
+
+    final storage = prefs ??= await SharedPreferences.getInstance();
+    await storage.setBool('cleanupCoresAfterElevation', true);
+    try {
+      await WindowsElevation.relaunchElevated();
+      await SystemNavigator.pop();
+    } on Object catch (error) {
+      await storage.setBool('cleanupCoresAfterElevation', false);
+      if (mounted)
+        _message('Не удалось запросить права администратора: $error');
     }
   }
 
@@ -10262,8 +10380,8 @@ foreach ($route in $routes) {
               Icons.system_update_alt_rounded,
               _text('Автообновление приложения', 'App auto-update'),
               autoUpdateApp
-                  ? _text('Скачать APK и открыть Загрузки',
-                      'Download APK and open Downloads')
+                  ? _text('Предлагать установку системным установщиком',
+                      'Offer installation through the system installer')
                   : _text('Только сообщать о новой версии',
                       'Notify when a new version is available'),
               _compactSwitch(
@@ -10610,7 +10728,9 @@ foreach ($route in $routes) {
                 ),
                 label: Text(release.version == GitHubUpdater.currentVersion
                     ? _text('Открыть релиз', 'View release')
-                    : _text('Установить обновление', 'Install update')),
+                    : appUpdateFailed
+                        ? _text('Повторить попытку', 'Retry update')
+                        : _text('Установить обновление', 'Install update')),
               ),
             OutlinedButton.icon(
               onPressed: _openReleasePage,
@@ -10702,6 +10822,21 @@ foreach ($route in $routes) {
         _text('Загрузка обновления', 'Downloading update'),
       UpdateDownloadStage.verifying =>
         _text('Проверка файла', 'Verifying package'),
+      UpdateDownloadStage.staging =>
+        _text('Подготовка версии', 'Staging version'),
+      UpdateDownloadStage.stopping =>
+        _text('Остановка клиента', 'Stopping client'),
+      UpdateDownloadStage.installing =>
+        _text('Передача установщику', 'Handing off to installer'),
+      UpdateDownloadStage.relaunching =>
+        _text('Перезапуск клиента', 'Relaunching client'),
+      UpdateDownloadStage.healthCheck =>
+        _text('Проверка запуска', 'Checking startup'),
+      UpdateDownloadStage.commit =>
+        _text('Завершение транзакции', 'Committing update'),
+      UpdateDownloadStage.cleanup => _text('Очистка', 'Cleanup'),
+      UpdateDownloadStage.failed => _text('Ошибка', 'Failed'),
+      UpdateDownloadStage.rollback => _text('Откат версии', 'Rolling back'),
       UpdateDownloadStage.savingToDownloads =>
         _text('Сохраняю в Загрузки', 'Saving to Downloads'),
       UpdateDownloadStage.launchingInstaller =>
@@ -11051,12 +11186,33 @@ foreach ($route in $routes) {
   Future<void> _installAppUpdate() async {
     final release = availableAppRelease;
     if (release == null || installingAppUpdate) return;
-    if (!Platform.isAndroid && backend.state != VpnState.disconnected) {
-      _message(_text('Перед обновлением отключи VPN',
-          'Disconnect the VPN before updating'));
-      return;
+    var installAndroidPackage = true;
+    if (Platform.isAndroid) {
+      final installNow = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: Text(_text('Установка обновления', 'Install update')),
+          content: Text(_text(
+            'Можно передать APK системному установщику Android или сохранить его в «Загрузки» для ручной установки.',
+            'Send the APK to Android Package Installer or save it to Downloads for manual installation.',
+          )),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: Text(_text('Сохранить APK', 'Save APK')),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: Text(_text('Установить', 'Install')),
+            ),
+          ],
+        ),
+      );
+      if (installNow == null) return;
+      installAndroidPackage = installNow;
     }
     setState(() => installingAppUpdate = true);
+    appUpdateFailed = false;
     Future<void>? progressDialog;
     DialogRoute<void>? progressRoute;
     try {
@@ -11109,8 +11265,17 @@ foreach ($route in $routes) {
       );
       progressDialog =
           Navigator.of(context, rootNavigator: true).push(progressRoute);
-      final savedPath =
-          await appUpdater.apply(release, asset, onProgress: (progress) {
+      final savedPath = await appUpdater
+          .apply(release, asset, installAndroidPackage: installAndroidPackage,
+              beforeHandoff: () async {
+        if (backend.state != VpnState.disconnected) {
+          await prefs?.setBool('updateReconnectAfter', true);
+        }
+        await _disconnectActive(requireCoreStop: true);
+        if (backend.state != VpnState.disconnected) {
+          throw StateError('VPN shutdown was not confirmed before update.');
+        }
+      }, onProgress: (progress) {
         final now = DateTime.now();
         final isTerminalProgress = progress.totalBytes > 0 &&
             progress.downloadedBytes >= progress.totalBytes;
@@ -11131,6 +11296,26 @@ foreach ($route in $routes) {
                 'Downloading ${GitHubUpdater.displayVersion(release.version)}…'),
             UpdateDownloadStage.verifying =>
               _text('Проверяю SHA-256…', 'Verifying SHA-256…'),
+            UpdateDownloadStage.staging =>
+              _text('Подготавливаю новую версию…', 'Staging the new version…'),
+            UpdateDownloadStage.stopping => _text(
+                'Останавливаю подключение и приложение…',
+                'Stopping the connection and app…'),
+            UpdateDownloadStage.installing => _text(
+                'Передаю APK установщику Android…', 'Handing APK to Android…'),
+            UpdateDownloadStage.relaunching =>
+              _text('Перезапускаю GhostBox…', 'Restarting GhostBox…'),
+            UpdateDownloadStage.healthCheck => _text(
+                'Проверяю запуск новой версии…', 'Checking the new version…'),
+            UpdateDownloadStage.commit =>
+              _text('Завершаю обновление…', 'Committing the update…'),
+            UpdateDownloadStage.cleanup =>
+              _text('Очищаю временные файлы…', 'Cleaning temporary files…'),
+            UpdateDownloadStage.failed =>
+              _text('Обновление не удалось', 'Update failed'),
+            UpdateDownloadStage.rollback => _text(
+                'Восстанавливаю прежнюю версию…',
+                'Restoring the previous version…'),
             UpdateDownloadStage.savingToDownloads =>
               _text('Сохраняю APK в Загрузки…', 'Saving APK to Downloads…'),
             UpdateDownloadStage.launchingInstaller =>
@@ -11138,16 +11323,38 @@ foreach ($route in $routes) {
           };
         });
       });
-      if (Platform.isAndroid && mounted) {
+      if (Platform.isAndroid && mounted && savedPath != null) {
         final message = _text(
-          'APK сохранён: ${savedPath ?? 'Download/GhostBox/GhostBox-${release.version}.apk'}. Открой файл и нажми «Установить».',
-          'APK saved to ${savedPath ?? 'Download/GhostBox/GhostBox-${release.version}.apk'}. Open it and tap Install.',
+          'APK сохранён: $savedPath. Открой файл и нажми «Установить».',
+          'APK saved to $savedPath. Open it and tap Install.',
+        );
+        setState(() => appUpdateStatus = message);
+        _message(message);
+      } else if (Platform.isAndroid && mounted) {
+        final message = _text(
+          'Запрос на установку отправлен Android. Подтверди его в системном окне.',
+          'Android received the install request. Confirm it in the system prompt.',
         );
         setState(() => appUpdateStatus = message);
         _message(message);
       }
     } on Object catch (error) {
+      final resumeAfterFailure =
+          await prefs?.getBool('updateReconnectAfter') ?? false;
+      await prefs?.setBool('updateReconnectAfter', false);
+      if (resumeAfterFailure &&
+          mounted &&
+          selected != null &&
+          backend.state == VpnState.disconnected) {
+        try {
+          await _toggle();
+        } on Object catch (reconnectError) {
+          _recordAppLog(
+              'Не удалось восстановить подключение после ошибки обновления: $reconnectError');
+        }
+      }
       if (mounted) {
+        appUpdateFailed = true;
         setState(() {
           appUpdateProgress = null;
           appUpdateStatus = _text('Обновление не удалось', 'Update failed');

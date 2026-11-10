@@ -181,11 +181,11 @@ import UIKit
         finish(FlutterError(code: "vpn_preferences_failed", message: self.preferencesErrorMessage(error), details: nil))
         return
       }
-      // Switching profiles never starts a second extension over a disconnecting
-      // tunnel. Await actual NE state before saving or starting the replacement.
-      if manager.connection.status != .disconnected && manager.connection.status != .invalid {
-        manager.connection.stopVPNTunnel()
-      }
+      // iOS hosts both Xray and sing-box in the Packet Tunnel extension's
+      // Libbox runtime. Request the extension to stop on every connection
+      // attempt, then wait for NetworkExtension to confirm it is fully down
+      // before saving a config or starting either core.
+      manager.connection.stopVPNTunnel()
       self.waitForStop(manager, deadline: Date().addingTimeInterval(20)) { stopError in
         guard stopError == nil else {
           finish(FlutterError(code: "vpn_stop_timeout", message: stopError?.localizedDescription, details: nil))

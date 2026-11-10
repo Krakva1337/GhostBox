@@ -2,6 +2,8 @@ package app.ghostbox.ghostbox
 
 import android.app.Activity
 import android.app.DownloadManager
+import android.app.PendingIntent
+import android.content.pm.PackageInstaller
 import android.Manifest
 import android.content.ActivityNotFoundException
 import android.content.ContentValues
@@ -30,6 +32,10 @@ class MainActivity : FlutterActivity() {
         private const val LOG_EXPORT_REQUEST = 4139
         private const val DOWNLOADS_PERMISSION_REQUEST = 4140
         private const val APPEARANCE_FILE_REQUEST = 4141
+        private const val UPDATE_INSTALL_REQUEST = 4142
+        private const val UPDATE_SOURCE_REQUEST = 4143
+        const val UPDATE_INSTALL_ACTION = "app.ghostbox.ghostbox.UPDATE_INSTALL_STATUS"
+        @Volatile var updateInProgress = false
     }
 
     private var pendingVpnResult: MethodChannel.Result? = null
@@ -46,8 +52,11 @@ class MainActivity : FlutterActivity() {
     private var pendingDownloadsName: String? = null
     private var pendingAppearanceResult: MethodChannel.Result? = null
     private var pendingAppearanceMaxBytes = 0
-    @Volatile private var updateInProgress = false
+    private var pendingUpdateInstall: Triple<String, String, String>? = null
+    private var pendingUpdateTransactionPath: String? = null
+    private var pendingUpdateInstallResult: MethodChannel.Result? = null
     @Volatile private var staleVpnCleanupScheduled = false
+    @Volatile private var vpnStartInProgress = false
 
     private val xrayProcessName get() = "$packageName:xraycore2"
     private val singBoxProcessName get() = "$packageName:singboxcore2"
@@ -58,6 +67,7 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        reconcileAndroidUpdate()
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
@@ -71,7 +81,7 @@ class MainActivity : FlutterActivity() {
                         }
                     }
                     "startVpn" -> {
-                        if (pendingVpnResult != null) {
+                        if (pendingVpnResult != null || vpnStartInProgress) {
                             result.error("busy", "VPN permission request is already open", null)
                             return@setMethodCallHandler
                         }
@@ -319,6 +329,20 @@ class MainActivity : FlutterActivity() {
                     }
                     return@setMethodCallHandler
                 }
+                if (call.method == "getUpdatePersistentDirectory") {
+                    try {
+                        val directory = File(filesDir, "updates")
+                        check(directory.isDirectory || directory.mkdirs()) { "Could not create update state directory" }
+                        result.success(directory.absolutePath)
+                    } catch (error: Exception) {
+                        result.error("update_state_failed", error.message, null)
+                    }
+                    return@setMethodCallHandler
+                }
+                if (call.method == "getSupportedAbis") {
+                    result.success(Build.SUPPORTED_ABIS.toList())
+                    return@setMethodCallHandler
+                }
                 if (call.method == "sha256File") {
                     val path = call.argument<String>("path")
                     if (path.isNullOrBlank()) {
@@ -342,6 +366,98 @@ class MainActivity : FlutterActivity() {
                             runOnUiThread { result.error("checksum_failed", error.message, null) }
                         }
                     }, "ghostbox-update-checksum").start()
+                    return@setMethodCallHandler
+                }
+                if (call.method == "installApk") {
+                    if (updateInProgress) {
+                        result.error("update_busy", "Another APK update is already in progress", null)
+                        return@setMethodCallHandler
+                    }
+                    val path = call.argument<String>("path")
+                    val expectedHash = call.argument<String>("sha256")?.lowercase()
+                    val transactionId = call.argument<String>("transactionId")
+                    val transactionPath = call.argument<String>("transactionPath")
+                    if (path.isNullOrBlank() || expectedHash?.matches(Regex("[0-9a-f]{64}")) != true ||
+                        transactionId.isNullOrBlank() || !transactionId.matches(Regex("[A-Za-z0-9._-]{1,100}")) ||
+                        transactionPath.isNullOrBlank()) {
+                        result.error("invalid_update", "APK path, SHA-256 and transaction ID are required", null)
+                        return@setMethodCallHandler
+                    }
+                    updateInProgress = true
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !packageManager.canRequestPackageInstalls()) {
+                        pendingUpdateInstall = Triple(path, expectedHash!!, transactionId!!)
+                        pendingUpdateTransactionPath = transactionPath
+                        pendingUpdateInstallResult = result
+                        try {
+                            startActivityForResult(
+                                Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                                    Uri.parse("package:$packageName")), UPDATE_SOURCE_REQUEST,
+                            )
+                        } catch (error: Exception) {
+                            pendingUpdateInstall = null
+                            pendingUpdateTransactionPath = null
+                            pendingUpdateInstallResult = null
+                            updateInProgress = false
+                            result.error("install_permission", error.message ?: "Open Android's install unknown apps setting", null)
+                        }
+                    } else {
+                        startPackageInstall(path, expectedHash!!, transactionId!!, transactionPath!!, result)
+                    }
+                    return@setMethodCallHandler
+                }
+                if (call.method == "confirmAndroidUpdateHealth") {
+                    try {
+                        val version = call.argument<String>("version")
+                        check(!version.isNullOrBlank()) { "Installed app version is required" }
+                        val info = packageManager.getPackageInfo(packageName, 0)
+                        @Suppress("DEPRECATION")
+                        val installedVersionCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                            info.longVersionCode
+                        } else info.versionCode.toLong()
+                        var confirmed = false
+                        File(filesDir, "updates").listFiles()?.filter { it.isDirectory }
+                            ?.map { File(it, "update_transaction.json") }?.forEach { file ->
+                                if (!file.isFile) return@forEach
+                                val transaction = org.json.JSONObject(file.readText())
+                                if (transaction.optString("status") != "INSTALLATION_SUCCEEDED_PENDING_HEALTH") return@forEach
+                                check(transaction.optString("targetVersion") == version && info.versionName == version) {
+                                    "Installed version does not match the Android update transaction"
+                                }
+                                check(transaction.optLong("versionCode") == installedVersionCode) {
+                                    "Installed Android version code does not match the staged APK"
+                                }
+                                transaction.put("status", "COMMIT")
+                                    .put("healthCheck", "flutter-first-frame-settings-available")
+                                    .put("updatedAt", System.currentTimeMillis())
+                                file.writeText(transaction.toString())
+                                confirmed = true
+                            }
+                        result.success(confirmed)
+                    } catch (error: Exception) {
+                        result.error("update_health_failed", error.message, null)
+                    }
+                    return@setMethodCallHandler
+                }
+                if (call.method == "getAndroidUpdateStatus") {
+                    try {
+                        val latest = File(filesDir, "updates").listFiles()
+                            ?.filter { it.isDirectory }
+                            ?.map { File(it, "update_transaction.json") }
+                            ?.filter { it.isFile }
+                            ?.maxByOrNull { it.lastModified() }
+                        if (latest == null) {
+                            result.success(null)
+                        } else {
+                            val transaction = org.json.JSONObject(latest.readText())
+                            result.success(mapOf(
+                                "id" to transaction.optString("id"),
+                                "status" to transaction.optString("status"),
+                                "error" to transaction.optString("error"),
+                            ))
+                        }
+                    } catch (error: Exception) {
+                        result.error("update_status_failed", error.message, null)
+                    }
                     return@setMethodCallHandler
                 }
                 if (call.method != "saveApkToDownloads") {
@@ -382,6 +498,38 @@ class MainActivity : FlutterActivity() {
                     result.error("downloads_failed", error.message, null)
                 }
             }
+    }
+
+    private fun reconcileAndroidUpdate() {
+        val updates = File(filesDir, "updates")
+        val files = updates.listFiles()?.filter { it.isDirectory }
+            ?.map { File(it, "update_transaction.json") }.orEmpty()
+        for (file in files) {
+          if (!file.isFile) continue
+          try {
+            val transaction = org.json.JSONObject(file.readText())
+            if (transaction.optString("status") == "INSTALLING") {
+                val sessionId = transaction.optInt("sessionId", -1)
+                if (sessionId < 0 || packageManager.packageInstaller.getSessionInfo(sessionId) == null) {
+                    transaction.put("status", "FAILED")
+                        .put("error", "Android install session ended before reporting a result")
+                        .put("updatedAt", System.currentTimeMillis())
+                    file.writeText(transaction.toString())
+                }
+                continue
+            }
+            if (transaction.optString("status") != "INSTALLATION_SUCCEEDED_PENDING_HEALTH") continue
+            @Suppress("DEPRECATION")
+            val installedVersion = packageManager.getPackageInfo(packageName, 0).let {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) it.longVersionCode else it.versionCode.toLong()
+            }
+            transaction.put("installedVersionObserved", installedVersion)
+                .put("updatedAt", System.currentTimeMillis())
+            file.writeText(transaction.toString())
+          } catch (_: Exception) {
+            // Preserve the record for diagnosis rather than deleting an unknown state.
+          }
+        }
     }
 
     /**
@@ -458,7 +606,7 @@ class MainActivity : FlutterActivity() {
     }
 
     @Suppress("DEPRECATION")
-    private fun validateUpdateApk(apk: File) {
+    private fun validateUpdateApk(apk: File, verifySigner: Boolean = true) {
         val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             PackageManager.GET_SIGNING_CERTIFICATES
         } else {
@@ -492,6 +640,7 @@ class MainActivity : FlutterActivity() {
                 "Версия APK старее уже установленной. Проверь ветку обновлений GitHub.",
             )
         }
+        if (!verifySigner) return
         val candidateSignatures = certificateHistory(candidate)
         val installedSignatures = certificateHistory(installed)
         val hasMultipleSigners = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P &&
@@ -556,6 +705,22 @@ class MainActivity : FlutterActivity() {
     @Deprecated("FlutterActivity permission result bridge")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == UPDATE_SOURCE_REQUEST) {
+            val pending = pendingUpdateInstall
+            val transactionPath = pendingUpdateTransactionPath
+            val callback = pendingUpdateInstallResult
+            pendingUpdateInstall = null
+            pendingUpdateTransactionPath = null
+            pendingUpdateInstallResult = null
+            if (pending == null || callback == null || transactionPath == null) return
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !packageManager.canRequestPackageInstalls()) {
+                updateInProgress = false
+                callback.error("install_permission_denied", "Allow GhostBox to install APK updates in Android settings", null)
+            } else {
+                startPackageInstall(pending.first, pending.second, pending.third, transactionPath, callback)
+            }
+            return
+        }
         if (requestCode == APPEARANCE_FILE_REQUEST) {
             val pickerResult = pendingAppearanceResult ?: return
             pendingAppearanceResult = null
@@ -611,13 +776,7 @@ class MainActivity : FlutterActivity() {
         val result = pendingVpnResult
         pendingVpnResult = null
         if (resultCode == Activity.RESULT_OK) {
-            try {
-                startPreparedVpn()
-                result?.success(null)
-            } catch (error: Exception) {
-                saveVpnError(error.message ?: error.toString())
-                result?.error("start_failed", error.message, null)
-            }
+            startPreparedVpn(result)
         } else {
             pendingConfig = null
             pendingProfileName = null
@@ -693,6 +852,89 @@ class MainActivity : FlutterActivity() {
         }, "ghostbox-save-update").start()
     }
 
+    private fun startPackageInstall(
+        path: String,
+        expectedHash: String,
+        transactionId: String,
+        transactionPath: String,
+        result: MethodChannel.Result,
+    ) {
+        Thread({
+            var sessionId = -1
+            try {
+                val apk = File(path).canonicalFile
+                val cache = File(cacheDir, "updates").canonicalFile
+                check(apk.path.startsWith(cache.path + File.separator) && apk.isFile) {
+                    "Update APK must be in the private update cache"
+                }
+                val digest = MessageDigest.getInstance("SHA-256")
+                apk.inputStream().use { input ->
+                    val buffer = ByteArray(64 * 1024)
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        digest.update(buffer, 0, count)
+                    }
+                }
+                val actualHash = digest.digest().joinToString("") { "%02x".format(it.toInt() and 0xff) }
+                check(actualHash == expectedHash) { "APK SHA-256 does not match the release checksum" }
+                validateUpdateApk(apk)
+                val info = packageManager.getPackageArchiveInfo(apk.absolutePath, 0)
+                    ?: error("APK package metadata is unreadable")
+                @Suppress("DEPRECATION")
+                val targetVersion = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) info.longVersionCode else info.versionCode.toLong()
+                val transactionFile = File(transactionPath).canonicalFile
+                val transactionRoot = File(filesDir, "updates").canonicalFile
+                check(transactionFile.path.startsWith(transactionRoot.path + File.separator) &&
+                    transactionFile.name == "update_transaction.json") {
+                    "Update transaction path must be inside private app update storage"
+                }
+                val transaction = if (transactionFile.isFile) {
+                    org.json.JSONObject(transactionFile.readText())
+                } else org.json.JSONObject()
+                check(transaction.optString("id") == transactionId) { "Update transaction ID does not match" }
+                transaction.put("status", "INSTALLING")
+                    .put("platform", "android")
+                    .put("package", packageName)
+                    .put("versionCode", targetVersion)
+                    .put("sha256", actualHash)
+                    .put("packagePath", apk.absolutePath)
+                    .put("updatedAt", System.currentTimeMillis())
+                transactionFile.parentFile?.mkdirs()
+                transactionFile.writeText(transaction.toString())
+                val installer = packageManager.packageInstaller
+                val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) params.setAppPackageName(packageName)
+                sessionId = installer.createSession(params)
+                transaction.put("sessionId", sessionId)
+                transactionFile.writeText(transaction.toString())
+                installer.openSession(sessionId).use { session ->
+                    apk.inputStream().use { input ->
+                        session.openWrite("base.apk", 0, apk.length()).use { output ->
+                            input.copyTo(output)
+                            session.fsync(output)
+                        }
+                    }
+                    val callbackIntent = Intent(this, UpdateInstallStatusReceiver::class.java)
+                        .setAction(UPDATE_INSTALL_ACTION)
+                        .putExtra(PackageInstaller.EXTRA_SESSION_ID, sessionId)
+                        .putExtra("transactionId", transactionId)
+                        .putExtra("transactionPath", transactionFile.absolutePath)
+                    val callback = PendingIntent.getBroadcast(
+                        this, UPDATE_INSTALL_REQUEST, callbackIntent,
+                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE,
+                    )
+                    session.commit(callback.intentSender)
+                }
+                runOnUiThread { result.success(mapOf("status" to "session_created", "sessionId" to sessionId)) }
+            } catch (error: Exception) {
+                if (sessionId >= 0) runCatching { packageManager.packageInstaller.abandonSession(sessionId) }
+                updateInProgress = false
+                runOnUiThread { result.error("install_failed", error.message ?: "Could not stage APK install", null) }
+            }
+        }, "ghostbox-package-installer").start()
+    }
+
     private fun saveApkToDownloads(sourcePath: String, fileName: String): String {
         val source = File(sourcePath)
         if (!source.isFile || source.length() <= 0L) {
@@ -701,7 +943,7 @@ class MainActivity : FlutterActivity() {
                     "${source.absolutePath} (exists=${source.exists()}, size=${source.length()})",
             )
         }
-        validateUpdateApk(source)
+        validateUpdateApk(source, verifySigner = false)
         val mimeType = "application/vnd.android.package-archive"
         val downloadsRelativePath = "${Environment.DIRECTORY_DOWNLOADS}/GhostBox"
         var savedFileName = fileName
@@ -809,13 +1051,7 @@ class MainActivity : FlutterActivity() {
     private fun requestVpnPermission(result: MethodChannel.Result) {
         val permissionIntent = VpnService.prepare(this)
         if (permissionIntent == null) {
-            try {
-                startPreparedVpn()
-                result.success(null)
-            } catch (error: Exception) {
-                saveVpnError(error.message ?: error.toString())
-                result.error("start_failed", error.message, null)
-            }
+            startPreparedVpn(result)
         } else {
             pendingVpnResult = result
             startActivityForResult(permissionIntent, VPN_PERMISSION_REQUEST)
@@ -1206,7 +1442,69 @@ class MainActivity : FlutterActivity() {
         )
     }
 
-    private fun startPreparedVpn() {
+    /**
+     * Treat native core shutdown as a hard precondition for every Android
+     * start, even if a caller forgets to invoke the explicit cleanup method.
+     * Both isolated VPN processes must be absent before a new service starts.
+     */
+    private fun startPreparedVpn(result: MethodChannel.Result?) {
+        if (vpnStartInProgress) {
+            result?.error("busy", "VPN core cleanup is already in progress", null)
+            return
+        }
+        vpnStartInProgress = true
+        val reply = result ?: object : MethodChannel.Result {
+            override fun success(result: Any?) = Unit
+            override fun error(errorCode: String, errorMessage: String?, errorDetails: Any?) = Unit
+            override fun notImplemented() = Unit
+        }
+        fun launchPreparedCore() {
+            try {
+                startPreparedVpnNow()
+                reply.success(null)
+            } catch (error: Exception) {
+                pendingConfig = null
+                pendingProfileName = null
+                pendingProxyOnly = false
+                pendingKeepXray = false
+                saveVpnError(error.message ?: error.toString())
+                reply.error("start_failed", error.message, null)
+            } finally {
+                vpnStartInProgress = false
+            }
+        }
+
+        // Xray mode is a deliberate two-core session: after the Xray proxy has
+        // been freshly started, the following sing-box TUN start carries
+        // keepXray=true. Preserve that new sibling process; all old cores were
+        // already drained before the first (proxyOnly) start.
+        if (pendingCore == "sing-box" && pendingKeepXray) {
+            launchPreparedCore()
+            return
+        }
+
+        cleanupVpnBeforeConnect(object : MethodChannel.Result {
+            override fun success(result: Any?) {
+                launchPreparedCore()
+            }
+
+            override fun error(errorCode: String, errorMessage: String?, errorDetails: Any?) {
+                pendingConfig = null
+                pendingProfileName = null
+                pendingProxyOnly = false
+                pendingKeepXray = false
+                vpnStartInProgress = false
+                reply.error(errorCode, errorMessage, errorDetails)
+            }
+
+            override fun notImplemented() {
+                vpnStartInProgress = false
+                reply.notImplemented()
+            }
+        })
+    }
+
+    private fun startPreparedVpnNow() {
         val config = pendingConfig ?: error("Missing VPN configuration")
         val core = pendingCore
         val intent = if (core == "xray") {
