@@ -319,6 +319,8 @@ class AndroidVpnBackend implements VpnBackend {
         routing: 'proxy',
         directDomains: const [],
         proxyDomains: const [],
+        directPresetIds: const [],
+        proxyPresetIds: const [],
         directApps: const [],
         proxyApps: const [],
         localPort: settings.localPort,

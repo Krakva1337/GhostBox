@@ -6,6 +6,9 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'brand_icon.dart';
 import 'theme_controller.dart';
+import 'glass_switch.dart';
+
+enum _IconChangeChoice { cancel, later, restart }
 
 class ThemeSettingsPanel extends StatefulWidget {
   const ThemeSettingsPanel({super.key, this.english = false});
@@ -27,6 +30,102 @@ class _ThemeSettingsPanelState extends State<ThemeSettingsPanel> {
   }
 
   String _s(String ru, String en) => widget.english ? en : ru;
+
+  Future<void> _changeIcon(
+    ThemeController controller, {
+    required String variant,
+    required String name,
+    required Color foreground,
+    required Color background,
+    required Future<bool> Function(bool applyPlatform) update,
+  }) async {
+    if (controller.iconVariant == variant &&
+        (variant != 'custom' ||
+            (controller.iconForeground == foreground &&
+                controller.iconBackground == background))) {
+      return;
+    }
+    final _IconChangeChoice? choice;
+    if (Platform.isAndroid) {
+      choice = controller.androidIconApplyPending
+          ? _IconChangeChoice.later
+          : await showDialog<_IconChangeChoice>(
+              context: context,
+              builder: (dialogContext) => AlertDialog(
+                title: Text(
+                    _s('Сменить иконку приложения?', 'Change the app icon?')),
+                content: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    GhostBoxBrandIcon(
+                      variant: variant,
+                      size: 56,
+                      foreground: foreground,
+                      background: background,
+                    ),
+                    const SizedBox(height: 14),
+                    Text(_s(
+                      'Чтобы применить значок «$name», GhostBox нужно перезапустить. Можно сделать это сейчас или при следующем запуске.',
+                      'GhostBox needs to restart to apply the “$name” icon. You can do it now or the next time the app starts.',
+                    )),
+                  ],
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () =>
+                        Navigator.pop(dialogContext, _IconChangeChoice.cancel),
+                    child: Text(_s('Отмена', 'Cancel')),
+                  ),
+                  TextButton(
+                    onPressed: () =>
+                        Navigator.pop(dialogContext, _IconChangeChoice.later),
+                    child: Text(_s('Напомнить позже', 'Remind me later')),
+                  ),
+                  FilledButton(
+                    onPressed: () =>
+                        Navigator.pop(dialogContext, _IconChangeChoice.restart),
+                    child: Text(_s('Перезапустить', 'Restart now')),
+                  ),
+                ],
+              ),
+            );
+      if (choice == null || choice == _IconChangeChoice.cancel) return;
+    } else {
+      choice = _IconChangeChoice.restart;
+    }
+
+    final applyNow = choice == _IconChangeChoice.restart;
+    final applied = await update(applyNow);
+    if (!mounted) return;
+    if (!Platform.isAndroid) return;
+
+    if (!applyNow) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(_s(
+          'Иконка применится при следующем запуске GhostBox.',
+          'The icon will be applied the next time GhostBox starts.',
+        )),
+      ));
+      return;
+    }
+    if (!applied) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(_s(
+          'Не удалось применить иконку. GhostBox попробует снова при следующем запуске.',
+          'Could not apply the icon. GhostBox will retry next time it starts.',
+        )),
+      ));
+      return;
+    }
+    final restartScheduled = await controller.restartApplication();
+    if (!mounted || restartScheduled) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(_s(
+        'Иконка изменена. Закройте и снова откройте GhostBox, чтобы перезапустить приложение.',
+        'The icon changed. Close and reopen GhostBox to restart the app.',
+      )),
+    ));
+  }
 
   String _presetName(String value) => switch (value) {
         'Полночь' => _s('Полночь', 'Midnight'),
@@ -89,6 +188,23 @@ class _ThemeSettingsPanelState extends State<ThemeSettingsPanel> {
       if (mounted) setState(() => _importing = false);
     }
   }
+
+  Widget _appearanceToggle({
+    required Widget title,
+    Widget? subtitle,
+    required bool value,
+    required ValueChanged<bool> onChanged,
+    EdgeInsetsGeometry? contentPadding,
+  }) =>
+      MergeSemantics(
+        child: ListTile(
+          contentPadding: contentPadding,
+          title: title,
+          subtitle: subtitle,
+          onTap: () => onChanged(!value),
+          trailing: GlassSwitch(value: value, onChanged: onChanged),
+        ),
+      );
 
   Widget _animatedValue(String value) => AnimatedSwitcher(
         duration: const Duration(milliseconds: 160),
@@ -204,40 +320,134 @@ class _ThemeSettingsPanelState extends State<ThemeSettingsPanel> {
     final theme = Theme.of(context);
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Text(_s('Оформление', 'Appearance'), style: theme.textTheme.titleMedium),
-      ListTile(
+      const SizedBox(height: 16),
+      Text(_s('Режим интерфейса', 'Interface style'),
+          style: theme.textTheme.titleSmall),
+      const SizedBox(height: 8),
+      SizedBox(
+        width: double.infinity,
+        child: SegmentedButton<InterfaceStyle>(
+          segments: [
+            ButtonSegment(
+                value: InterfaceStyle.standard,
+                icon: const Icon(Icons.dashboard_outlined, size: 18),
+                label: Text(_s('Стандартный', 'Standard'))),
+            const ButtonSegment(
+                value: InterfaceStyle.iosLike,
+                icon: Icon(Icons.layers_outlined, size: 18),
+                label: Text('iOS-Like')),
+          ],
+          selected: {controller.interfaceStyle},
+          onSelectionChanged: (value) =>
+              controller.setInterfaceStyle(value.first),
+        ),
+      ),
+      const SizedBox(height: 8),
+      Text(
+          controller.isIosLike
+              ? _s(
+                  'Liquid Glass, чистая типографика и мягкое движение. Светлый и тёмный вид настраиваются отдельно.',
+                  'Liquid Glass, clean typography and gentle motion. Light and dark appearances are set independently.')
+              : _s(
+                  'Классический интерфейс GhostBox с вашими настройками оформления.',
+                  'The classic GhostBox interface with your appearance settings.'),
+          style: theme.textTheme.bodySmall),
+      const SizedBox(height: 20),
+      if (!controller.isIosLike) ...[
+        Text(_s('Шрифт приложения', 'App font'),
+            style: theme.textTheme.titleSmall),
+        const SizedBox(height: 7),
+        Wrap(spacing: 8, runSpacing: 6, children: [
+          for (final font in ThemeController.availableFonts)
+            ChoiceChip(
+              label: Text(
+                  font.$1 == 'SF Pro Display'
+                      ? _s('Системный', 'System')
+                      : font.$2,
+                  style: TextStyle(fontFamily: font.$1)),
+              selected: controller.selectedFontFamily == font.$1 &&
+                  controller.customFontName == null,
+              onSelected: (_) async {
+                if (controller.customFontName != null) {
+                  await controller.clearAppearanceFile(font: true);
+                }
+                await controller.setFontFamily(font.$1);
+              },
+            ),
+        ]),
+      ],
+      const SizedBox(height: 10),
+      if (!controller.isIosLike) ...[
+        Text(_s('Эффект фона', 'Background effect'),
+            style: theme.textTheme.titleSmall),
+        const SizedBox(height: 7),
+        Wrap(spacing: 8, runSpacing: 6, children: [
+          for (final effect in ThemeController.backgroundEffects)
+            FilterChip(
+              label: Text(widget.english
+                  ? effect.$2.split(' / ').last
+                  : effect.$2.split(' / ').first),
+              selected: effect.$1 == 'none'
+                  ? controller.activeBackgroundEffects.isEmpty
+                  : controller.activeBackgroundEffects.contains(effect.$1),
+              onSelected: (_) => controller.toggleBackgroundEffect(effect.$1),
+            ),
+        ]),
+      ],
+      const SizedBox(height: 12),
+      if (!controller.isIosLike) ...[
+        ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.font_download_outlined),
+            title: Text(_s('Свой шрифт', 'Custom font')),
+            subtitle: Text(controller.customFontName ?? 'TTF / OTF · ≤ 5 MB'),
+            onTap: _importing ? null : () => _importFile(true),
+            trailing: controller.customFontName == null
+                ? const Icon(Icons.add)
+                : IconButton(
+                    tooltip: _s('Сбросить шрифт', 'Reset font'),
+                    icon: const Icon(Icons.close),
+                    onPressed: () =>
+                        controller.clearAppearanceFile(font: true))),
+        ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.image_outlined),
+            title: Text(_s('Картинка на фоне', 'Background image')),
+            subtitle: Text(
+                controller.backgroundImageName ?? 'PNG / JPG / WebP · ≤ 12 MB'),
+            onTap: _importing ? null : () => _importFile(false),
+            trailing: controller.backgroundImage == null
+                ? const Icon(Icons.add)
+                : IconButton(
+                    tooltip: _s('Убрать картинку', 'Remove image'),
+                    icon: const Icon(Icons.close),
+                    onPressed: () =>
+                        controller.clearAppearanceFile(font: false))),
+        if (_importing) const LinearProgressIndicator(),
+      ],
+      _appearanceToggle(
           contentPadding: EdgeInsets.zero,
-          leading: const Icon(Icons.font_download_outlined),
-          title: Text(_s('Свой шрифт', 'Custom font')),
-          subtitle: Text(controller.customFontName ?? 'TTF / OTF · ≤ 5 MB'),
-          onTap: _importing ? null : () => _importFile(true),
-          trailing: controller.customFontName == null
-              ? const Icon(Icons.add)
-              : IconButton(
-                  tooltip: _s('Сбросить шрифт', 'Reset font'),
-                  icon: const Icon(Icons.close),
-                  onPressed: () => controller.clearAppearanceFile(font: true))),
-      ListTile(
-          contentPadding: EdgeInsets.zero,
-          leading: const Icon(Icons.image_outlined),
-          title: Text(_s('Картинка на фоне', 'Background image')),
-          subtitle: Text(
-              controller.backgroundImageName ?? 'PNG / JPG / WebP · ≤ 12 MB'),
-          onTap: _importing ? null : () => _importFile(false),
-          trailing: controller.backgroundImage == null
-              ? const Icon(Icons.add)
-              : IconButton(
-                  tooltip: _s('Убрать картинку', 'Remove image'),
-                  icon: const Icon(Icons.close),
-                  onPressed: () =>
-                      controller.clearAppearanceFile(font: false))),
-      if (_importing) const LinearProgressIndicator(),
-      SwitchListTile(
-          contentPadding: EdgeInsets.zero,
-          title: const Text('Motion blur'),
+          title: Text(_s('Размытие движения', 'Motion blur')),
           subtitle: Text(_s('Лёгкое размытие при переходах',
               'Subtle blur during transitions')),
           value: controller.motionBlur,
           onChanged: (value) => controller.setGlass(motion: value)),
+      if (controller.motionBlur) ...[
+        Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+          Expanded(
+              child:
+                  Text(_s('Сила размытия движения', 'Motion blur strength'))),
+          _animatedValue('${(controller.motionBlurStrength * 100).round()}%'),
+        ]),
+        _animatedSlider(
+          value: controller.motionBlurStrength,
+          min: 0,
+          max: 1,
+          divisions: 20,
+          label: '${(controller.motionBlurStrength * 100).round()}%',
+          onChanged: (value) => controller.setGlass(blurStrength: value),
+        ),
+      ],
       Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
         Text(_s('Больше стекла', 'More glass')),
         _animatedValue('${(controller.glassStrength * 100).round()}%'),
@@ -251,23 +461,35 @@ class _ThemeSettingsPanelState extends State<ThemeSettingsPanel> {
         onChanged: (value) => controller.setGlass(strength: value),
       ),
       if (controller.glassStrength >= .9) ...[
-        SwitchListTile(
+        _appearanceToggle(
             contentPadding: EdgeInsets.zero,
             title: Text(_s('Стеклянные панели', 'Glass panels')),
             value: controller.glassPanelsEnabled,
             onChanged: (value) => controller.setGlass(panels: value)),
-        SwitchListTile(
+        _appearanceToggle(
             contentPadding: EdgeInsets.zero,
             title: Text(_s('Стеклянные кнопки', 'Glass buttons')),
             value: controller.glassButtonsEnabled,
             onChanged: (value) => controller.setGlass(buttons: value)),
-        SwitchListTile(
+        _appearanceToggle(
             contentPadding: EdgeInsets.zero,
             title: Text(_s('Круглый бегунок при перетягивании',
                 'Round thumb while dragging')),
             value: controller.glassSliderThumbEnabled,
             onChanged: (value) => controller.setGlass(sliderThumb: value)),
       ],
+      Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+        Expanded(child: Text(_s('Размер интерфейса', 'Interface size'))),
+        _animatedValue('${(controller.interfaceScale * 100).round()}%'),
+      ]),
+      _animatedSlider(
+        value: controller.interfaceScale,
+        min: .75,
+        max: 1.5,
+        divisions: 15,
+        label: '${(controller.interfaceScale * 100).round()}%',
+        onChanged: controller.setInterfaceScale,
+      ),
       Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
         Text(_s('Скорость переходов', 'Transition speed')),
         _animatedValue('${controller.transitionSpeed.toStringAsFixed(2)}×'),
@@ -294,201 +516,227 @@ class _ThemeSettingsPanelState extends State<ThemeSettingsPanel> {
       const SizedBox(height: 8),
       _transitionPreview(controller.transitionStyle),
       const SizedBox(height: 6),
-      Text(
-          _s('Тёмные и светлые темы с настраиваемым акцентом.',
-              'Dark and light themes with a custom accent.'),
-          style: theme.textTheme.bodySmall),
-      const SizedBox(height: 14),
-      ScrollConfiguration(
-          behavior: const MaterialScrollBehavior().copyWith(dragDevices: {
-            PointerDeviceKind.touch,
-            PointerDeviceKind.mouse,
-            PointerDeviceKind.trackpad,
-          }),
-          child: Listener(
-              onPointerSignal: (signal) {
-                if (signal is! PointerScrollEvent ||
-                    !_presetScroll.hasClients) {
-                  return;
-                }
-                GestureBinding.instance.pointerSignalResolver.register(signal,
-                    (_) {
-                  if (!_presetScroll.hasClients) return;
-                  final delta = signal.scrollDelta.dx != 0
-                      ? signal.scrollDelta.dx
-                      : signal.scrollDelta.dy;
-                  _presetScroll.position.pointerScroll(delta);
-                });
-              },
-              child: SizedBox(
-                  height: 82,
-                  child: SingleChildScrollView(
-                      controller: _presetScroll,
-                      scrollDirection: Axis.horizontal,
-                      child: Row(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            SizedBox(
-                                width: 88,
-                                child: _preset(
-                                    context,
-                                    controller,
-                                    ThemePreset.midnight,
-                                    _presetName('Полночь'),
-                                    const Color(0xFF070D18),
-                                    const Color(0xFF8BB9F4))),
-                            const SizedBox(width: 8),
-                            SizedBox(
-                                width: 88,
-                                child: _preset(
-                                    context,
-                                    controller,
-                                    ThemePreset.graphite,
-                                    _presetName('Графит'),
-                                    const Color(0xFF0D0F13),
-                                    const Color(0xFFB6BDC9))),
-                            const SizedBox(width: 8),
-                            SizedBox(
-                                width: 88,
-                                child: _preset(
-                                    context,
-                                    controller,
-                                    ThemePreset.ocean,
-                                    _presetName('Океан'),
-                                    const Color(0xFF061522),
-                                    const Color(0xFF4DC9E8))),
-                            const SizedBox(width: 8),
-                            SizedBox(
-                                width: 88,
-                                child: _preset(
-                                    context,
-                                    controller,
-                                    ThemePreset.emerald,
-                                    _presetName('Изумруд'),
-                                    const Color(0xFF091812),
-                                    const Color(0xFF7CDDB6))),
-                            const SizedBox(width: 8),
-                            SizedBox(
-                                width: 88,
-                                child: _preset(
-                                    context,
-                                    controller,
-                                    ThemePreset.amethyst,
-                                    _presetName('Аметист'),
-                                    const Color(0xFF120D20),
-                                    const Color(0xFFB9A0FF))),
-                            const SizedBox(width: 8),
-                            SizedBox(
-                                width: 88,
-                                child: _preset(
-                                    context,
-                                    controller,
-                                    ThemePreset.sapphire,
-                                    _presetName('Сапфир'),
-                                    const Color(0xFF091426),
-                                    const Color(0xFF78A9FF))),
-                            const SizedBox(width: 8),
-                            SizedBox(
-                                width: 88,
-                                child: _preset(
-                                    context,
-                                    controller,
-                                    ThemePreset.ruby,
-                                    _presetName('Рубин'),
-                                    const Color(0xFF1A1018),
-                                    const Color(0xFFFF8295))),
-                            for (final entry in const [
-                              (
-                                ThemePreset.lavender,
-                                'Лаванда',
-                                Color(0xFF171326),
-                                Color(0xFFC7B5FF)
-                              ),
-                              (
-                                ThemePreset.forest,
-                                'Лес',
-                                Color(0xFF0D1B15),
-                                Color(0xFF8BCF9B)
-                              ),
-                              (
-                                ThemePreset.sand,
-                                'Песок',
-                                Color(0xFF201A12),
-                                Color(0xFFE5BF8C)
-                              ),
-                              (
-                                ThemePreset.daylight,
-                                'Светлая',
-                                Color(0xFFF1F5FC),
-                                Color(0xFF355FBB)
-                              ),
-                              (
-                                ThemePreset.paper,
-                                'Бумага',
-                                Color(0xFFF6F2EB),
-                                Color(0xFF6857B8)
-                              ),
-                              (
-                                ThemePreset.mist,
-                                'Туман',
-                                Color(0xFFEDF5F5),
-                                Color(0xFF347F8A)
-                              ),
-                              (
-                                ThemePreset.aurora,
-                                'Аврора',
-                                Color(0xFF071A20),
-                                Color(0xFF53D6C2)
-                              ),
-                              (
-                                ThemePreset.obsidian,
-                                'Обсидиан',
-                                Color(0xFF111722),
-                                Color(0xFF90A4C3)
-                              ),
-                              (
-                                ThemePreset.sunset,
-                                'Закат',
-                                Color(0xFF20120F),
-                                Color(0xFFFF9568)
-                              ),
-                              (
-                                ThemePreset.arctic,
-                                'Арктика',
-                                Color(0xFFEAF5FA),
-                                Color(0xFF247D9B)
-                              ),
-                            ]) ...[
+      if (controller.isIosLike) ...[
+        const SizedBox(height: 16),
+        Text(_s('Внешний вид', 'Appearance'),
+            style: theme.textTheme.titleSmall),
+        const SizedBox(height: 8),
+        SegmentedButton<bool>(
+          segments: [
+            ButtonSegment(
+                value: false,
+                icon: const Icon(Icons.light_mode_outlined, size: 18),
+                label: Text(_s('Светлый', 'Light'))),
+            ButtonSegment(
+                value: true,
+                icon: const Icon(Icons.dark_mode_outlined, size: 18),
+                label: Text(_s('Тёмный', 'Dark'))),
+          ],
+          selected: {controller.iosDarkMode},
+          onSelectionChanged: (value) => controller.setIosDarkMode(value.first),
+        ),
+      ],
+      ...[
+        Text(
+            controller.isIosLike
+                ? _s('Акцент из выбранной темы',
+                    'Accent from the selected theme')
+                : _s('Тёмные и светлые темы с настраиваемым акцентом.',
+                    'Dark and light themes with a custom accent.'),
+            style: theme.textTheme.bodySmall),
+        const SizedBox(height: 14),
+        ScrollConfiguration(
+            behavior: const MaterialScrollBehavior().copyWith(dragDevices: {
+              PointerDeviceKind.touch,
+              PointerDeviceKind.mouse,
+              PointerDeviceKind.trackpad,
+            }),
+            child: Listener(
+                onPointerSignal: (signal) {
+                  if (signal is! PointerScrollEvent ||
+                      !_presetScroll.hasClients) {
+                    return;
+                  }
+                  GestureBinding.instance.pointerSignalResolver.register(signal,
+                      (_) {
+                    if (!_presetScroll.hasClients) return;
+                    final delta = signal.scrollDelta.dx != 0
+                        ? signal.scrollDelta.dx
+                        : signal.scrollDelta.dy;
+                    _presetScroll.position.pointerScroll(delta);
+                  });
+                },
+                child: SizedBox(
+                    height: 112 *
+                        MediaQuery.textScalerOf(context).scale(1).clamp(1, 2),
+                    child: SingleChildScrollView(
+                        controller: _presetScroll,
+                        scrollDirection: Axis.horizontal,
+                        child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              SizedBox(
+                                  width: 88,
+                                  child: _preset(
+                                      context,
+                                      controller,
+                                      ThemePreset.midnight,
+                                      _presetName('Полночь'),
+                                      const Color(0xFF070D18),
+                                      const Color(0xFF8BB9F4))),
                               const SizedBox(width: 8),
                               SizedBox(
                                   width: 88,
                                   child: _preset(
                                       context,
                                       controller,
-                                      entry.$1,
-                                      _presetName(entry.$2),
-                                      entry.$3,
-                                      entry.$4)),
-                            ],
-                            const SizedBox(width: 8),
-                            SizedBox(
-                                width: 88,
-                                child: _preset(
-                                    context,
-                                    controller,
-                                    ThemePreset.custom,
-                                    _presetName('Своя'),
-                                    controller.customBackground,
-                                    controller.customAccent)),
-                          ]))))),
-      const SizedBox(height: 12),
-      SizedBox(
-          width: double.infinity,
-          child: OutlinedButton.icon(
-              onPressed: () => controller.select(ThemePreset.custom),
-              icon: const Icon(Icons.palette_outlined, size: 18),
-              label: Text(_s('Настроить свою тему', 'Customize theme')))),
-      const SizedBox(height: 20),
+                                      ThemePreset.graphite,
+                                      _presetName('Графит'),
+                                      const Color(0xFF0D0F13),
+                                      const Color(0xFFB6BDC9))),
+                              const SizedBox(width: 8),
+                              SizedBox(
+                                  width: 88,
+                                  child: _preset(
+                                      context,
+                                      controller,
+                                      ThemePreset.ocean,
+                                      _presetName('Океан'),
+                                      const Color(0xFF061522),
+                                      const Color(0xFF4DC9E8))),
+                              const SizedBox(width: 8),
+                              SizedBox(
+                                  width: 88,
+                                  child: _preset(
+                                      context,
+                                      controller,
+                                      ThemePreset.emerald,
+                                      _presetName('Изумруд'),
+                                      const Color(0xFF091812),
+                                      const Color(0xFF7CDDB6))),
+                              const SizedBox(width: 8),
+                              SizedBox(
+                                  width: 88,
+                                  child: _preset(
+                                      context,
+                                      controller,
+                                      ThemePreset.amethyst,
+                                      _presetName('Аметист'),
+                                      const Color(0xFF120D20),
+                                      const Color(0xFFB9A0FF))),
+                              const SizedBox(width: 8),
+                              SizedBox(
+                                  width: 88,
+                                  child: _preset(
+                                      context,
+                                      controller,
+                                      ThemePreset.sapphire,
+                                      _presetName('Сапфир'),
+                                      const Color(0xFF091426),
+                                      const Color(0xFF78A9FF))),
+                              const SizedBox(width: 8),
+                              SizedBox(
+                                  width: 88,
+                                  child: _preset(
+                                      context,
+                                      controller,
+                                      ThemePreset.ruby,
+                                      _presetName('Рубин'),
+                                      const Color(0xFF1A1018),
+                                      const Color(0xFFFF8295))),
+                              for (final entry in const [
+                                (
+                                  ThemePreset.lavender,
+                                  'Лаванда',
+                                  Color(0xFF171326),
+                                  Color(0xFFC7B5FF)
+                                ),
+                                (
+                                  ThemePreset.forest,
+                                  'Лес',
+                                  Color(0xFF0D1B15),
+                                  Color(0xFF8BCF9B)
+                                ),
+                                (
+                                  ThemePreset.sand,
+                                  'Песок',
+                                  Color(0xFF201A12),
+                                  Color(0xFFE5BF8C)
+                                ),
+                                (
+                                  ThemePreset.daylight,
+                                  'Светлая',
+                                  Color(0xFFF1F5FC),
+                                  Color(0xFF355FBB)
+                                ),
+                                (
+                                  ThemePreset.paper,
+                                  'Бумага',
+                                  Color(0xFFF6F2EB),
+                                  Color(0xFF6857B8)
+                                ),
+                                (
+                                  ThemePreset.mist,
+                                  'Туман',
+                                  Color(0xFFEDF5F5),
+                                  Color(0xFF347F8A)
+                                ),
+                                (
+                                  ThemePreset.aurora,
+                                  'Аврора',
+                                  Color(0xFF071A20),
+                                  Color(0xFF53D6C2)
+                                ),
+                                (
+                                  ThemePreset.obsidian,
+                                  'Обсидиан',
+                                  Color(0xFF111722),
+                                  Color(0xFF90A4C3)
+                                ),
+                                (
+                                  ThemePreset.sunset,
+                                  'Закат',
+                                  Color(0xFF20120F),
+                                  Color(0xFFFF9568)
+                                ),
+                                (
+                                  ThemePreset.arctic,
+                                  'Арктика',
+                                  Color(0xFFEAF5FA),
+                                  Color(0xFF247D9B)
+                                ),
+                              ]) ...[
+                                const SizedBox(width: 8),
+                                SizedBox(
+                                    width: 88,
+                                    child: _preset(
+                                        context,
+                                        controller,
+                                        entry.$1,
+                                        _presetName(entry.$2),
+                                        entry.$3,
+                                        entry.$4)),
+                              ],
+                              const SizedBox(width: 8),
+                              SizedBox(
+                                  width: 88,
+                                  child: _preset(
+                                      context,
+                                      controller,
+                                      ThemePreset.custom,
+                                      _presetName('Своя'),
+                                      controller.customBackground,
+                                      controller.customAccent)),
+                            ]))))),
+        const SizedBox(height: 12),
+        SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+                onPressed: () => controller.select(ThemePreset.custom),
+                icon: const Icon(Icons.palette_outlined, size: 18),
+                label: Text(_s('Настроить свою тему', 'Customize theme')))),
+        const SizedBox(height: 20),
+      ],
       if (Platform.isMacOS) ...[
         const SizedBox(height: 20),
         Text(
@@ -500,9 +748,26 @@ class _ThemeSettingsPanelState extends State<ThemeSettingsPanel> {
             style: theme.textTheme.titleMedium),
         const SizedBox(height: 5),
         Text(
-            _s('Готовые значки меняют иконку приложения; своя палитра применяется в интерфейсе и на десктопе.',
-                'Presets change the app icon; custom colors apply in the UI and on desktop.'),
+            Platform.isAndroid
+                ? _s(
+                    'Готовые значки и своя палитра меняют иконку приложения.',
+                    'Presets and custom colors change the app icon.',
+                  )
+                : _s(
+                    'Готовые значки меняют иконку приложения; своя палитра применяется в интерфейсе и на десктопе.',
+                    'Presets change the app icon; custom colors apply in the UI and on desktop.',
+                  ),
             style: theme.textTheme.bodySmall),
+        if (Platform.isAndroid && controller.androidIconApplyPending) ...[
+          const SizedBox(height: 7),
+          Text(
+            _s('Новая иконка ожидает перезапуска приложения.',
+                'The new icon is waiting for an app restart.'),
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.primary,
+            ),
+          ),
+        ],
         const SizedBox(height: 12),
         ScrollConfiguration(
           behavior: const MaterialScrollBehavior().copyWith(dragDevices: {
@@ -574,8 +839,17 @@ class _ThemeSettingsPanelState extends State<ThemeSettingsPanel> {
                         context,
                         colors: _iconColors,
                         selected: controller.iconForeground,
-                        onSelected: (color) =>
-                            controller.setCustomIconColors(foreground: color),
+                        onSelected: (color) => _changeIcon(
+                          controller,
+                          variant: 'custom',
+                          name: _s('Своя палитра', 'Custom palette'),
+                          foreground: color,
+                          background: controller.iconBackground,
+                          update: (apply) => controller.setCustomIconColors(
+                            foreground: color,
+                            applyPlatform: apply,
+                          ),
+                        ),
                         trailing: _customIconColor(context, controller,
                             foreground: true),
                       ),
@@ -587,8 +861,17 @@ class _ThemeSettingsPanelState extends State<ThemeSettingsPanel> {
                         context,
                         colors: _iconBackgrounds,
                         selected: controller.iconBackground,
-                        onSelected: (color) =>
-                            controller.setCustomIconColors(background: color),
+                        onSelected: (color) => _changeIcon(
+                          controller,
+                          variant: 'custom',
+                          name: _s('Своя палитра', 'Custom palette'),
+                          foreground: controller.iconForeground,
+                          background: color,
+                          update: (apply) => controller.setCustomIconColors(
+                            background: color,
+                            applyPlatform: apply,
+                          ),
+                        ),
                         trailing: _customIconColor(context, controller,
                             foreground: false),
                       ),
@@ -641,48 +924,50 @@ class _ThemeSettingsPanelState extends State<ThemeSettingsPanel> {
                               controller.customAccent,
                               false),
                         ),
-                        const SizedBox(height: 18),
-                        Text(_s('Фон', 'Background'),
-                            style: theme.textTheme.bodySmall),
-                        const SizedBox(height: 10),
-                        _swatchPalette(
-                          context,
-                          colors: const [
-                            Color(0xFF05080F),
-                            Color(0xFF0A1220),
-                            Color(0xFF111318),
-                            Color(0xFF15121C),
-                            Color(0xFF061522),
-                            Color(0xFF091812),
-                            Color(0xFF120D20),
-                            Color(0xFF081C2B),
-                            Color(0xFF10172E),
-                            Color(0xFF0D1B18),
-                            Color(0xFF0C1020),
-                            Color(0xFF151A2D),
-                            Color(0xFF1A2130),
-                            Color(0xFF1C1224),
-                            Color(0xFF0C2023),
-                            Color(0xFF241B12),
-                            Color(0xFF20242B),
-                            Color(0xFFF1F5FC),
-                            Color(0xFFF6F2EB),
-                            Color(0xFFEDF5F5),
-                            Color(0xFFEAF5FA),
-                            Color(0xFFF7EEF3),
-                            Color(0xFFF2F4EA),
-                            Color(0xFFECEFF6),
-                            Color(0xFFFFF4E8),
-                          ],
-                          selected: controller.background,
-                          onSelected: (color) =>
-                              controller.setCustom(background: color),
-                          trailing: _customButton(
-                              context,
-                              _s('Свой фон', 'Custom background'),
-                              controller.customBackground,
-                              true),
-                        ),
+                        if (!controller.isIosLike) ...[
+                          const SizedBox(height: 18),
+                          Text(_s('Фон', 'Background'),
+                              style: theme.textTheme.bodySmall),
+                          const SizedBox(height: 10),
+                          _swatchPalette(
+                            context,
+                            colors: const [
+                              Color(0xFF05080F),
+                              Color(0xFF0A1220),
+                              Color(0xFF111318),
+                              Color(0xFF15121C),
+                              Color(0xFF061522),
+                              Color(0xFF091812),
+                              Color(0xFF120D20),
+                              Color(0xFF081C2B),
+                              Color(0xFF10172E),
+                              Color(0xFF0D1B18),
+                              Color(0xFF0C1020),
+                              Color(0xFF151A2D),
+                              Color(0xFF1A2130),
+                              Color(0xFF1C1224),
+                              Color(0xFF0C2023),
+                              Color(0xFF241B12),
+                              Color(0xFF20242B),
+                              Color(0xFFF1F5FC),
+                              Color(0xFFF6F2EB),
+                              Color(0xFFEDF5F5),
+                              Color(0xFFEAF5FA),
+                              Color(0xFFF7EEF3),
+                              Color(0xFFF2F4EA),
+                              Color(0xFFECEFF6),
+                              Color(0xFFFFF4E8),
+                            ],
+                            selected: controller.background,
+                            onSelected: (color) =>
+                                controller.setCustom(background: color),
+                            trailing: _customButton(
+                                context,
+                                _s('Свой фон', 'Custom background'),
+                                controller.customBackground,
+                                true),
+                          ),
+                        ],
                       ]),
                 )),
     ]);
@@ -745,7 +1030,15 @@ class _ThemeSettingsPanelState extends State<ThemeSettingsPanel> {
       message: name,
       child: InkWell(
         borderRadius: BorderRadius.circular(13),
-        onTap: () => controller.setIconVariant(id),
+        onTap: () => _changeIcon(
+          controller,
+          variant: id,
+          name: name,
+          foreground: foreground,
+          background: background,
+          update: (apply) =>
+              controller.setIconVariant(id, applyPlatform: apply),
+        ),
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 220),
           height: 62,
@@ -800,9 +1093,18 @@ class _ThemeSettingsPanelState extends State<ThemeSettingsPanel> {
                 background: !foreground,
                 english: widget.english));
         if (color != null) {
-          await controller.setCustomIconColors(
+          await _changeIcon(
+            controller,
+            variant: 'custom',
+            name: _s('Своя палитра', 'Custom palette'),
+            foreground: foreground ? color : controller.iconForeground,
+            background: foreground ? controller.iconBackground : color,
+            update: (apply) => controller.setCustomIconColors(
               foreground: foreground ? color : null,
-              background: foreground ? null : color);
+              background: foreground ? null : color,
+              applyPlatform: apply,
+            ),
+          );
         }
       },
     );
@@ -863,6 +1165,9 @@ class _ThemeSettingsPanelState extends State<ThemeSettingsPanel> {
                   child: Icon(Icons.circle, size: 10, color: accent)),
               const SizedBox(height: 10),
               Text(displayName,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.center,
                   style: TextStyle(
                       fontSize: 11,
                       color: background.computeLuminance() > .42

@@ -1,121 +1,128 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
-/// Shared compact glass toggle used by settings and the appearance panel.
-class GlassSwitch extends StatelessWidget {
-  const GlassSwitch({
-    super.key,
-    required this.value,
-    required this.onChanged,
-  });
+import 'theme_controller.dart';
+
+/// Compact toggle with a small thumb and a full-sized input target.
+class GlassSwitch extends StatefulWidget {
+  const GlassSwitch({super.key, required this.value, required this.onChanged});
 
   final bool value;
   final ValueChanged<bool>? onChanged;
 
   @override
-  Widget build(BuildContext context) {
-    final enabled = onChanged != null;
-    final accent = Theme.of(context).colorScheme.primary;
-    final surface = Theme.of(context).colorScheme.surface;
+  State<GlassSwitch> createState() => _GlassSwitchState();
+}
 
-    void toggle() {
-      if (enabled) onChanged!(!value);
-    }
+class _GlassSwitchState extends State<GlassSwitch> {
+  bool _focused = false;
+  bool _hovered = false;
+
+  void _toggle() => widget.onChanged?.call(!widget.value);
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final appearance = ThemeController.instance;
+    final enabled = widget.onChanged != null;
+    final minimal = appearance.isIosLike;
+    final accent = theme.colorScheme.primary;
+    final muted = theme.colorScheme.onSurfaceVariant;
+    final reduceMotion =
+        appearance.reduceMotion || MediaQuery.disableAnimationsOf(context);
+    final duration = reduceMotion
+        ? Duration.zero
+        : Duration(milliseconds: (180 / appearance.transitionSpeed).round());
+    final track = widget.value
+        ? accent.withValues(alpha: enabled ? .86 : .36)
+        : muted.withValues(alpha: enabled ? .22 : .12);
 
     return Semantics(
-      button: true,
-      toggled: value,
+      toggled: widget.value,
       enabled: enabled,
-      onTap: enabled ? toggle : null,
-      child: ExcludeSemantics(
-        child: GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onTap: enabled ? toggle : null,
-          onHorizontalDragUpdate: enabled
-              ? (details) {
-                  // Let the thumb follow a deliberate drag in either
-                  // direction, even when the gesture is slow.
-                  final nextValue = details.localPosition.dx >= 26;
-                  if (nextValue != value) onChanged!(nextValue);
-                }
-              : null,
-          onHorizontalDragEnd: enabled
-              ? (details) {
-                  final velocity = details.primaryVelocity ?? 0;
-                  if (velocity.abs() > 80) onChanged!(velocity > 0);
-                }
-              : null,
-          child: SizedBox(
-            width: 52,
-            height: 40,
-            child: Align(
-              alignment: Alignment.centerRight,
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 210),
-                curve: Curves.easeOutCubic,
-                width: 46,
-                height: 27,
-                padding: const EdgeInsets.all(3),
-                decoration: BoxDecoration(
-                  color: value
-                      ? accent.withValues(alpha: .66)
-                      : Colors.white.withValues(alpha: .09),
-                  gradient: LinearGradient(
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                    colors: value
-                        ? [
-                            accent.withValues(alpha: .82),
-                            accent.withValues(alpha: .57),
-                          ]
-                        : [
-                            Colors.white.withValues(alpha: .15),
-                            surface.withValues(alpha: .24),
-                          ],
-                  ),
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(
-                    color: value
-                        ? accent.withValues(alpha: .78)
-                        : Colors.white.withValues(alpha: .24),
-                  ),
-                  boxShadow: [
-                    BoxShadow(
-                      color: value
-                          ? accent.withValues(alpha: .19)
-                          : Colors.black.withValues(alpha: .10),
-                      blurRadius: 9,
-                      offset: const Offset(0, 2),
+      onTap: enabled ? _toggle : null,
+      child: FocusableActionDetector(
+        enabled: enabled,
+        mouseCursor:
+            enabled ? SystemMouseCursors.click : SystemMouseCursors.basic,
+        onShowFocusHighlight: (value) => setState(() => _focused = value),
+        onShowHoverHighlight: (value) => setState(() => _hovered = value),
+        shortcuts: const {
+          SingleActivator(LogicalKeyboardKey.space): ActivateIntent(),
+          SingleActivator(LogicalKeyboardKey.enter): ActivateIntent(),
+        },
+        actions: {
+          ActivateIntent: CallbackAction<ActivateIntent>(onInvoke: (_) {
+            if (enabled) _toggle();
+            return null;
+          }),
+        },
+        child: ExcludeSemantics(
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: enabled ? _toggle : null,
+            onHorizontalDragUpdate: enabled
+                ? (details) {
+                    final next = details.localPosition.dx >= 29;
+                    if (next != widget.value) widget.onChanged!(next);
+                  }
+                : null,
+            onHorizontalDragEnd: enabled
+                ? (details) {
+                    final velocity = details.primaryVelocity ?? 0;
+                    if (velocity.abs() > 80) {
+                      widget.onChanged!(velocity > 0);
+                    }
+                  }
+                : null,
+            child: SizedBox(
+              width: 52,
+              height: 44,
+              child: Align(
+                alignment: Alignment.centerRight,
+                child: AnimatedContainer(
+                  duration: duration,
+                  curve: Curves.easeOutCubic,
+                  width: 46,
+                  height: 27,
+                  padding: const EdgeInsets.symmetric(horizontal: 5),
+                  decoration: BoxDecoration(
+                    color: track,
+                    gradient: minimal
+                        ? null
+                        : LinearGradient(colors: [
+                            Color.alphaBlend(
+                                Colors.white.withValues(alpha: .08), track),
+                            track,
+                          ]),
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(
+                      color: _focused
+                          ? accent
+                          : muted.withValues(alpha: _hovered ? .4 : .14),
+                      width: _focused ? 1.5 : 1,
                     ),
-                  ],
-                ),
-                child: AnimatedAlign(
-                  duration: const Duration(milliseconds: 210),
-                  curve: Curves.easeOutBack,
-                  alignment:
-                      value ? Alignment.centerRight : Alignment.centerLeft,
-                  child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 170),
-                    width: 19,
-                    height: 19,
-                    decoration: BoxDecoration(
-                      color: enabled ? Colors.white : Colors.white70,
-                      shape: BoxShape.circle,
-                      border: Border.all(
-                        color: accent.withValues(alpha: value ? .42 : .10),
-                        width: 1,
+                  ),
+                  child: AnimatedAlign(
+                    duration: duration,
+                    curve: Curves.easeOutCubic,
+                    alignment: widget.value
+                        ? Alignment.centerRight
+                        : Alignment.centerLeft,
+                    child: Container(
+                      width: 15,
+                      height: 15,
+                      decoration: BoxDecoration(
+                        color: enabled ? Colors.white : Colors.white60,
+                        shape: BoxShape.circle,
+                        boxShadow: const [
+                          BoxShadow(
+                            color: Color(0x22000000),
+                            blurRadius: 3,
+                            offset: Offset(0, 1),
+                          ),
+                        ],
                       ),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withValues(alpha: .22),
-                          blurRadius: 4,
-                          offset: const Offset(0, 1.5),
-                        ),
-                        BoxShadow(
-                          color: Colors.white.withValues(alpha: .6),
-                          blurRadius: 1,
-                          offset: const Offset(0, -.5),
-                        ),
-                      ],
                     ),
                   ),
                 ),

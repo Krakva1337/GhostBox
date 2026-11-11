@@ -261,6 +261,18 @@ handoff="$4"
 [[ "$old_pid" =~ ^[1-9][0-9]*$ && -f "$archive" && -d "$handoff" ]] || exit 2
 transaction_id="${5:-$(/usr/bin/uuidgen | /usr/bin/tr '[:upper:]' '[:lower:]')}"
 [[ "$transaction_id" =~ ^[a-f0-9-]{36}$ ]] || exit 1
+transaction_file="$handoff/update_transaction.json"
+asset_name=''
+target_version=''
+if [[ -f "$transaction_file" ]]; then
+  saved_id="$(/usr/bin/plutil -extract id raw -o - "$transaction_file" 2>/dev/null || true)"
+  [[ -n "$saved_id" ]] || saved_id="$(/usr/bin/plutil -extract transactionId raw -o - "$transaction_file" 2>/dev/null || true)"
+  [[ -z "$saved_id" || "$saved_id" == "$transaction_id" ]] || {
+    echo 'Transaction ID does not match the persistent update record.'; exit 1;
+  }
+  asset_name="$(/usr/bin/plutil -extract assetName raw -o - "$transaction_file" 2>/dev/null || true)"
+  target_version="$(/usr/bin/plutil -extract targetVersion raw -o - "$transaction_file" 2>/dev/null || true)"
+fi
 destination_parent="$(cd -- "$(/usr/bin/dirname -- "$destination")" && /bin/pwd -P)"
 destination="$destination_parent/$(/usr/bin/basename -- "$destination")"
 [[ "$destination" == */GhostBox.app && ! -L "$destination" ]] || {
@@ -353,6 +365,9 @@ executable="$new_app/Contents/MacOS/$new_executable_name"
 bundle_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$new_app/Contents/Info.plist")"
 [[ "$bundle_id" == "$current_id" ]] || { echo 'Unexpected update bundle identifier.'; exit 1; }
 new_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$new_app/Contents/Info.plist")"
+if [[ -n "$target_version" && "$target_version" != "$new_version" ]]; then
+  echo "Staged app version $new_version does not match requested $target_version."; exit 1
+fi
 /usr/bin/codesign --verify --deep --strict "$new_app"
 if [[ -n "$expected_team" ]]; then
   new_team="$(/usr/bin/codesign -dv --verbose=4 "$new_app" 2>&1 | /usr/bin/awk -F= '/^TeamIdentifier=/ {print $2; exit}')"

@@ -2,6 +2,7 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import '../theme/theme_controller.dart';
+import '../theme/ios_like.dart';
 
 /// A bounded, low-opacity glass surface for dialogs and modal content.
 class GlassDialogSurface extends StatelessWidget {
@@ -28,6 +29,16 @@ class GlassDialogSurface extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (ThemeController.instance.isIosLike) {
+      return IosGlassSurface(
+        blurEnabled: !optimizedMode,
+        borderRadius: radius,
+        blur: sigma * 2,
+        padding: padding,
+        tint: backgroundColor,
+        child: child,
+      );
+    }
     final strength = (glassStrength ?? ThemeController.instance.glassStrength)
         .clamp(0.0, 1.0);
     final surfaceColor =

@@ -275,6 +275,31 @@ class MainActivity : FlutterActivity() {
             }
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, ICON_CHANNEL)
             .setMethodCallHandler { call, result ->
+                if (call.method == "restartApp") {
+                    val restartIntent =
+                        packageManager.getLaunchIntentForPackage(packageName)
+                    if (restartIntent == null) {
+                        result.error(
+                            "restart_unavailable",
+                            "No launcher activity is available",
+                            null,
+                        )
+                        return@setMethodCallHandler
+                    }
+                    restartIntent.addFlags(
+                        Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK,
+                    )
+                    val scheduled = android.os.Handler(mainLooper).postDelayed({
+                        startActivity(restartIntent)
+                    }, 350L)
+                    if (scheduled) result.success(true)
+                    else result.error(
+                        "restart_failed",
+                        "Could not schedule app restart",
+                        null,
+                    )
+                    return@setMethodCallHandler
+                }
                 if (call.method != "setAppIcon") {
                     result.notImplemented()
                     return@setMethodCallHandler

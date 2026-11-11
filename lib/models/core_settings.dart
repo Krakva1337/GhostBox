@@ -1,6 +1,8 @@
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'routing_presets.dart';
+
 class CoreSettings {
   const CoreSettings({
     this.core = 'xray',
@@ -13,8 +15,11 @@ class CoreSettings {
     this.blocklistEnabled = false,
     this.blockedDomains = const [],
     this.adBlockDomains = const [],
-    this.directDomains = const [],
-    this.proxyDomains = const [],
+    List<String> directDomains = const [],
+    List<String> proxyDomains = const [],
+    this.routingPresets = const [],
+    this.proxyPresetIds = const [],
+    this.directPresetIds = const [],
     this.directApps = const [],
     this.proxyApps = const [],
     this.memoryMb = 128,
@@ -43,7 +48,8 @@ class CoreSettings {
     this.pingCount = 3,
     this.pingTimeoutSeconds = 4,
     this.disconnectVpnForPing = false,
-  });
+  })  : _directDomains = directDomains,
+        _proxyDomains = proxyDomains;
 
   final String core,
       connectionMode,
@@ -68,10 +74,26 @@ class CoreSettings {
   final int fragmentFallbackDelayMs;
   final List<String> blockedDomains,
       adBlockDomains,
-      directDomains,
-      proxyDomains,
+      _directDomains,
+      _proxyDomains,
       directApps,
       proxyApps;
+  final List<RoutingPreset> routingPresets;
+  final List<String> proxyPresetIds, directPresetIds;
+  List<RoutingPreset> get availableRoutingPresets => [
+        ...RoutingPreset.builtIns(),
+        ...routingPresets,
+      ];
+  List<String> get manualProxyDomains => _proxyDomains;
+  List<String> get manualDirectDomains => _directDomains;
+  List<String> get proxyDomains => _withPresets(_proxyDomains, proxyPresetIds);
+  List<String> get directDomains =>
+      _withPresets(_directDomains, directPresetIds);
+  List<String> _withPresets(List<String> manual, List<String> ids) => {
+        ...manual,
+        for (final preset in availableRoutingPresets)
+          if (ids.contains(preset.id)) ...preset.domains,
+      }.toList();
   final int memoryMb, localPort;
 
   static int clampMemoryMb(int value) =>
@@ -109,6 +131,9 @@ class CoreSettings {
           bool? udpFragment,
           List<String>? blockedDomains,
           List<String>? adBlockDomains,
+          List<RoutingPreset>? routingPresets,
+          List<String>? proxyPresetIds,
+          List<String>? directPresetIds,
           List<String>? directDomains,
           List<String>? proxyDomains,
           List<String>? directApps,
@@ -160,8 +185,11 @@ class CoreSettings {
           udpFragment: udpFragment ?? this.udpFragment,
           blockedDomains: blockedDomains ?? this.blockedDomains,
           adBlockDomains: adBlockDomains ?? this.adBlockDomains,
-          directDomains: directDomains ?? this.directDomains,
-          proxyDomains: proxyDomains ?? this.proxyDomains,
+          directDomains: directDomains ?? _directDomains,
+          proxyDomains: proxyDomains ?? _proxyDomains,
+          routingPresets: routingPresets ?? this.routingPresets,
+          proxyPresetIds: proxyPresetIds ?? this.proxyPresetIds,
+          directPresetIds: directPresetIds ?? this.directPresetIds,
           directApps: directApps ?? this.directApps,
           proxyApps: proxyApps ?? this.proxyApps,
           memoryMb: clampMemoryMb(memoryMb ?? this.memoryMb),
@@ -253,6 +281,18 @@ class CoreSettings {
       disconnectVpnForPing:
           data['disconnectVpnForPing'] ?? (Platform.isIOS || Platform.isMacOS),
       blockedDomains: domains('blockedDomains'),
+      routingPresets: (data['routingPresets'] as List? ?? const [])
+          .whereType<Map>()
+          .map((e) => RoutingPreset.fromJson(Map<String, dynamic>.from(e)))
+          .toList(),
+      proxyPresetIds: (data['proxyPresetIds'] as List? ?? const [])
+          .whereType<String>()
+          .toSet()
+          .toList(),
+      directPresetIds: (data['directPresetIds'] as List? ?? const [])
+          .whereType<String>()
+          .toSet()
+          .toList(),
       directDomains: routePatterns('directDomains'),
       proxyDomains: routePatterns('proxyDomains'),
       directApps: appIds('directApps'),
@@ -276,8 +316,11 @@ class CoreSettings {
         'dnsBlacklistMode': dnsBlacklistMode,
         'blocklistEnabled': blocklistEnabled,
         'blockedDomains': blockedDomains,
-        'directDomains': directDomains,
-        'proxyDomains': proxyDomains,
+        'directDomains': _directDomains,
+        'proxyDomains': _proxyDomains,
+        'routingPresets': routingPresets.map((e) => e.toJson()).toList(),
+        'proxyPresetIds': proxyPresetIds,
+        'directPresetIds': directPresetIds,
         'directApps': directApps,
         'proxyApps': proxyApps,
         'memoryMb': memoryMb,

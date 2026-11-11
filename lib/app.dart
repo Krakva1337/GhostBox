@@ -25,8 +25,35 @@ class _GhostBoxAppState extends State<GhostBoxApp> {
                   title: 'GhostBox',
                   debugShowCheckedModeBanner: false,
                   theme: controller.theme,
-                  themeAnimationDuration: const Duration(milliseconds: 420),
+                  themeAnimationDuration: controller.reduceMotion
+                      ? Duration.zero
+                      : const Duration(milliseconds: 420),
                   themeAnimationCurve: Curves.easeInOutCubic,
+                  builder: (context, child) {
+                    final scale = controller.interfaceScale;
+                    final media = MediaQuery.of(context);
+                    return LayoutBuilder(builder: (context, bounds) {
+                      final size = Size(
+                          bounds.maxWidth / scale, bounds.maxHeight / scale);
+                      return FittedBox(
+                        fit: BoxFit.fill,
+                        child: SizedBox(
+                          width: size.width,
+                          height: size.height,
+                          child: MediaQuery(
+                            data: media.copyWith(
+                              size: size,
+                              devicePixelRatio: media.devicePixelRatio * scale,
+                              padding: media.padding / scale,
+                              viewPadding: media.viewPadding / scale,
+                              viewInsets: media.viewInsets / scale,
+                            ),
+                            child: child ?? const SizedBox.shrink(),
+                          ),
+                        ),
+                      );
+                    });
+                  },
                   home: const HomePage(),
                 )),
       );

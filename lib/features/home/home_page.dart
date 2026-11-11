@@ -24,6 +24,7 @@ import '../../core/vpn_backend.dart';
 import '../../models/server_profile.dart';
 import '../../models/core_settings.dart';
 import '../../models/route_rule_list.dart';
+import '../../models/routing_presets.dart';
 import '../../models/subscription_metadata.dart';
 import '../../platform/system_proxy.dart';
 import '../../platform/windows_elevation.dart';
@@ -43,8 +44,11 @@ import '../../services/speed_test_activity.dart';
 import '../../services/discord_presence.dart';
 import '../../theme/theme_settings_panel.dart';
 import '../../theme/theme_controller.dart';
+import '../../theme/background_effects.dart';
 import '../../theme/brand_icon.dart';
 import '../../theme/glass_switch.dart';
+import '../../theme/ios_like.dart';
+import '../../theme/ios_like_tokens.dart';
 import '../../widgets/ghost_notice.dart';
 import '../../widgets/profile_json_editor.dart';
 import '../../widgets/glass_dialog.dart';
@@ -87,6 +91,7 @@ class _HomePageState extends State<HomePage>
   bool refreshingSubscriptions = false;
   Timer? subscriptionRefreshTimer;
   DateTime? subscriptionRetryNotBefore;
+  bool get _iosLike => ThemeController.instance.isIosLike;
   Color get _surface => Theme.of(context).colorScheme.surface;
   Color get _accent => Theme.of(context).colorScheme.primary;
   Color get _foreground => Theme.of(context).colorScheme.onSurface;
@@ -98,6 +103,7 @@ class _HomePageState extends State<HomePage>
   bool animatedBackground = true;
   bool optimizedMode = false;
   bool reduceAnimations = false;
+  bool _visualsVisible = true;
   bool showScrollIndicators = true;
   bool showWelcomeSetup = false;
   bool english = false;
@@ -284,6 +290,7 @@ class _HomePageState extends State<HomePage>
   Duration _motion(Duration normal) {
     final speed = ThemeController.instance.transitionSpeed.clamp(.5, 1.5);
     final milliseconds = (normal.inMilliseconds / speed).round();
+    if (MediaQuery.disableAnimationsOf(context)) return Duration.zero;
     return reduceAnimations
         ? Duration(milliseconds: math.min(90, milliseconds))
         : Duration(milliseconds: milliseconds);
@@ -1177,6 +1184,7 @@ class _HomePageState extends State<HomePage>
       animatedBackground = p.getBool('animatedBackground') ?? true;
       optimizedMode = p.getBool('optimizedMode') ?? false;
       reduceAnimations = p.getBool('reduceAnimations') ?? false;
+      ThemeController.instance.setReducedMotion(reduceAnimations);
       showScrollIndicators = p.getBool('showScrollIndicators') ?? true;
       contentTopSpacing = (p.getDouble('contentTopSpacing') ??
               p.getDouble('mobileTopSpacing') ??
@@ -1502,8 +1510,26 @@ class _HomePageState extends State<HomePage>
     }
   }
 
+  void _syncAmbientMotion() {
+    final enabled = _visualsVisible &&
+        !showWelcomeSetup &&
+        animatedBackground &&
+        !reduceAnimations &&
+        !optimizedMode &&
+        !_iosLike &&
+        !MediaQuery.disableAnimationsOf(context);
+    if (enabled && !ambientMotion.isAnimating) {
+      ambientMotion.repeat();
+    } else if (!enabled && ambientMotion.isAnimating) {
+      ambientMotion.stop();
+    }
+  }
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    _visualsVisible = state == AppLifecycleState.resumed ||
+        state == AppLifecycleState.inactive;
+    _syncAmbientMotion();
     if (state == AppLifecycleState.resumed && Platform.isAndroid) {
       unawaited(_refreshAndroidKillSwitchStatus());
       unawaited(_refreshAndroidUpdateStatus());
@@ -5108,11 +5134,14 @@ foreach ($route in $routes) {
   }
 
   @override
-  Widget build(BuildContext context) => GhostMenuScope(
-        blurEnabled: !optimizedMode,
-        reduceMotion: reduceAnimations,
-        child: showWelcomeSetup ? _welcomeSetupPage() : _buildMainPage(context),
-      );
+  Widget build(BuildContext context) {
+    _syncAmbientMotion();
+    return GhostMenuScope(
+      blurEnabled: !optimizedMode,
+      reduceMotion: reduceAnimations,
+      child: showWelcomeSetup ? _welcomeSetupPage() : _buildMainPage(context),
+    );
+  }
 
   Widget _welcomeSetupPage() => Scaffold(
         backgroundColor: Theme.of(context).scaffoldBackgroundColor,
@@ -5228,6 +5257,7 @@ foreach ($route in $routes) {
                             value: reduceAnimations,
                             onChanged: (value) async {
                               setState(() => reduceAnimations = value);
+                              ThemeController.instance.setReducedMotion(value);
                               if (value || !animatedBackground) {
                                 ambientMotion.stop();
                                 ambientMotion.value = .12;
@@ -5319,18 +5349,24 @@ foreach ($route in $routes) {
               ),
               child: Container(
                   decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                          begin: Alignment.topCenter,
-                          end: Alignment.bottomCenter,
-                          colors: [
-                        _surface,
-                        Theme.of(context).scaffoldBackgroundColor,
-                        Theme.of(context).scaffoldBackgroundColor
-                      ])),
+                      color: _iosLike
+                          ? Theme.of(context).scaffoldBackgroundColor
+                          : null,
+                      gradient: _iosLike
+                          ? null
+                          : LinearGradient(
+                              begin: Alignment.topCenter,
+                              end: Alignment.bottomCenter,
+                              colors: [
+                                  _surface,
+                                  Theme.of(context).scaffoldBackgroundColor,
+                                  Theme.of(context).scaffoldBackgroundColor
+                                ])),
                   child: SafeArea(
                     top: false,
                     child: Stack(children: [
-                      if (ThemeController.instance.backgroundImage != null)
+                      if (!_iosLike &&
+                          ThemeController.instance.backgroundImage != null)
                         Positioned.fill(
                             child: IgnorePointer(
                                 child: Opacity(
@@ -5341,21 +5377,28 @@ foreach ($route in $routes) {
                                         fit: BoxFit.cover,
                                         cacheWidth: 1920,
                                         gaplessPlayback: true)))),
-                      Positioned.fill(
-                          child: IgnorePointer(
-                              child: RepaintBoundary(
-                                  child: CustomPaint(
-                                      painter: _AmbientBackgroundPainter(
-                                          animation: ambientMotion,
-                                          color: _accent,
-                                          enabled: animatedBackground))))),
+                      if (!_iosLike)
+                        Positioned.fill(
+                            child: IgnorePointer(
+                                child: RepaintBoundary(
+                                    child: CustomPaint(
+                                        painter: _AmbientBackgroundPainter(
+                                            animation: ambientMotion,
+                                            color: _accent,
+                                            enabled: animatedBackground))))),
+                      if (!_iosLike)
+                        Positioned.fill(
+                            child: IgnorePointer(
+                                child: GhostBoxBackgroundEffect(
+                                    animated:
+                                        animatedBackground && !optimizedMode))),
                       Padding(
                           padding: EdgeInsets.fromLTRB(
-                              5,
+                              _iosLike ? 16 : 5,
                               Platform.isAndroid || Platform.isIOS
                                   ? MediaQuery.paddingOf(context).top + 4
                                   : 16,
-                              5,
+                              _iosLike ? 16 : 5,
                               Platform.isIOS ? 0 : 12),
                           child: LayoutBuilder(builder: (context, bounds) {
                             final wideLayout = bounds.maxWidth >= 800;
@@ -5456,7 +5499,9 @@ foreach ($route in $routes) {
           child: Padding(
               // Horizontal inset only: each page owns its leading scroll spacer,
               // so content can pass beneath the floating islands.
-              padding: const EdgeInsets.fromLTRB(5, 0, 9, 0),
+              padding: _iosLike
+                  ? EdgeInsets.zero
+                  : const EdgeInsets.fromLTRB(5, 0, 9, 0),
               child: showScrollIndicators
                   ? Scrollbar(
                       controller: controller,
@@ -5793,105 +5838,122 @@ foreach ($route in $routes) {
     required double width,
     bool expanded = false,
   }) =>
-      ClipRRect(
-        borderRadius: BorderRadius.circular(20),
-        child: _backdropBlur(
-          sigma: 9,
-          child: AnimatedScale(
-            scale: expanded ? 1.045 : 1,
-            duration: const Duration(milliseconds: 320),
-            curve: Curves.easeOutCubic,
-            child: AnimatedSize(
-              duration: const Duration(milliseconds: 320),
-              curve: Curves.easeInOutCubicEmphasized,
-              alignment: Alignment.center,
-              child: AnimatedContainer(
-                width: width,
-                duration: const Duration(milliseconds: 320),
-                curve: Curves.easeInOutCubicEmphasized,
-                padding: EdgeInsets.symmetric(
-                    horizontal: expanded ? 16 : 12, vertical: 5),
-                decoration: BoxDecoration(
-                  color: Color.alphaBlend(
-                      _accent.withValues(alpha: .075),
-                      _surface.withValues(
-                          alpha: ThemeController.instance.glassButtonsEnabled
-                              ? .58 -
-                                  ThemeController.instance.glassStrength * .10
-                              : .86)),
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(
-                      color: Color.alphaBlend(_accent.withValues(alpha: .16),
-                          Colors.white.withValues(alpha: .1))),
-                  gradient: LinearGradient(
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                    colors: [
-                      Colors.white.withValues(alpha: .055),
-                      _accent.withValues(alpha: .045),
-                      _surface.withValues(alpha: .02),
-                    ],
+      _iosLike
+          ? IosGlassSurface(
+              blurEnabled: !optimizedMode,
+              borderRadius: 20,
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              child: SizedBox(width: width, child: child))
+          : ClipRRect(
+              borderRadius: BorderRadius.circular(20),
+              child: _backdropBlur(
+                sigma: 9,
+                child: AnimatedScale(
+                  scale: expanded ? 1.045 : 1,
+                  duration: const Duration(milliseconds: 320),
+                  curve: Curves.easeOutCubic,
+                  child: AnimatedSize(
+                    duration: const Duration(milliseconds: 320),
+                    curve: Curves.easeInOutCubicEmphasized,
+                    alignment: Alignment.center,
+                    child: AnimatedContainer(
+                      width: width,
+                      duration: const Duration(milliseconds: 320),
+                      curve: Curves.easeInOutCubicEmphasized,
+                      padding: EdgeInsets.symmetric(
+                          horizontal: expanded ? 16 : 12, vertical: 5),
+                      decoration: BoxDecoration(
+                        color: Color.alphaBlend(
+                            _accent.withValues(alpha: .075),
+                            _surface.withValues(
+                                alpha: ThemeController
+                                        .instance.glassButtonsEnabled
+                                    ? .58 -
+                                        ThemeController.instance.glassStrength *
+                                            .10
+                                    : .86)),
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(
+                            color: Color.alphaBlend(
+                                _accent.withValues(alpha: .16),
+                                Colors.white.withValues(alpha: .1))),
+                        gradient: LinearGradient(
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                          colors: [
+                            Colors.white.withValues(alpha: .055),
+                            _accent.withValues(alpha: .045),
+                            _surface.withValues(alpha: .02),
+                          ],
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: .17),
+                            blurRadius: 16,
+                            offset: const Offset(0, 4),
+                          ),
+                          BoxShadow(
+                            color: _accent.withValues(alpha: .075),
+                            blurRadius: 18,
+                            spreadRadius: -5,
+                          ),
+                        ],
+                      ),
+                      child: child,
+                    ),
                   ),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha: .17),
-                      blurRadius: 16,
-                      offset: const Offset(0, 4),
-                    ),
-                    BoxShadow(
-                      color: _accent.withValues(alpha: .075),
-                      blurRadius: 18,
-                      spreadRadius: -5,
-                    ),
-                  ],
                 ),
-                child: child,
               ),
-            ),
-          ),
-        ),
-      );
+            );
 
   Widget _headerActionIsland({required Widget child, bool circular = false}) =>
-      ClipRRect(
-        borderRadius: BorderRadius.circular(circular ? 22 : 16),
-        child: _backdropBlur(
-          sigma: 8,
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 260),
-            curve: Curves.easeOutCubic,
-            width: 44,
-            height: 44,
-            decoration: BoxDecoration(
-              color: Color.alphaBlend(
-                  _accent.withValues(alpha: .065),
-                  _surface.withValues(
-                      alpha: ThemeController.instance.glassButtonsEnabled
-                          ? .58 - ThemeController.instance.glassStrength * .10
-                          : .86)),
+      _iosLike
+          ? IosGlassSurface(
+              blurEnabled: !optimizedMode,
+              borderRadius: 22,
+              padding: EdgeInsets.zero,
+              child: SizedBox(width: 44, height: 44, child: child))
+          : ClipRRect(
               borderRadius: BorderRadius.circular(circular ? 22 : 16),
-              border: Border.all(color: Colors.white.withValues(alpha: .12)),
-              gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [
-                  Colors.white.withValues(alpha: .07),
-                  _accent.withValues(alpha: .035),
-                  _surface.withValues(alpha: .02),
-                ],
-              ),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: .14),
-                  blurRadius: 14,
-                  offset: const Offset(0, 4),
+              child: _backdropBlur(
+                sigma: 8,
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 260),
+                  curve: Curves.easeOutCubic,
+                  width: 44,
+                  height: 44,
+                  decoration: BoxDecoration(
+                    color: Color.alphaBlend(
+                        _accent.withValues(alpha: .065),
+                        _surface.withValues(
+                            alpha: ThemeController.instance.glassButtonsEnabled
+                                ? .58 -
+                                    ThemeController.instance.glassStrength * .10
+                                : .86)),
+                    borderRadius: BorderRadius.circular(circular ? 22 : 16),
+                    border:
+                        Border.all(color: Colors.white.withValues(alpha: .12)),
+                    gradient: LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [
+                        Colors.white.withValues(alpha: .07),
+                        _accent.withValues(alpha: .035),
+                        _surface.withValues(alpha: .02),
+                      ],
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: .14),
+                        blurRadius: 14,
+                        offset: const Offset(0, 4),
+                      ),
+                    ],
+                  ),
+                  child: child,
                 ),
-              ],
-            ),
-            child: child,
-          ),
-        ),
-      );
+              ),
+            );
 
   Widget _brandMark(double size) {
     final appearance = ThemeScope.of(context);
@@ -6026,37 +6088,54 @@ foreach ($route in $routes) {
           bottom: MediaQuery.sizeOf(context).width < 800 ? 104 : 16),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         SizedBox(height: contentTopSpacing),
-        RepaintBoundary(
-          child: ClipRRect(
-              borderRadius: BorderRadius.circular(30),
-              child: _backdropBlur(
-                  sigma: 7,
-                  child: Container(
-                      width: double.infinity,
-                      padding: EdgeInsets.fromLTRB(18, 12, 18, 16),
-                      decoration: BoxDecoration(
-                          gradient: LinearGradient(
-                              begin: Alignment.topCenter,
-                              end: Alignment.bottomCenter,
-                              colors: [
-                                _accent.withValues(alpha: .10),
-                                _surface.withValues(alpha: .1)
-                              ]),
-                          borderRadius: BorderRadius.circular(30),
-                          border:
-                              Border.all(color: Colors.white.withOpacity(.12)),
-                          boxShadow: [
-                            BoxShadow(
-                                color: Colors.black.withOpacity(.12),
-                                blurRadius: 28,
-                                offset: Offset(0, 12))
-                          ]),
-                      child: Column(children: [
-                        _power(),
-                        SizedBox(height: 12),
-                        _connectionDetails()
-                      ])))),
-        ),
+        if (_iosLike)
+          Padding(
+            padding: const EdgeInsets.only(top: 16, bottom: 16),
+            child: Container(
+              padding: const EdgeInsets.all(IosLikeTokens.sectionGap),
+              decoration: BoxDecoration(
+                color: _surface,
+                borderRadius: BorderRadius.circular(IosLikeTokens.cardRadius),
+              ),
+              child: Column(children: [
+                _power(),
+                const SizedBox(height: 24),
+                _connectionDetails(),
+              ]),
+            ),
+          )
+        else
+          RepaintBoundary(
+            child: ClipRRect(
+                borderRadius: BorderRadius.circular(30),
+                child: _backdropBlur(
+                    sigma: 7,
+                    child: Container(
+                        width: double.infinity,
+                        padding: EdgeInsets.fromLTRB(18, 12, 18, 16),
+                        decoration: BoxDecoration(
+                            gradient: LinearGradient(
+                                begin: Alignment.topCenter,
+                                end: Alignment.bottomCenter,
+                                colors: [
+                                  _accent.withValues(alpha: .10),
+                                  _surface.withValues(alpha: .1)
+                                ]),
+                            borderRadius: BorderRadius.circular(30),
+                            border: Border.all(
+                                color: Colors.white.withOpacity(.12)),
+                            boxShadow: [
+                              BoxShadow(
+                                  color: Colors.black.withOpacity(.12),
+                                  blurRadius: 28,
+                                  offset: Offset(0, 12))
+                            ]),
+                        child: Column(children: [
+                          _power(),
+                          SizedBox(height: 12),
+                          _connectionDetails()
+                        ])))),
+          ),
         if (_showTunPermissionHelp) _tunPermissionHint(),
         SizedBox(height: 8),
         AnimatedSize(
@@ -6196,10 +6275,13 @@ foreach ($route in $routes) {
                     backgroundColor: _surface.withValues(alpha: .68),
                     side: BorderSide(color: _accent.withValues(alpha: .28)),
                     shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(22))),
+                        borderRadius: BorderRadius.circular(
+                            _iosLike ? IosLikeTokens.controlRadius : 22))),
                 icon: Icon(Icons.add_rounded, size: 23),
                 label: Text(_localized('Добавить подписку или сервер'),
-                    style: TextStyle(fontSize: 12)))),
+                    style: TextStyle(
+                        fontSize:
+                            _iosLike ? IosLikeTokens.secondarySize : 12)))),
         SizedBox(height: 12),
       ]));
 
@@ -6211,29 +6293,29 @@ foreach ($route in $routes) {
           padding: EdgeInsets.only(top: contentTopSpacing + 14, bottom: 100),
           children: [
             Text(_text('Как пускать трафик', 'Traffic routing'),
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                    fontSize: 24,
+                textAlign: _iosLike ? TextAlign.start : TextAlign.center,
+                style: TextStyle(
+                    fontSize: _iosLike ? IosLikeTokens.pageTitleSize : 24,
                     fontWeight: FontWeight.w700,
                     letterSpacing: -.6)),
             const SizedBox(height: 5),
             Text(
                 _text('Выбери, какие сайты отправлять через сервер',
                     'Choose which sites go through the server'),
-                textAlign: TextAlign.center,
+                textAlign: _iosLike ? TextAlign.start : TextAlign.center,
                 style: TextStyle(color: _muted, fontSize: 12)),
             const SizedBox(height: 20),
             _routeOption(
                 _text('Всё через VPN', 'All traffic through VPN'),
                 _text('Любые сайты идут через сервер.',
                     'All sites use the server.'),
-                Icons.shield_rounded,
+                Icons.shield_outlined,
                 'proxy'),
             _routeOption(
                 _text('Только сайты из списка', 'Only sites in the list'),
                 _text('В список — через VPN, всё остальное напрямую.',
                     'Listed sites use VPN; everything else connects directly.'),
-                Icons.list_alt_rounded,
+                Icons.list_alt_outlined,
                 'rules'),
             _routeOption(
                 _text('Всё, кроме списка', 'Everything except the list'),
@@ -6278,7 +6360,9 @@ foreach ($route in $routes) {
                   coreSettings.routing == 'rules'
                       ? 'Сайты через VPN'
                       : 'Исключения из VPN',
-                  '${(coreSettings.routing == 'rules' ? coreSettings.proxyDomains : coreSettings.directDomains).length} правил',
+                  _text(
+                      '${(coreSettings.routing == 'rules' ? coreSettings.manualProxyDomains : coreSettings.manualDirectDomains).length} своих правил',
+                      '${(coreSettings.routing == 'rules' ? coreSettings.manualProxyDomains : coreSettings.manualDirectDomains).length} manual rules'),
                   IconButton(
                       tooltip: _localized('Открыть список правил'),
                       onPressed: () => _openRouteList(coreSettings.routing),
@@ -6298,6 +6382,7 @@ foreach ($route in $routes) {
                       style:
                           TextStyle(color: _muted, fontSize: 11, height: 1.4))),
             ],
+            _routingPresetsPanel(),
             _animatedReconnectBanner(
                 visible: pendingReconnect,
                 child: Padding(
@@ -6306,11 +6391,197 @@ foreach ($route in $routes) {
           ],
         );
 
+  Widget _routingPresetsPanel() {
+    final proxy = coreSettings.routing == 'rules';
+    final active =
+        proxy ? coreSettings.proxyPresetIds : coreSettings.directPresetIds;
+    final editable =
+        coreSettings.routing == 'rules' || coreSettings.routing == 'exclude';
+    return Padding(
+      padding: const EdgeInsets.only(top: 20),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        Row(children: [
+          Expanded(
+              child: Text(_text('Пресеты сайтов', 'Site presets'),
+                  style: const TextStyle(
+                      fontSize: 17, fontWeight: FontWeight.w600))),
+          TextButton.icon(
+              onPressed: () => _editRoutingPreset(),
+              icon: const Icon(Icons.add_rounded, size: 18),
+              label: Text(_text('Создать', 'Create'))),
+        ]),
+        Text(
+            _text(
+                editable
+                    ? 'Включённые списки добавляются к вашим правилам.'
+                    : 'Выберите режим со списком, чтобы включить пресеты.',
+                editable
+                    ? 'Enabled lists are added to your own rules.'
+                    : 'Choose a list routing mode to enable presets.'),
+            style: TextStyle(color: _muted, fontSize: 12)),
+        const SizedBox(height: 8),
+        for (final preset in coreSettings.availableRoutingPresets)
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            title: Text(preset.name),
+            subtitle: Text(_text(
+                '${preset.domains.length} правил${preset.builtIn ? ' · встроенный' : ''}',
+                '${preset.domains.length} rules${preset.builtIn ? ' · built in' : ''}')),
+            onTap: () => _editRoutingPreset(preset),
+            trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+              IconButton(
+                  tooltip: _text('Открыть список', 'View list'),
+                  onPressed: () => _editRoutingPreset(preset),
+                  icon: const Icon(Icons.edit_note_rounded)),
+              Switch.adaptive(
+                  value: editable && active.contains(preset.id),
+                  onChanged: !editable ||
+                          switchingServer ||
+                          backend.state == VpnState.connecting
+                      ? null
+                      : (enabled) async {
+                          if (switchingServer) return;
+                          final ids = {...active};
+                          if (enabled) {
+                            ids.add(preset.id);
+                          } else {
+                            ids.remove(preset.id);
+                          }
+                          await _applyPresetChange(proxy
+                              ? coreSettings.copyWith(
+                                  proxyPresetIds: ids.toList())
+                              : coreSettings.copyWith(
+                                  directPresetIds: ids.toList()));
+                        }),
+            ]),
+          ),
+      ]),
+    );
+  }
+
+  Future<void> _editRoutingPreset(
+      [RoutingPreset? preset, List<String>? initialDomains]) async {
+    final name = TextEditingController(text: preset?.name ?? '');
+    final domains = TextEditingController(
+        text:
+            (preset?.domains ?? initialDomains ?? const <String>[]).join('\n'));
+    String? error;
+    final readOnly = preset?.builtIn ?? false;
+    final result = await showDialog<String>(
+        context: context,
+        builder: (dialogContext) => StatefulBuilder(
+            builder: (context, update) => AlertDialog(
+                  title: Text(readOnly
+                      ? preset!.name
+                      : _text('Пресет сайтов', 'Site preset')),
+                  content: SizedBox(
+                      width: 480,
+                      child: SingleChildScrollView(
+                          child:
+                              Column(mainAxisSize: MainAxisSize.min, children: [
+                        if (!readOnly)
+                          TextField(
+                              controller: name,
+                              maxLength: 80,
+                              decoration: InputDecoration(
+                                  labelText: _text('Название', 'Name'))),
+                        TextField(
+                            controller: domains,
+                            readOnly: readOnly,
+                            minLines: 6,
+                            maxLines: 12,
+                            autocorrect: false,
+                            keyboardType: TextInputType.multiline,
+                            decoration: InputDecoration(
+                                labelText: _text(
+                                    'Домены и IP-сети, по одному на строку',
+                                    'Domains and IP networks, one per line'),
+                                errorText: error)),
+                      ]))),
+                  actions: [
+                    if (preset != null && !readOnly)
+                      TextButton(
+                          onPressed: () =>
+                              Navigator.pop(dialogContext, 'delete'),
+                          child: Text(_text('Удалить', 'Delete'))),
+                    TextButton(
+                        onPressed: () => Navigator.pop(dialogContext),
+                        child: Text(_text('Закрыть', 'Close'))),
+                    if (readOnly)
+                      TextButton(
+                          onPressed: () => Navigator.pop(dialogContext, 'copy'),
+                          child: Text(_text('Создать копию', 'Create copy'))),
+                    if (!readOnly)
+                      FilledButton(
+                          onPressed: () {
+                            try {
+                              if (name.text.trim().isEmpty)
+                                throw const FormatException('Укажите название');
+                              if (RouteRuleList.parse(domains.text).isEmpty)
+                                throw const FormatException(
+                                    'Добавьте хотя бы одно правило');
+                              Navigator.pop(dialogContext, 'save');
+                            } on FormatException catch (e) {
+                              update(() => error = e.message);
+                            }
+                          },
+                          child: Text(_text('Сохранить', 'Save'))),
+                  ],
+                )));
+    final title = name.text.trim();
+    final raw = domains.text;
+    // Keep controllers alive until the dialog exit transition finishes.
+    Future<void>.delayed(const Duration(milliseconds: 400), () {
+      name.dispose();
+      domains.dispose();
+    });
+    if (!mounted || result == null) return;
+    if (result == 'copy') {
+      await _editRoutingPreset(null, preset!.domains);
+      return;
+    }
+    if (switchingServer || backend.state == VpnState.connecting) {
+      _message(_text(
+          'Подождите завершения подключения', 'Wait for connection to finish'));
+      return;
+    }
+    final id = preset?.id ?? 'custom-${DateTime.now().microsecondsSinceEpoch}';
+    final presets = [...coreSettings.routingPresets]
+      ..removeWhere((e) => e.id == id);
+    if (result == 'save')
+      presets.add(RoutingPreset(
+          id: id, name: title, domains: RouteRuleList.parse(raw)));
+    final value = coreSettings.copyWith(
+        routingPresets: presets,
+        proxyPresetIds: coreSettings.proxyPresetIds
+            .where((e) => result != 'delete' || e != id)
+            .toList(),
+        directPresetIds: coreSettings.directPresetIds
+            .where((e) => result != 'delete' || e != id)
+            .toList());
+    if (coreSettings.proxyPresetIds.contains(id) ||
+        coreSettings.directPresetIds.contains(id)) {
+      await _applyPresetChange(value);
+    } else {
+      await _saveCore(value, requiresReconnect: false);
+    }
+  }
+
+  Future<void> _applyPresetChange(CoreSettings value) async {
+    try {
+      await _applyRoutingSettings(value);
+    } on Object catch (error) {
+      if (mounted)
+        _message(_text('Не удалось применить пресет: $error',
+            'Could not apply preset: $error'));
+    }
+  }
+
   void _openRouteList(String mode) {
     routeListMode = mode;
     final values = mode == 'rules'
-        ? coreSettings.proxyDomains
-        : coreSettings.directDomains;
+        ? coreSettings.manualProxyDomains
+        : coreSettings.manualDirectDomains;
     routeListController.text = values.join('\n');
     routeDomainController.clear();
     setState(() => routeListOpen = true);
@@ -6522,6 +6793,18 @@ foreach ($route in $routes) {
               _localized(
                   'Домен, маска или IP-сеть на строку. example.com включает поддомены, *.example.com — только поддомены, full:example.com — только точный домен. Поддерживается JSON Amnezia.'),
               style: TextStyle(color: _muted, fontSize: 12)),
+          TextButton.icon(
+              onPressed: () {
+                final values = _readRouteDomains(routeListController.text);
+                if (values == null || values.isEmpty) {
+                  _message(
+                      _text('Добавьте корректные правила', 'Add valid rules'));
+                  return;
+                }
+                _editRoutingPreset(null, values);
+              },
+              icon: const Icon(Icons.bookmark_add_outlined),
+              label: Text(_text('Сохранить как пресет', 'Save as preset'))),
           const SizedBox(height: 16),
           Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Expanded(
@@ -6631,18 +6914,20 @@ foreach ($route in $routes) {
         child: Material(
           color: Colors.transparent,
           child: InkWell(
-            borderRadius: BorderRadius.circular(20),
+            borderRadius:
+                BorderRadius.circular(_iosLike ? IosLikeTokens.cardRadius : 20),
             onTap: () =>
                 _applyRoutingSettings(coreSettings.copyWith(routing: value)),
             child: AnimatedContainer(
               duration: const Duration(milliseconds: 260),
               curve: Curves.easeOutCubic,
-              padding: const EdgeInsets.all(15),
+              padding: EdgeInsets.all(_iosLike ? IosLikeTokens.inset : 15),
               decoration: BoxDecoration(
                 color: coreSettings.routing == value
                     ? _accent.withValues(alpha: .15)
                     : _surface,
-                borderRadius: BorderRadius.circular(20),
+                borderRadius: BorderRadius.circular(
+                    _iosLike ? IosLikeTokens.cardRadius : 20),
                 border: Border.all(
                     color: coreSettings.routing == value
                         ? _accent.withValues(alpha: .68)
@@ -6653,7 +6938,9 @@ foreach ($route in $routes) {
                   width: 40,
                   height: 40,
                   decoration: BoxDecoration(
-                    color: _accent.withValues(alpha: .14),
+                    color: _iosLike
+                        ? Colors.transparent
+                        : _accent.withValues(alpha: .14),
                     borderRadius: BorderRadius.circular(14),
                   ),
                   child: Icon(icon, color: _accent, size: 20),
@@ -6665,11 +6952,14 @@ foreach ($route in $routes) {
                         children: [
                       Text(title,
                           style: const TextStyle(
-                              fontSize: 13, fontWeight: FontWeight.w600)),
+                              fontSize: 14, fontWeight: FontWeight.w600)),
                       const SizedBox(height: 3),
                       Text(description,
                           style: TextStyle(
-                              color: _muted, fontSize: 11, height: 1.35)),
+                              color: _muted,
+                              fontSize:
+                                  _iosLike ? IosLikeTokens.captionSize : 11,
+                              height: 1.4)),
                     ])),
                 AnimatedContainer(
                   duration: const Duration(milliseconds: 220),
@@ -6742,269 +7032,297 @@ foreach ($route in $routes) {
         ),
       );
 
-  Widget _power() => Column(children: [
-        GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onTap: _toggle,
-          child: MouseRegion(
-            cursor: SystemMouseCursors.click,
-            onEnter: (_) {
-              if (!powerHovered) setState(() => powerHovered = true);
-            },
-            onExit: (_) {
-              if (powerHovered) setState(() => powerHovered = false);
-            },
-            child: AnimatedScale(
-              scale: powerHovered && backend.state != VpnState.connecting
-                  ? 1.035
-                  : 1,
-              duration: const Duration(milliseconds: 140),
-              curve: Curves.easeOutCubic,
-              child: AnimatedBuilder(
-                animation: glow,
-                builder: (context, child) => Stack(
-                  alignment: Alignment.center,
-                  children: [
-                    CustomPaint(
-                      size: const Size(226, 226),
-                      painter: _OrbRings(
-                        progress: 0,
-                        color: _accent,
-                        active: false,
-                        connecting: false,
-                      ),
-                    ),
-                    child!,
-                  ],
-                ),
-                child: SizedBox(
-                  width: 190,
-                  height: 190,
-                  child: Stack(
+  Widget _power() => _iosLike
+      ? IosLikeConnectionControl(
+          connected: backend.state == VpnState.connected,
+          busy: backend.state == VpnState.connecting || switchingServer,
+          error: backend.state == VpnState.error,
+          blurEnabled: !optimizedMode,
+          title: switchingServer
+              ? _text('Переключение', 'Switching')
+              : backend.state == VpnState.connected
+                  ? _text('Отключиться', 'Disconnect')
+                  : backend.state == VpnState.connecting
+                      ? _text('Подключение', 'Connecting')
+                      : backend.state == VpnState.error
+                          ? _text('Повторить подключение', 'Try again')
+                          : _text('Подключиться', 'Connect'),
+          subtitle: backend.state == VpnState.connected
+              ? '$_serverCaption · ${_uptimeLabel()}'
+              : _serverCaption,
+          onPressed: _toggle,
+        )
+      : Column(children: [
+          GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: _toggle,
+            child: MouseRegion(
+              cursor: SystemMouseCursors.click,
+              onEnter: (_) {
+                if (!powerHovered) setState(() => powerHovered = true);
+              },
+              onExit: (_) {
+                if (powerHovered) setState(() => powerHovered = false);
+              },
+              child: AnimatedScale(
+                scale: powerHovered && backend.state != VpnState.connecting
+                    ? 1.035
+                    : 1,
+                duration: const Duration(milliseconds: 140),
+                curve: Curves.easeOutCubic,
+                child: AnimatedBuilder(
+                  animation: glow,
+                  builder: (context, child) => Stack(
                     alignment: Alignment.center,
                     children: [
-                      AnimatedContainer(
-                        duration: const Duration(milliseconds: 500),
-                        width: 178,
-                        height: 178,
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          color: Color.alphaBlend(
-                            _accent.withValues(
-                                alpha: backend.state == VpnState.connected ||
-                                        switchingServer
-                                    ? .12
-                                    : .035),
-                            _surface,
-                          ),
-                          border:
-                              Border.all(color: Colors.white.withOpacity(.04)),
+                      CustomPaint(
+                        size: const Size(226, 226),
+                        painter: _OrbRings(
+                          progress: 0,
+                          color: _accent,
+                          active: false,
+                          connecting: false,
                         ),
                       ),
-                      AnimatedContainer(
-                        duration: const Duration(milliseconds: 420),
-                        width: 144,
-                        height: 144,
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          color: _accent.withValues(
-                              alpha: backend.state == VpnState.connected ||
-                                      switchingServer
-                                  ? .24
-                                  : backend.state == VpnState.connecting
-                                      ? .15
-                                      : .075),
-                          border: Border.all(
-                              color: _accent.withValues(
+                      child!,
+                    ],
+                  ),
+                  child: SizedBox(
+                    width: 190,
+                    height: 190,
+                    child: Stack(
+                      alignment: Alignment.center,
+                      children: [
+                        AnimatedContainer(
+                          duration: const Duration(milliseconds: 500),
+                          width: 178,
+                          height: 178,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: Color.alphaBlend(
+                              _accent.withValues(
                                   alpha: backend.state == VpnState.connected ||
                                           switchingServer
-                                      ? .35
-                                      : .14),
-                              width: 2),
-                          boxShadow: [
-                            BoxShadow(
+                                      ? .12
+                                      : .035),
+                              _surface,
+                            ),
+                            border: Border.all(
+                                color: Colors.white.withOpacity(.04)),
+                          ),
+                        ),
+                        AnimatedContainer(
+                          duration: const Duration(milliseconds: 420),
+                          width: 144,
+                          height: 144,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: _accent.withValues(
+                                alpha: backend.state == VpnState.connected ||
+                                        switchingServer
+                                    ? .24
+                                    : backend.state == VpnState.connecting
+                                        ? .15
+                                        : .075),
+                            border: Border.all(
                                 color: _accent.withValues(
                                     alpha:
                                         backend.state == VpnState.connected ||
                                                 switchingServer
-                                            ? .3
-                                            : .09),
-                                blurRadius: 28),
-                          ],
-                        ),
-                      ),
-                      AnimatedContainer(
-                        duration: const Duration(milliseconds: 520),
-                        curve: Curves.easeOutCubic,
-                        width: 112,
-                        height: 112,
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          gradient: LinearGradient(
-                            begin: Alignment.topLeft,
-                            end: Alignment.bottomRight,
-                            colors: backend.state == VpnState.error
-                                ? const [Color(0xFFFF9FAD), Color(0xFFAB4A67)]
-                                : backend.state == VpnState.connected ||
-                                        switchingServer
-                                    ? [
-                                        Color.lerp(_accent, Colors.white, .28)!,
-                                        _accent,
-                                        Color.lerp(_accent, Colors.black, .18)!,
-                                      ]
-                                    : [
-                                        Color.lerp(
-                                            _surface, Colors.white, .10)!,
-                                        _surface,
-                                        Color.lerp(
-                                            _surface, Colors.black, .18)!,
-                                      ],
+                                            ? .35
+                                            : .14),
+                                width: 2),
+                            boxShadow: [
+                              BoxShadow(
+                                  color: _accent.withValues(
+                                      alpha:
+                                          backend.state == VpnState.connected ||
+                                                  switchingServer
+                                              ? .3
+                                              : .09),
+                                  blurRadius: 28),
+                            ],
                           ),
-                          border: Border.all(
-                              color: Colors.white.withValues(alpha: .34),
-                              width: 1.2),
-                          boxShadow: [
-                            BoxShadow(
-                              color: _accent.withValues(
-                                  alpha: backend.state == VpnState.connected ||
+                        ),
+                        AnimatedContainer(
+                          duration: const Duration(milliseconds: 520),
+                          curve: Curves.easeOutCubic,
+                          width: 112,
+                          height: 112,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            gradient: LinearGradient(
+                              begin: Alignment.topLeft,
+                              end: Alignment.bottomRight,
+                              colors: backend.state == VpnState.error
+                                  ? const [Color(0xFFFF9FAD), Color(0xFFAB4A67)]
+                                  : backend.state == VpnState.connected ||
                                           switchingServer
-                                      ? (powerHovered ? .48 : .34)
-                                      : powerHovered
-                                          ? .20
-                                          : .10),
-                              blurRadius: backend.state == VpnState.connected ||
-                                      switchingServer
-                                  ? (powerHovered ? 34 : 25)
-                                  : powerHovered
-                                      ? 24
-                                      : 15,
-                              spreadRadius: powerHovered ? 1 : 0,
-                              offset: const Offset(0, 5),
+                                      ? [
+                                          Color.lerp(
+                                              _accent, Colors.white, .28)!,
+                                          _accent,
+                                          Color.lerp(
+                                              _accent, Colors.black, .18)!,
+                                        ]
+                                      : [
+                                          Color.lerp(
+                                              _surface, Colors.white, .10)!,
+                                          _surface,
+                                          Color.lerp(
+                                              _surface, Colors.black, .18)!,
+                                        ],
                             ),
-                            BoxShadow(
-                              color: Colors.black.withValues(alpha: .38),
-                              blurRadius: 14,
-                              offset: const Offset(0, 8),
-                            ),
-                          ],
-                        ),
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            AnimatedSwitcher(
-                              duration: const Duration(milliseconds: 240),
-                              reverseDuration:
-                                  const Duration(milliseconds: 180),
-                              // The transition builder applies another curve
-                              // to this animation, so keep the parent bounded.
-                              switchInCurve: Curves.easeOutCubic,
-                              switchOutCurve: Curves.easeInCubic,
-                              transitionBuilder: (child, animation) {
-                                final curved = CurvedAnimation(
-                                    parent: animation,
-                                    curve: Curves.easeOutCubic);
-                                return FadeTransition(
-                                  opacity: animation,
-                                  child: ScaleTransition(
-                                    scale: Tween<double>(begin: .72, end: 1)
-                                        .animate(curved),
-                                    child: RotationTransition(
-                                      turns: Tween<double>(begin: -.04, end: 0)
-                                          .animate(curved),
-                                      child: child,
-                                    ),
-                                  ),
-                                );
-                              },
-                              child: backend.state == VpnState.connecting ||
-                                      switchingServer
-                                  ? const Icon(Icons.more_horiz_rounded,
-                                      key: ValueKey('connecting-or-switching'),
-                                      size: 31,
-                                      color: Colors.white)
-                                  : Icon(
-                                      backend.state == VpnState.connected
-                                          ? Icons.power_off_rounded
-                                          : Icons.power_settings_new_rounded,
-                                      key: ValueKey(backend.state),
-                                      size: 31,
-                                      color: Colors.white,
-                                    ),
-                            ),
-                            const SizedBox(height: 7),
-                            _TextFadeSlide(
-                              duration:
-                                  _motion(const Duration(milliseconds: 320)),
-                              reduceMotion: reduceAnimations,
-                              alignment: Alignment.center,
-                              child: Text(
-                                key: ValueKey(switchingServer
-                                    ? 'switching'
-                                    : backend.state == VpnState.connected
-                                        ? 'disconnect'
-                                        : backend.state == VpnState.connecting
-                                            ? 'connecting'
-                                            : backend.state == VpnState.error
-                                                ? 'retry'
-                                                : 'connect'),
-                                switchingServer
-                                    ? _text('ПЕРЕКЛЮЧАЕМ', 'SWITCHING')
-                                    : backend.state == VpnState.connected
-                                        ? _text('ОТКЛЮЧИТЬСЯ', 'DISCONNECT')
-                                        : backend.state == VpnState.connecting
-                                            ? _text('ПОДКЛЮЧАЕМ', 'CONNECTING')
-                                            : backend.state == VpnState.error
-                                                ? _text('ПОВТОРИТЬ', 'RETRY')
-                                                : _text(
-                                                    'ПОДКЛЮЧИТЬСЯ', 'CONNECT'),
-                                style: const TextStyle(
-                                    fontSize: 8.5,
-                                    color: Colors.white,
-                                    fontWeight: FontWeight.w600,
-                                    letterSpacing: .3),
+                            border: Border.all(
+                                color: Colors.white.withValues(alpha: .34),
+                                width: 1.2),
+                            boxShadow: [
+                              BoxShadow(
+                                color: _accent.withValues(
+                                    alpha:
+                                        backend.state == VpnState.connected ||
+                                                switchingServer
+                                            ? (powerHovered ? .48 : .34)
+                                            : powerHovered
+                                                ? .20
+                                                : .10),
+                                blurRadius:
+                                    backend.state == VpnState.connected ||
+                                            switchingServer
+                                        ? (powerHovered ? 34 : 25)
+                                        : powerHovered
+                                            ? 24
+                                            : 15,
+                                spreadRadius: powerHovered ? 1 : 0,
+                                offset: const Offset(0, 5),
                               ),
-                            ),
-                            if (backend.state == VpnState.connected &&
-                                !switchingServer)
-                              Text(_uptimeLabel(),
+                              BoxShadow(
+                                color: Colors.black.withValues(alpha: .38),
+                                blurRadius: 14,
+                                offset: const Offset(0, 8),
+                              ),
+                            ],
+                          ),
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              AnimatedSwitcher(
+                                duration: const Duration(milliseconds: 240),
+                                reverseDuration:
+                                    const Duration(milliseconds: 180),
+                                // The transition builder applies another curve
+                                // to this animation, so keep the parent bounded.
+                                switchInCurve: Curves.easeOutCubic,
+                                switchOutCurve: Curves.easeInCubic,
+                                transitionBuilder: (child, animation) {
+                                  final curved = CurvedAnimation(
+                                      parent: animation,
+                                      curve: Curves.easeOutCubic);
+                                  return FadeTransition(
+                                    opacity: animation,
+                                    child: ScaleTransition(
+                                      scale: Tween<double>(begin: .72, end: 1)
+                                          .animate(curved),
+                                      child: RotationTransition(
+                                        turns:
+                                            Tween<double>(begin: -.04, end: 0)
+                                                .animate(curved),
+                                        child: child,
+                                      ),
+                                    ),
+                                  );
+                                },
+                                child: backend.state == VpnState.connecting ||
+                                        switchingServer
+                                    ? const Icon(Icons.more_horiz_rounded,
+                                        key:
+                                            ValueKey('connecting-or-switching'),
+                                        size: 31,
+                                        color: Colors.white)
+                                    : Icon(
+                                        backend.state == VpnState.connected
+                                            ? Icons.power_off_rounded
+                                            : Icons.power_settings_new_rounded,
+                                        key: ValueKey(backend.state),
+                                        size: 31,
+                                        color: Colors.white,
+                                      ),
+                              ),
+                              const SizedBox(height: 7),
+                              _TextFadeSlide(
+                                duration:
+                                    _motion(const Duration(milliseconds: 320)),
+                                reduceMotion: reduceAnimations,
+                                alignment: Alignment.center,
+                                child: Text(
+                                  key: ValueKey(switchingServer
+                                      ? 'switching'
+                                      : backend.state == VpnState.connected
+                                          ? 'disconnect'
+                                          : backend.state == VpnState.connecting
+                                              ? 'connecting'
+                                              : backend.state == VpnState.error
+                                                  ? 'retry'
+                                                  : 'connect'),
+                                  switchingServer
+                                      ? _text('ПЕРЕКЛЮЧАЕМ', 'SWITCHING')
+                                      : backend.state == VpnState.connected
+                                          ? _text('ОТКЛЮЧИТЬСЯ', 'DISCONNECT')
+                                          : backend.state == VpnState.connecting
+                                              ? _text(
+                                                  'ПОДКЛЮЧАЕМ', 'CONNECTING')
+                                              : backend.state == VpnState.error
+                                                  ? _text('ПОВТОРИТЬ', 'RETRY')
+                                                  : _text('ПОДКЛЮЧИТЬСЯ',
+                                                      'CONNECT'),
                                   style: const TextStyle(
-                                      color: Colors.white70, fontSize: 11)),
-                          ],
+                                      fontSize: 8.5,
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.w600,
+                                      letterSpacing: .3),
+                                ),
+                              ),
+                              if (backend.state == VpnState.connected &&
+                                  !switchingServer)
+                                Text(_uptimeLabel(),
+                                    style: const TextStyle(
+                                        color: Colors.white70, fontSize: 11)),
+                            ],
+                          ),
                         ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
                 ),
               ),
             ),
           ),
-        ),
-        const SizedBox(height: 8),
-        SizedBox(
-          width: double.infinity,
-          child: AnimatedSwitcher(
-            duration: _motion(const Duration(milliseconds: 420)),
-            reverseDuration: _motion(const Duration(milliseconds: 280)),
-            switchInCurve: Curves.easeOutCubic,
-            switchOutCurve: Curves.easeInCubic,
-            transitionBuilder: (child, animation) => FadeTransition(
-              opacity: animation,
-              child: child,
-            ),
-            child: Text(
-              _serverCaption,
-              key: ValueKey(_serverCaption),
-              textAlign: TextAlign.center,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                color: _foreground,
-                fontSize: 15,
-                fontWeight: FontWeight.w600,
+          const SizedBox(height: 8),
+          SizedBox(
+            width: double.infinity,
+            child: AnimatedSwitcher(
+              duration: _motion(const Duration(milliseconds: 420)),
+              reverseDuration: _motion(const Duration(milliseconds: 280)),
+              switchInCurve: Curves.easeOutCubic,
+              switchOutCurve: Curves.easeInCubic,
+              transitionBuilder: (child, animation) => FadeTransition(
+                opacity: animation,
+                child: child,
+              ),
+              child: Text(
+                _serverCaption,
+                key: ValueKey(_serverCaption),
+                textAlign: TextAlign.center,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: _foreground,
+                  fontSize: 15,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
             ),
-          ),
-        )
-      ]);
+          )
+        ]);
 
   String get _serverCaption {
     if (switchingServer) {
@@ -7053,10 +7371,13 @@ foreach ($route in $routes) {
           animation: animation,
           child: child,
           builder: (_, content) {
-            final sigma = ((1 - animation.value) * 8).clamp(0.0, 8.0);
+            final strength = ThemeController.instance.motionBlurStrength;
+            final sigma =
+                ((1 - animation.value) * 16 * strength).clamp(0.0, 16.0);
             return ImageFiltered(
                 enabled: sigma > 0,
-                imageFilter: ui.ImageFilter.blur(sigmaX: sigma, sigmaY: .1),
+                imageFilter:
+                    ui.ImageFilter.blur(sigmaX: sigma, sigmaY: .2 * strength),
                 child: content);
           });
     }
@@ -7132,8 +7453,10 @@ foreach ($route in $routes) {
   Widget _connectionDetails() =>
       Column(mainAxisSize: MainAxisSize.min, children: [
         Builder(
-            builder: (controlsContext) => Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
+            builder: (controlsContext) => Wrap(
+                  alignment: WrapAlignment.center,
+                  spacing: IosLikeTokens.gap,
+                  runSpacing: IosLikeTokens.gap,
                   children: [
                     _tinyStat('ЯДРО', process?.name ?? coreSettings.core,
                         menuAnchorContext: controlsContext,
@@ -7145,7 +7468,6 @@ foreach ($route in $routes) {
                               ],
                         onSelected: (value) =>
                             _selectCore(value == 'xray' ? 'Xray' : value)),
-                    const SizedBox(width: 8),
                     _tinyStat('РЕЖИМ',
                         _connectionModeLabel(coreSettings.connectionMode),
                         menuAnchorContext: controlsContext,
@@ -7285,7 +7607,7 @@ foreach ($route in $routes) {
       width: double.infinity,
       padding: EdgeInsets.all(30),
       decoration: BoxDecoration(
-          color: Color(0x552A2F82),
+          color: _iosLike ? _surface : const Color(0x552A2F82),
           borderRadius: BorderRadius.circular(20),
           border: Border.all(color: _line)),
       child: Column(children: [
@@ -8065,47 +8387,58 @@ foreach ($route in $routes) {
                   horizontal: selectedServer ? 2 : 5, vertical: 3),
               padding: const EdgeInsets.fromLTRB(11, 9, 5, 9),
               decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.centerLeft,
-                    end: Alignment.centerRight,
-                    colors: [
-                      _accent.withValues(alpha: selectedServer ? .12 : 0),
-                      _accent.withValues(alpha: selectedServer ? .035 : 0),
-                      Colors.transparent,
-                    ],
-                  ),
+                  color: _iosLike
+                      ? _accent.withValues(alpha: selectedServer ? .09 : 0)
+                      : null,
+                  gradient: _iosLike
+                      ? null
+                      : LinearGradient(
+                          begin: Alignment.centerLeft,
+                          end: Alignment.centerRight,
+                          colors: [
+                            _accent.withValues(alpha: selectedServer ? .12 : 0),
+                            _accent.withValues(
+                                alpha: selectedServer ? .035 : 0),
+                            Colors.transparent,
+                          ],
+                        ),
                   borderRadius: BorderRadius.circular(15),
                   border: Border.all(
-                    color: _accent.withValues(alpha: selectedServer ? .22 : 0),
+                    color: _accent.withValues(
+                        alpha: !_iosLike && selectedServer ? .22 : 0),
                   ),
-                  boxShadow: [
-                    BoxShadow(
-                      color:
-                          _accent.withValues(alpha: selectedServer ? .07 : 0),
-                      blurRadius: 14,
-                      spreadRadius: -5,
-                    )
-                  ]),
+                  boxShadow: _iosLike
+                      ? []
+                      : [
+                          BoxShadow(
+                            color: _accent.withValues(
+                                alpha: selectedServer ? .07 : 0),
+                            blurRadius: 14,
+                            spreadRadius: -5,
+                          )
+                        ]),
               child: Row(children: [
-                SizedBox(
-                  width: 3,
-                  height: 28,
-                  child: AnimatedContainer(
-                    duration: _motion(const Duration(milliseconds: 260)),
-                    curve: Curves.easeOutCubic,
-                    decoration: BoxDecoration(
-                      color: _accent.withValues(alpha: selectedServer ? 1 : 0),
-                      borderRadius: BorderRadius.circular(4),
-                      boxShadow: [
-                        BoxShadow(
-                          color: _accent.withValues(
-                              alpha: selectedServer ? .45 : 0),
-                          blurRadius: 8,
-                        ),
-                      ],
+                if (!_iosLike)
+                  SizedBox(
+                    width: 3,
+                    height: 28,
+                    child: AnimatedContainer(
+                      duration: _motion(const Duration(milliseconds: 260)),
+                      curve: Curves.easeOutCubic,
+                      decoration: BoxDecoration(
+                        color:
+                            _accent.withValues(alpha: selectedServer ? 1 : 0),
+                        borderRadius: BorderRadius.circular(4),
+                        boxShadow: [
+                          BoxShadow(
+                            color: _accent.withValues(
+                                alpha: selectedServer ? .45 : 0),
+                            blurRadius: 8,
+                          ),
+                        ],
+                      ),
                     ),
                   ),
-                ),
                 const SizedBox(width: 5),
                 if (_serverEditMode)
                   Padding(
@@ -9328,9 +9661,12 @@ foreach ($route in $routes) {
             width: double.infinity,
             padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 13),
             decoration: BoxDecoration(
-              gradient: LinearGradient(
-                colors: [_accent.withValues(alpha: .18), _surface],
-              ),
+              color: _iosLike ? _surface : null,
+              gradient: _iosLike
+                  ? null
+                  : LinearGradient(
+                      colors: [_accent.withValues(alpha: .18), _surface],
+                    ),
               borderRadius: BorderRadius.circular(20),
               border: Border.all(color: _accent.withValues(alpha: .2)),
             ),
@@ -10576,6 +10912,7 @@ foreach ($route in $routes) {
                   onChanged: (value) async {
                     if (value == reduceAnimations) return;
                     setState(() => reduceAnimations = value);
+                    ThemeController.instance.setReducedMotion(value);
                     if (value || !animatedBackground) {
                       ambientMotion.stop();
                       ambientMotion.value = .12;
@@ -10918,41 +11255,62 @@ foreach ($route in $routes) {
   }
 
   Widget _settingsPageIntro(IconData icon, String title, String subtitle) =>
-      Container(
-        width: double.infinity,
-        padding: const EdgeInsets.all(18),
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            colors: [_accent.withValues(alpha: .20), _surface],
-          ),
-          borderRadius: BorderRadius.circular(22),
-          border: Border.all(color: _accent.withValues(alpha: .22)),
-        ),
-        child: Row(children: [
-          Container(
-            width: 44,
-            height: 44,
-            decoration: BoxDecoration(
-              color: _accent.withValues(alpha: .16),
-              borderRadius: BorderRadius.circular(15),
-            ),
-            child: Icon(icon, color: _accent),
-          ),
-          const SizedBox(width: 13),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(title,
-                    style: const TextStyle(
-                        fontSize: 17, fontWeight: FontWeight.w700)),
-                const SizedBox(height: 4),
-                Text(subtitle, style: TextStyle(color: _muted, fontSize: 11)),
-              ],
-            ),
-          ),
-        ]),
-      );
+      _iosLike
+          ? Padding(
+              padding:
+                  const EdgeInsets.symmetric(vertical: IosLikeTokens.inset),
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(title,
+                        style: Theme.of(context).textTheme.headlineSmall),
+                    const SizedBox(height: IosLikeTokens.gap),
+                    Text(subtitle,
+                        style: Theme.of(context)
+                            .textTheme
+                            .bodyMedium
+                            ?.copyWith(color: _muted)),
+                  ]),
+            )
+          : Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(18),
+              decoration: BoxDecoration(
+                color: _iosLike ? _surface : null,
+                gradient: _iosLike
+                    ? null
+                    : LinearGradient(
+                        colors: [_accent.withValues(alpha: .20), _surface],
+                      ),
+                borderRadius: BorderRadius.circular(22),
+                border: Border.all(color: _accent.withValues(alpha: .22)),
+              ),
+              child: Row(children: [
+                Container(
+                  width: 44,
+                  height: 44,
+                  decoration: BoxDecoration(
+                    color: _accent.withValues(alpha: .16),
+                    borderRadius: BorderRadius.circular(15),
+                  ),
+                  child: Icon(icon, color: _accent),
+                ),
+                const SizedBox(width: 13),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(title,
+                          style: const TextStyle(
+                              fontSize: 17, fontWeight: FontWeight.w700)),
+                      const SizedBox(height: 4),
+                      Text(subtitle,
+                          style: TextStyle(color: _muted, fontSize: 11)),
+                    ],
+                  ),
+                ),
+              ]),
+            );
 
   Widget _releaseInfoCard(
           String label, String value, String subtitle, IconData icon) =>
@@ -12487,11 +12845,11 @@ foreach ($route in $routes) {
 
   Widget _section(String text) => Padding(
       padding: EdgeInsets.only(bottom: 10),
-      child: Text(_localized(text).toUpperCase(),
+      child: Text(_iosLike ? _localized(text) : _localized(text).toUpperCase(),
           style: TextStyle(
               color: _muted,
-              fontSize: 10,
-              letterSpacing: 1.5,
+              fontSize: _iosLike ? 15 : 10,
+              letterSpacing: _iosLike ? -.2 : 1.5,
               fontWeight: FontWeight.w700)));
   Widget _choice(String name, bool active, VoidCallback onTap) => Expanded(
       child: Padding(
@@ -12530,27 +12888,33 @@ foreach ($route in $routes) {
 
   Widget _row(IconData icon, String title, String subtitle, Widget trailing) =>
       AnimatedSize(
-        duration: const Duration(milliseconds: 280),
+        duration: _motion(Duration(milliseconds: _iosLike ? 200 : 280)),
         curve: Curves.easeInOutCubicEmphasized,
         alignment: Alignment.topCenter,
         child: Container(
-            margin: EdgeInsets.only(bottom: 8),
-            padding: EdgeInsets.symmetric(horizontal: 15, vertical: 12),
+            margin: EdgeInsets.only(bottom: _iosLike ? 2 : 8),
+            padding: EdgeInsets.symmetric(
+                horizontal: 16, vertical: _iosLike ? 16 : 12),
             decoration: BoxDecoration(
                 color: _surface, borderRadius: BorderRadius.circular(16)),
             child: Row(children: [
-              Icon(icon, color: _accent),
-              SizedBox(width: 13),
+              Icon(icon, color: _muted, size: _iosLike ? 20 : 24),
+              const SizedBox(width: 12),
               Expanded(
                   child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                     _settingLabel(title,
-                        style: const TextStyle(fontWeight: FontWeight.w500),
+                        style: TextStyle(
+                            fontSize: _iosLike ? IosLikeTokens.bodySize : 13,
+                            fontWeight: FontWeight.w500),
                         maxLines: 1),
                     const SizedBox(height: 2),
                     _settingLabel(subtitle,
-                        style: TextStyle(color: _muted, fontSize: 11),
+                        style: TextStyle(
+                            color: _muted,
+                            fontSize:
+                                _iosLike ? IosLikeTokens.captionSize : 11),
                         maxLines: 3),
                   ])),
               trailing
@@ -12706,154 +13070,174 @@ foreach ($route in $routes) {
         child: child,
       );
 
-  Widget _nav() => _draggableTabSurface(
-      vertical: false,
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(29),
-        child: _backdropBlur(
-          sigma: 3,
-          child: Container(
-              key: _bottomNavKey,
-              height: 84,
-              padding: const EdgeInsets.all(6),
-              decoration: BoxDecoration(
-                  color: _surface.withValues(alpha: .84),
-                  borderRadius: BorderRadius.circular(27),
-                  border:
-                      Border.all(color: Colors.white.withValues(alpha: .15)),
-                  boxShadow: [
-                    BoxShadow(
-                        color: Colors.black.withOpacity(.24),
-                        blurRadius: 25,
-                        offset: const Offset(0, 10)),
-                  ]),
-              child: LayoutBuilder(builder: (context, bounds) {
-                final itemWidth = bounds.maxWidth / 3;
-                return Stack(children: [
-                  AnimatedPositioned(
-                      duration: Duration(
-                          milliseconds: _draggingTabIndicator ? 64 : 260),
-                      curve: Curves.easeOutCubic,
-                      left: itemWidth *
-                          (_tabDragPosition ??
-                              (_pendingNavTab ?? _tabIndex).toDouble()),
-                      top: 0,
-                      bottom: 0,
-                      width: itemWidth,
-                      child: _draggableTabIndicator(
-                          vertical: false,
-                          decoration: BoxDecoration(
-                              gradient: LinearGradient(colors: [
-                                _accent.withValues(alpha: .20),
-                                _surface
-                              ]),
-                              borderRadius: BorderRadius.circular(21),
-                              border: Border.all(
-                                  color: _accent.withValues(alpha: .4)),
-                              boxShadow: [
-                                BoxShadow(
-                                    color: _accent.withOpacity(.18),
-                                    blurRadius: 17),
-                              ]))),
-                  Row(children: [
-                    _navItem(Icons.shield_outlined,
-                        _text('Подключение', 'Connect'), 0),
-                    _navItem(Icons.alt_route_rounded,
-                        _text('Маршрут', 'Routing'), 1),
-                    _navItem(
-                        Icons.tune_rounded, _text('Настройки', 'Settings'), 2),
-                  ]),
-                ]);
-              })),
-        ),
-      ));
-  Widget _sideNav() => _draggableTabSurface(
-        vertical: true,
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(25),
-          child: Container(
-              key: _sideNavKey,
-              padding: const EdgeInsets.all(6),
-              decoration: BoxDecoration(
-                  color: _surface.withValues(alpha: .94),
-                  borderRadius: BorderRadius.circular(25),
-                  border:
-                      Border.all(color: Colors.white.withValues(alpha: .15)),
-                  boxShadow: [
-                    BoxShadow(
-                        color: Colors.black.withOpacity(.18),
-                        blurRadius: 24,
-                        offset: const Offset(0, 8))
-                  ]),
-              child: LayoutBuilder(builder: (context, _) {
-                const itemHeight = 72.0;
-                const itemGap = 8.0;
-                const selectedHeight = 72.0;
-                return Stack(children: [
-                  AnimatedPositioned(
-                      duration: Duration(
-                          milliseconds: _draggingTabIndicator ? 64 : 260),
-                      curve: Curves.easeOutCubic,
-                      top: (itemHeight + itemGap) *
+  Widget _iosNavigation({bool vertical = false}) => IosLikeNavigation(
+        selectedIndex: _tabIndex,
+        onSelected: _openTab,
+        compact: !vertical,
+        blurEnabled: !optimizedMode,
+        items: [
+          (icon: Icons.shield_outlined, label: _text('Главная', 'Home')),
+          (icon: Icons.alt_route_outlined, label: _text('Маршрут', 'Routing')),
+          (
+            icon: Icons.settings_outlined,
+            label: _text('Настройки', 'Settings')
+          ),
+        ],
+      );
+
+  Widget _nav() => _iosLike
+      ? _iosNavigation()
+      : _draggableTabSurface(
+          vertical: false,
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(29),
+            child: _backdropBlur(
+              sigma: 3,
+              child: Container(
+                  key: _bottomNavKey,
+                  height: 84,
+                  padding: const EdgeInsets.all(6),
+                  decoration: BoxDecoration(
+                      color: _surface.withValues(alpha: .84),
+                      borderRadius: BorderRadius.circular(27),
+                      border: Border.all(
+                          color: Colors.white.withValues(alpha: .15)),
+                      boxShadow: [
+                        BoxShadow(
+                            color: Colors.black.withOpacity(.24),
+                            blurRadius: 25,
+                            offset: const Offset(0, 10)),
+                      ]),
+                  child: LayoutBuilder(builder: (context, bounds) {
+                    final itemWidth = bounds.maxWidth / 3;
+                    return Stack(children: [
+                      AnimatedPositioned(
+                          duration: Duration(
+                              milliseconds: _draggingTabIndicator ? 64 : 260),
+                          curve: Curves.easeOutCubic,
+                          left: itemWidth *
                               (_tabDragPosition ??
-                                  (_pendingNavTab ?? _tabIndex).toDouble()) +
-                          (itemHeight - selectedHeight) / 2,
-                      left: 0,
-                      right: 0,
-                      height: selectedHeight,
-                      child: _draggableTabIndicator(
-                          vertical: true,
-                          decoration: BoxDecoration(
-                              gradient: LinearGradient(
-                                  colors: [
+                                  (_pendingNavTab ?? _tabIndex).toDouble()),
+                          top: 0,
+                          bottom: 0,
+                          width: itemWidth,
+                          child: _draggableTabIndicator(
+                              vertical: false,
+                              decoration: BoxDecoration(
+                                  gradient: LinearGradient(colors: [
                                     _accent.withValues(alpha: .20),
                                     _surface
-                                  ],
-                                  begin: Alignment.centerLeft,
-                                  end: Alignment.centerRight),
-                              borderRadius: BorderRadius.circular(19),
-                              border: Border.all(
-                                  color: _accent.withOpacity(.38))))),
-                  Column(children: [
-                    SizedBox(
-                        height: itemHeight,
-                        child: _sideNavItem(Icons.shield_outlined,
-                            _text('Подключение', 'Connect'), 0)),
-                    const SizedBox(height: itemGap),
-                    SizedBox(
-                        height: itemHeight,
-                        child: _sideNavItem(Icons.alt_route_rounded,
-                            _text('Маршрут', 'Routing'), 1)),
-                    const SizedBox(height: itemGap),
-                    SizedBox(
-                        height: itemHeight,
-                        child: _sideNavItem(Icons.tune_rounded,
-                            _text('Настройки', 'Settings'), 2)),
-                    const SizedBox(height: itemGap),
-                    const Spacer(),
-                    Divider(
-                        height: 16,
-                        thickness: 1,
-                        indent: 10,
-                        endIndent: 10,
-                        color: Colors.white.withValues(alpha: .10)),
-                    _sideActionItem(
-                        Icons.speed_rounded,
-                        checkingAll
-                            ? '$pingAllDone/$pingAllTotal'
-                            : _text('Пинг все', 'Ping all'),
-                        () => _checkAllProfiles(List.of(profiles)),
-                        busy: checkingAll),
-                    _sideActionItem(Icons.article_outlined,
-                        _text('Логи', 'Logs'), _showLogs),
-                    _sideActionItem(Icons.history_rounded,
-                        _text('История', 'History'), _showConnectionHistory),
-                    const SizedBox(height: 4),
-                  ]),
-                ]);
-              })),
-        ),
-      );
+                                  ]),
+                                  borderRadius: BorderRadius.circular(21),
+                                  border: Border.all(
+                                      color: _accent.withValues(alpha: .4)),
+                                  boxShadow: [
+                                    BoxShadow(
+                                        color: _accent.withOpacity(.18),
+                                        blurRadius: 17),
+                                  ]))),
+                      Row(children: [
+                        _navItem(Icons.shield_outlined,
+                            _text('Подключение', 'Connect'), 0),
+                        _navItem(Icons.alt_route_rounded,
+                            _text('Маршрут', 'Routing'), 1),
+                        _navItem(Icons.tune_rounded,
+                            _text('Настройки', 'Settings'), 2),
+                      ]),
+                    ]);
+                  })),
+            ),
+          ));
+  Widget _sideNav() => _iosLike
+      ? Align(
+          alignment: Alignment.topCenter, child: _iosNavigation(vertical: true))
+      : _draggableTabSurface(
+          vertical: true,
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(25),
+            child: Container(
+                key: _sideNavKey,
+                padding: const EdgeInsets.all(6),
+                decoration: BoxDecoration(
+                    color: _surface.withValues(alpha: .94),
+                    borderRadius: BorderRadius.circular(25),
+                    border:
+                        Border.all(color: Colors.white.withValues(alpha: .15)),
+                    boxShadow: [
+                      BoxShadow(
+                          color: Colors.black.withOpacity(.18),
+                          blurRadius: 24,
+                          offset: const Offset(0, 8))
+                    ]),
+                child: LayoutBuilder(builder: (context, _) {
+                  const itemHeight = 72.0;
+                  const itemGap = 8.0;
+                  const selectedHeight = 72.0;
+                  return Stack(children: [
+                    AnimatedPositioned(
+                        duration: Duration(
+                            milliseconds: _draggingTabIndicator ? 64 : 260),
+                        curve: Curves.easeOutCubic,
+                        top: (itemHeight + itemGap) *
+                                (_tabDragPosition ??
+                                    (_pendingNavTab ?? _tabIndex).toDouble()) +
+                            (itemHeight - selectedHeight) / 2,
+                        left: 0,
+                        right: 0,
+                        height: selectedHeight,
+                        child: _draggableTabIndicator(
+                            vertical: true,
+                            decoration: BoxDecoration(
+                                gradient: LinearGradient(
+                                    colors: [
+                                      _accent.withValues(alpha: .20),
+                                      _surface
+                                    ],
+                                    begin: Alignment.centerLeft,
+                                    end: Alignment.centerRight),
+                                borderRadius: BorderRadius.circular(19),
+                                border: Border.all(
+                                    color: _accent.withOpacity(.38))))),
+                    Column(children: [
+                      SizedBox(
+                          height: itemHeight,
+                          child: _sideNavItem(Icons.shield_outlined,
+                              _text('Подключение', 'Connect'), 0)),
+                      const SizedBox(height: itemGap),
+                      SizedBox(
+                          height: itemHeight,
+                          child: _sideNavItem(Icons.alt_route_rounded,
+                              _text('Маршрут', 'Routing'), 1)),
+                      const SizedBox(height: itemGap),
+                      SizedBox(
+                          height: itemHeight,
+                          child: _sideNavItem(Icons.tune_rounded,
+                              _text('Настройки', 'Settings'), 2)),
+                      const SizedBox(height: itemGap),
+                      const Spacer(),
+                      Divider(
+                          height: 16,
+                          thickness: 1,
+                          indent: 10,
+                          endIndent: 10,
+                          color: Colors.white.withValues(alpha: .10)),
+                      _sideActionItem(
+                          Icons.speed_rounded,
+                          checkingAll
+                              ? '$pingAllDone/$pingAllTotal'
+                              : _text('Пинг все', 'Ping all'),
+                          () => _checkAllProfiles(List.of(profiles)),
+                          busy: checkingAll),
+                      _sideActionItem(Icons.article_outlined,
+                          _text('Логи', 'Logs'), _showLogs),
+                      _sideActionItem(Icons.history_rounded,
+                          _text('История', 'History'), _showConnectionHistory),
+                      const SizedBox(height: 4),
+                    ]),
+                  ]);
+                })),
+          ),
+        );
 
   Widget _sideActionItem(
     IconData icon,
@@ -13283,6 +13667,11 @@ class _SettingsCategoryCard extends StatefulWidget {
 
 class _SettingsCategoryCardState extends State<_SettingsCategoryCard> {
   bool hovered = false;
+  bool get iosLike => ThemeController.instance.isIosLike;
+  Duration get motion => ThemeController.instance.reduceMotion ||
+          MediaQuery.disableAnimationsOf(context)
+      ? Duration.zero
+      : IosLikeTokens.motionStandard;
 
   @override
   Widget build(BuildContext context) => MouseRegion(
@@ -13290,20 +13679,23 @@ class _SettingsCategoryCardState extends State<_SettingsCategoryCard> {
         onExit: (_) => setState(() => hovered = false),
         child: Material(
           color: Colors.transparent,
-          borderRadius: BorderRadius.circular(17),
+          borderRadius:
+              BorderRadius.circular(iosLike ? IosLikeTokens.cardRadius : 17),
           child: InkWell(
-            borderRadius: BorderRadius.circular(17),
+            borderRadius:
+                BorderRadius.circular(iosLike ? IosLikeTokens.cardRadius : 17),
             onTap: widget.onTap,
             child: AnimatedContainer(
-              duration: const Duration(milliseconds: 220),
+              duration: motion,
               curve: Curves.easeOutCubic,
-              padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 12),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
               decoration: BoxDecoration(
                 color: Color.alphaBlend(
                   widget.accent.withValues(alpha: hovered ? .09 : 0),
                   widget.surface,
                 ),
-                borderRadius: BorderRadius.circular(17),
+                borderRadius: BorderRadius.circular(
+                    iosLike ? IosLikeTokens.cardRadius : 17),
                 border: Border.all(
                   color: hovered
                       ? widget.accent.withValues(alpha: .52)
@@ -13316,14 +13708,15 @@ class _SettingsCategoryCardState extends State<_SettingsCategoryCard> {
                     begin: widget.muted,
                     end: hovered ? widget.accent : widget.muted,
                   ),
-                  duration: const Duration(milliseconds: 220),
+                  duration: motion,
                   curve: Curves.easeOutCubic,
                   builder: (context, color, child) => Icon(
                     widget.icon,
+                    size: iosLike ? 20 : 24,
                     color: color,
                   ),
                 ),
-                const SizedBox(width: 13),
+                const SizedBox(width: 12),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -13334,6 +13727,7 @@ class _SettingsCategoryCardState extends State<_SettingsCategoryCard> {
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
                           color: widget.foreground,
+                          fontSize: iosLike ? IosLikeTokens.bodySize : null,
                           fontWeight: FontWeight.w600,
                         ),
                       ),
@@ -13342,7 +13736,9 @@ class _SettingsCategoryCardState extends State<_SettingsCategoryCard> {
                         widget.subtitle,
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
-                        style: TextStyle(color: widget.muted, fontSize: 11),
+                        style: TextStyle(
+                            color: widget.muted,
+                            fontSize: iosLike ? IosLikeTokens.captionSize : 11),
                       ),
                     ],
                   ),
@@ -13353,7 +13749,7 @@ class _SettingsCategoryCardState extends State<_SettingsCategoryCard> {
                     begin: widget.muted,
                     end: hovered ? widget.accent : widget.muted,
                   ),
-                  duration: const Duration(milliseconds: 220),
+                  duration: motion,
                   builder: (context, color, child) => Icon(
                     Icons.chevron_right_rounded,
                     color: color,

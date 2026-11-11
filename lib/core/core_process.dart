@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import '../services/log_store.dart';
 import '../models/server_profile.dart';
 import '../models/core_settings.dart';
+import '../platform/windows_core_lifecycle.dart';
 
 import 'vpn_backend.dart';
 import 'split_routing.dart';
@@ -855,6 +856,29 @@ end try
         var restarted = false;
         await _serializeCoreOperation(() async {
           if (!_shouldStayConnected) return;
+          if (Platform.isMacOS &&
+              (settings.connectionMode == 'tun' ||
+                  settings.connectionMode == 'mixed')) {
+            // The privileged core may die before macOS finishes removing its
+            // utun interface and routes. Confirm cleanup before reusing the
+            // tunnel, just as the initial-start rollback path does.
+            await _rollbackMacElevatedStart();
+          }
+          if (Platform.isWindows &&
+              name == 'sing-box' &&
+              (settings.connectionMode == 'tun' ||
+                  settings.connectionMode == 'mixed')) {
+            // sing-box can exit while Wintun's device instance is still
+            // registered. Remove that stale instance before retrying with the
+            // same adapter name, otherwise WintunCreateAdapter reports
+            // ERROR_ALREADY_EXISTS and opening the old device fails.
+            final removed =
+                await WindowsCoreLifecycle.cleanupGhostBoxTunAdapter();
+            if (removed) {
+              _writeLifecycleLog(
+                  'Перед повторным запуском удалён зависший Wintun ghostbox0');
+            }
+          }
           await _startProcess(profile);
           restarted = true;
         });

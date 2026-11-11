@@ -1,12 +1,16 @@
 import 'dart:io';
 import 'dart:ui' as ui;
 
-import 'package:flutter/cupertino.dart' show CupertinoPageTransitionsBuilder;
+import 'package:flutter/cupertino.dart'
+    show CupertinoPageTransitionsBuilder, CupertinoThemeData;
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'brand_icon.dart';
+import 'ios_like_tokens.dart';
+
+enum InterfaceStyle { standard, iosLike }
 
 enum ThemePreset {
   midnight,
@@ -39,8 +43,29 @@ class ThemeController extends ChangeNotifier {
   String _iconVariant = 'aurora';
   Color _iconForeground = const Color(0xFF8BB9F4);
   Color _iconBackground = const Color(0xFF080D16);
+  bool _androidIconApplyPending = false;
   bool _loaded = false;
   ThemePreset get preset => _preset;
+  InterfaceStyle interfaceStyle = InterfaceStyle.standard;
+  bool iosDarkMode = true;
+
+  Future<void> setIosDarkMode(bool value) async {
+    iosDarkMode = value;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('appearance.iosDarkMode', value);
+  }
+
+  bool get isIosLike => interfaceStyle == InterfaceStyle.iosLike;
+
+  Future<void> setInterfaceStyle(InterfaceStyle value) async {
+    if (interfaceStyle == value) return;
+    interfaceStyle = value;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('appearance.interfaceStyle', value.name);
+  }
+
   Color get accent => switch (_preset) {
         ThemePreset.midnight => const Color(0xFF8BB9F4),
         ThemePreset.graphite => const Color(0xFFB6BDC9),
@@ -61,60 +86,140 @@ class ThemeController extends ChangeNotifier {
         ThemePreset.arctic => const Color(0xFF247D9B),
         ThemePreset.custom => _customAccent,
       };
-  Color get background => switch (_preset) {
-        ThemePreset.midnight => const Color(0xFF070D18),
-        ThemePreset.graphite => const Color(0xFF0D0F13),
-        ThemePreset.ocean => const Color(0xFF061522),
-        ThemePreset.emerald => const Color(0xFF091812),
-        ThemePreset.amethyst => const Color(0xFF120D20),
-        ThemePreset.sapphire => const Color(0xFF091426),
-        ThemePreset.ruby => const Color(0xFF1A1018),
-        ThemePreset.lavender => const Color(0xFF171326),
-        ThemePreset.forest => const Color(0xFF0D1B15),
-        ThemePreset.sand => const Color(0xFF201A12),
-        ThemePreset.daylight => const Color(0xFFF1F5FC),
-        ThemePreset.paper => const Color(0xFFF6F2EB),
-        ThemePreset.mist => const Color(0xFFEDF5F5),
-        ThemePreset.aurora => const Color(0xFF071A20),
-        ThemePreset.obsidian => const Color(0xFF111722),
-        ThemePreset.sunset => const Color(0xFF20120F),
-        ThemePreset.arctic => const Color(0xFFEAF5FA),
-        ThemePreset.custom => _customBackground,
-      };
-  Brightness get brightness => switch (_preset) {
-        ThemePreset.daylight ||
-        ThemePreset.paper ||
-        ThemePreset.mist ||
-        ThemePreset.arctic =>
-          Brightness.light,
-        ThemePreset.custom => _customBackground.computeLuminance() > .42
-            ? Brightness.light
-            : Brightness.dark,
-        _ => Brightness.dark,
-      };
+  Color get background => isIosLike
+      ? (brightness == Brightness.dark
+          ? const Color(0xFF101114)
+          : const Color(0xFFF2F2F7))
+      : switch (_preset) {
+          ThemePreset.midnight => const Color(0xFF070D18),
+          ThemePreset.graphite => const Color(0xFF0D0F13),
+          ThemePreset.ocean => const Color(0xFF061522),
+          ThemePreset.emerald => const Color(0xFF091812),
+          ThemePreset.amethyst => const Color(0xFF120D20),
+          ThemePreset.sapphire => const Color(0xFF091426),
+          ThemePreset.ruby => const Color(0xFF1A1018),
+          ThemePreset.lavender => const Color(0xFF171326),
+          ThemePreset.forest => const Color(0xFF0D1B15),
+          ThemePreset.sand => const Color(0xFF201A12),
+          ThemePreset.daylight => const Color(0xFFF1F5FC),
+          ThemePreset.paper => const Color(0xFFF6F2EB),
+          ThemePreset.mist => const Color(0xFFEDF5F5),
+          ThemePreset.aurora => const Color(0xFF071A20),
+          ThemePreset.obsidian => const Color(0xFF111722),
+          ThemePreset.sunset => const Color(0xFF20120F),
+          ThemePreset.arctic => const Color(0xFFEAF5FA),
+          ThemePreset.custom => _customBackground,
+        };
+  Brightness get brightness => isIosLike
+      ? (iosDarkMode ? Brightness.dark : Brightness.light)
+      : switch (_preset) {
+          ThemePreset.daylight ||
+          ThemePreset.paper ||
+          ThemePreset.mist ||
+          ThemePreset.arctic =>
+            Brightness.light,
+          ThemePreset.custom => _customBackground.computeLuminance() > .42
+              ? Brightness.light
+              : Brightness.dark,
+          _ => Brightness.dark,
+        };
   Color get foreground => brightness == Brightness.dark
       ? const Color(0xFFE8ECF4)
       : const Color(0xFF172033);
-  Color get surface =>
-      Color.alphaBlend(Colors.white.withValues(alpha: .045), background);
+  Color get surface => isIosLike
+      ? (brightness == Brightness.dark ? const Color(0xFF202126) : Colors.white)
+      : Color.alphaBlend(Colors.white.withValues(alpha: .045), background);
   Color get muted => brightness == Brightness.dark
       ? const Color(0xFF929DAD)
       : const Color(0xFF596477);
   Color get customAccent => _customAccent;
   Color get customBackground => _customBackground;
   String get iconVariant => _iconVariant;
+  bool get androidIconApplyPending => _androidIconApplyPending;
   Color get iconForeground => _iconForeground;
   Color get iconBackground => _iconBackground;
 
   bool motionBlur = false;
+  double motionBlurStrength = .5;
   double glassStrength = .35;
+  double interfaceScale = 1.0;
+
+  Future<void> setInterfaceScale(double value) async {
+    interfaceScale = value.clamp(.75, 1.5);
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble('appearance.interfaceScale', interfaceScale);
+  }
+
   double transitionSpeed = 1.0;
   String transitionStyle = 'soft';
   bool glassPanelsEnabled = true;
   bool glassButtonsEnabled = true;
   bool glassSliderThumbEnabled = false;
+  String selectedFontFamily = 'SF Pro Display';
+  String backgroundEffect = 'stars';
+  Set<String> activeBackgroundEffects = {'stars'};
+  bool reduceMotion = false;
+
+  static const availableFonts = <(String, String)>[
+    ('SF Pro Display', 'System'),
+    ('DejaVu Sans', 'DejaVu Sans'),
+    ('DejaVu Serif', 'DejaVu Serif'),
+    ('DejaVu Sans Mono', 'DejaVu Mono'),
+  ];
+  static const backgroundEffects = <(String, String)>[
+    ('none', 'Нет / None'),
+    ('stars', 'Звёзды / Stars'),
+    ('snow', 'Снег / Snow'),
+    ('aurora', 'Северное сияние / Aurora'),
+    ('orbs', 'Орбиты / Orbits'),
+  ];
+
+  Future<void> setFontFamily(String value) async {
+    if (!availableFonts.any((font) => font.$1 == value)) return;
+    selectedFontFamily = value;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('appearance.fontFamily', value);
+  }
+
+  Future<void> setBackgroundEffect(String value) async {
+    if (!backgroundEffects.any((effect) => effect.$1 == value)) return;
+    backgroundEffect = value;
+    activeBackgroundEffects = value == 'none' ? <String>{} : <String>{value};
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('appearance.backgroundEffect', value);
+    await prefs.setStringList(
+        'appearance.backgroundEffects', activeBackgroundEffects.toList());
+  }
+
+  Future<void> toggleBackgroundEffect(String value) async {
+    if (!backgroundEffects.any((effect) => effect.$1 == value)) return;
+    if (value == 'none') {
+      await setBackgroundEffect('none');
+      return;
+    }
+    final next = Set<String>.of(activeBackgroundEffects)..remove('none');
+    if (!next.add(value)) next.remove(value);
+    activeBackgroundEffects = next;
+    backgroundEffect = next.isEmpty ? 'none' : value;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('appearance.backgroundEffect', backgroundEffect);
+    await prefs.setStringList(
+        'appearance.backgroundEffects', activeBackgroundEffects.toList());
+  }
+
+  void setReducedMotion(bool value) {
+    if (reduceMotion == value) return;
+    reduceMotion = value;
+    notifyListeners();
+  }
+
   Future<void> setGlass(
       {bool? motion,
+      double? blurStrength,
       double? strength,
       double? speed,
       String? style,
@@ -122,6 +227,7 @@ class ThemeController extends ChangeNotifier {
       bool? buttons,
       bool? sliderThumb}) async {
     if (motion != null) motionBlur = motion;
+    if (blurStrength != null) motionBlurStrength = blurStrength.clamp(0, 1);
     if (strength != null) glassStrength = strength.clamp(0, 1);
     if (speed != null) transitionSpeed = speed.clamp(.5, 1.5);
     if (style != null && const {'soft', 'smooth', 'spring'}.contains(style))
@@ -132,6 +238,7 @@ class ThemeController extends ChangeNotifier {
     notifyListeners();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool('appearance.motionBlur', motionBlur);
+    await prefs.setDouble('appearance.motionBlurStrength', motionBlurStrength);
     await prefs.setDouble('appearance.glassStrength', glassStrength);
     await prefs.setDouble('appearance.transitionSpeed', transitionSpeed);
     await prefs.setString('appearance.transitionStyle', transitionStyle);
@@ -232,9 +339,19 @@ class ThemeController extends ChangeNotifier {
         await clearAppearanceFile(font: key == 'font');
       }
     }
+    interfaceStyle = InterfaceStyle.values
+            .where((style) =>
+                style.name == prefs.getString('appearance.interfaceStyle'))
+            .firstOrNull ??
+        InterfaceStyle.standard;
+    iosDarkMode = prefs.getBool('appearance.iosDarkMode') ?? true;
     motionBlur = prefs.getBool('appearance.motionBlur') ?? false;
+    motionBlurStrength =
+        (prefs.getDouble('appearance.motionBlurStrength') ?? .5).clamp(0, 1);
     glassStrength =
         (prefs.getDouble('appearance.glassStrength') ?? .35).clamp(0, 1);
+    interfaceScale =
+        (prefs.getDouble('appearance.interfaceScale') ?? 1).clamp(.75, 1.5);
     transitionSpeed =
         (prefs.getDouble('appearance.transitionSpeed') ?? 1).clamp(.5, 1.5);
     transitionStyle = prefs.getString('appearance.transitionStyle') ?? 'soft';
@@ -242,6 +359,30 @@ class ThemeController extends ChangeNotifier {
     glassButtonsEnabled = prefs.getBool('appearance.glassButtons') ?? true;
     glassSliderThumbEnabled =
         prefs.getBool('appearance.glassSliderThumb') ?? false;
+    final savedFont = prefs.getString('appearance.fontFamily');
+    if (savedFont != null &&
+        availableFonts.any((font) => font.$1 == savedFont)) {
+      selectedFontFamily = savedFont;
+    }
+    final savedEffect = prefs.getString('appearance.backgroundEffect');
+    if (savedEffect != null &&
+        backgroundEffects.any((effect) => effect.$1 == savedEffect)) {
+      backgroundEffect = savedEffect;
+    }
+    final savedEffects = prefs.getStringList('appearance.backgroundEffects');
+    if (savedEffects != null) {
+      activeBackgroundEffects = savedEffects
+          .where((name) =>
+              name != 'none' &&
+              backgroundEffects.any((effect) => effect.$1 == name))
+          .toSet();
+      if (activeBackgroundEffects.isEmpty && backgroundEffect != 'none') {
+        activeBackgroundEffects = {backgroundEffect};
+      }
+    } else {
+      activeBackgroundEffects =
+          backgroundEffect == 'none' ? <String>{} : <String>{backgroundEffect};
+    }
     final name = prefs.getString('appearance.preset');
     _preset = ThemePreset.values.where((p) => p.name == name).firstOrNull ??
         ThemePreset.midnight;
@@ -261,21 +402,28 @@ class ThemeController extends ChangeNotifier {
         _iconForeground.toARGB32());
     _iconBackground = Color(prefs.getInt('appearance.iconBackground') ??
         _iconBackground.toARGB32());
+    _androidIconApplyPending = Platform.isAndroid &&
+        (prefs.getBool('appearance.androidIconApplyPending') ?? false);
     await prefs.remove('appearance.glassMode');
     notifyListeners();
-    await _applyPlatformIcon();
+    final iconApplied = await _applyPlatformIcon();
+    if (Platform.isAndroid && iconApplied && _androidIconApplyPending) {
+      _androidIconApplyPending = false;
+      await prefs.remove('appearance.androidIconApplyPending');
+      notifyListeners();
+    }
   }
 
-  Future<void> setIconVariant(String value) async {
+  Future<bool> setIconVariant(String value, {bool applyPlatform = true}) async {
     _iconVariant = value;
     notifyListeners();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('appearance.iconVariant', value);
-    await _applyPlatformIcon();
+    return _saveOrApplyIcon(prefs, applyPlatform: applyPlatform);
   }
 
-  Future<void> setCustomIconColors(
-      {Color? foreground, Color? background}) async {
+  Future<bool> setCustomIconColors(
+      {Color? foreground, Color? background, bool applyPlatform = true}) async {
     if (foreground != null) _iconForeground = foreground;
     if (background != null) _iconBackground = background;
     _iconVariant = 'custom';
@@ -284,7 +432,40 @@ class ThemeController extends ChangeNotifier {
     await prefs.setString('appearance.iconVariant', _iconVariant);
     await prefs.setInt('appearance.iconForeground', _iconForeground.toARGB32());
     await prefs.setInt('appearance.iconBackground', _iconBackground.toARGB32());
-    await _applyPlatformIcon();
+    return _saveOrApplyIcon(prefs, applyPlatform: applyPlatform);
+  }
+
+  Future<bool> _saveOrApplyIcon(SharedPreferences prefs,
+      {required bool applyPlatform}) async {
+    if (Platform.isAndroid && !applyPlatform) {
+      _androidIconApplyPending = true;
+      await prefs.setBool('appearance.androidIconApplyPending', true);
+      notifyListeners();
+      return true;
+    }
+
+    final applied = await _applyPlatformIcon();
+    if (Platform.isAndroid) {
+      _androidIconApplyPending = !applied;
+      if (applied) {
+        await prefs.remove('appearance.androidIconApplyPending');
+      } else {
+        await prefs.setBool('appearance.androidIconApplyPending', true);
+      }
+      notifyListeners();
+    }
+    return applied;
+  }
+
+  Future<bool> restartApplication() async {
+    if (!Platform.isAndroid) return false;
+    try {
+      return await _iconChannel.invokeMethod<bool>('restartApp') ?? false;
+    } on MissingPluginException {
+      return false;
+    } on PlatformException {
+      return false;
+    }
   }
 
   Future<bool> _applyPlatformIcon() async {
@@ -345,18 +526,22 @@ class ThemeController extends ChangeNotifier {
     final base = ThemeData(
         useMaterial3: true,
         brightness: brightness,
-        fontFamily: _customFontFamily ?? 'SF Pro Display',
+        fontFamily: isIosLike
+            ? (Platform.isIOS || Platform.isMacOS ? '.AppleSystemUIFont' : null)
+            : _customFontFamily ?? selectedFontFamily,
         fontFamilyFallback: const [
           'SF Pro Text',
           '.AppleSystemUIFont',
           'Inter',
           'Roboto',
-          'Arial'
+          'Arial',
+          'DejaVu Sans'
         ],
         colorScheme: scheme,
         scaffoldBackgroundColor: background);
-    final controlShape =
-        RoundedRectangleBorder(borderRadius: BorderRadius.circular(15));
+    final controlShape = RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(
+            isIosLike ? IosLikeTokens.controlRadius : 15));
     final controlOverlay = WidgetStateProperty.resolveWith<Color?>((states) {
       if (states.contains(WidgetState.pressed)) {
         return accent.withValues(alpha: .18);
@@ -368,27 +553,42 @@ class ThemeController extends ChangeNotifier {
       return null;
     });
     final border = OutlineInputBorder(
-        borderRadius: BorderRadius.circular(18),
+        borderRadius:
+            BorderRadius.circular(isIosLike ? IosLikeTokens.controlRadius : 18),
         borderSide: BorderSide(color: scheme.outline));
     return base.copyWith(
       // Desktop popup menus use this color for the selected row. Keeping the
       // Material default produces a light gray rectangle in the dark UI.
+      splashFactory: isIosLike ? NoSplash.splashFactory : base.splashFactory,
+      visualDensity: isIosLike ? VisualDensity.standard : base.visualDensity,
+      cupertinoOverrideTheme: isIosLike
+          ? CupertinoThemeData(brightness: brightness, primaryColor: accent)
+          : null,
+      dividerColor: foreground.withValues(alpha: .09),
       highlightColor: Colors.transparent,
       hoverColor: accent.withValues(alpha: .12),
       focusColor: accent.withValues(alpha: .16),
       textTheme: base.textTheme.copyWith(
         headlineSmall: base.textTheme.headlineSmall?.copyWith(
-            fontSize: 23, fontWeight: FontWeight.w700, letterSpacing: -.6),
+            fontSize: isIosLike ? IosLikeTokens.pageTitleSize : 23,
+            fontWeight: FontWeight.w700,
+            letterSpacing: -.6),
         titleLarge: base.textTheme.titleLarge?.copyWith(
-            fontSize: 19, fontWeight: FontWeight.w700, letterSpacing: -.4),
-        titleMedium: base.textTheme.titleMedium
-            ?.copyWith(fontSize: 14, fontWeight: FontWeight.w600),
-        bodyLarge:
-            base.textTheme.bodyLarge?.copyWith(fontSize: 14, height: 1.5),
-        bodyMedium:
-            base.textTheme.bodyMedium?.copyWith(fontSize: 13, height: 1.45),
-        bodySmall: base.textTheme.bodySmall
-            ?.copyWith(fontSize: 11, height: 1.4, color: muted),
+            fontSize: isIosLike ? IosLikeTokens.sectionSize : 19,
+            fontWeight: isIosLike ? FontWeight.w600 : FontWeight.w700,
+            letterSpacing: isIosLike ? -.3 : -.4),
+        titleMedium: base.textTheme.titleMedium?.copyWith(
+            fontSize: isIosLike ? IosLikeTokens.bodySize : 14,
+            fontWeight: FontWeight.w600),
+        bodyLarge: base.textTheme.bodyLarge?.copyWith(
+            fontSize: isIosLike ? IosLikeTokens.bodySize : 14, height: 1.5),
+        bodyMedium: base.textTheme.bodyMedium?.copyWith(
+            fontSize: isIosLike ? IosLikeTokens.secondarySize : 13,
+            height: 1.45),
+        bodySmall: base.textTheme.bodySmall?.copyWith(
+            fontSize: isIosLike ? IosLikeTokens.captionSize : 11,
+            height: 1.4,
+            color: muted),
       ),
       inputDecorationTheme: InputDecorationTheme(
           filled: true,
@@ -406,12 +606,14 @@ class ThemeController extends ChangeNotifier {
           elevation: 0,
           margin: EdgeInsets.zero,
           shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(24),
+              borderRadius: BorderRadius.circular(
+                  isIosLike ? IosLikeTokens.cardRadius : 24),
               side: BorderSide(color: scheme.outline.withValues(alpha: .06)))),
       dialogTheme: DialogThemeData(
           backgroundColor: surface,
-          shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(28))),
+          shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(
+                  isIosLike ? IosLikeTokens.sheetRadius : 28))),
       bottomSheetTheme: BottomSheetThemeData(
           backgroundColor: surface,
           showDragHandle: true,
@@ -429,22 +631,32 @@ class ThemeController extends ChangeNotifier {
       textButtonTheme: TextButtonThemeData(
           style: ButtonStyle(
               shape: WidgetStatePropertyAll(controlShape),
+              minimumSize:
+                  isIosLike ? const WidgetStatePropertyAll(Size(44, 44)) : null,
               overlayColor: controlOverlay)),
       outlinedButtonTheme: OutlinedButtonThemeData(
           style: ButtonStyle(
               shape: WidgetStatePropertyAll(controlShape),
+              minimumSize:
+                  isIosLike ? const WidgetStatePropertyAll(Size(44, 44)) : null,
               overlayColor: controlOverlay)),
       elevatedButtonTheme: ElevatedButtonThemeData(
           style: ButtonStyle(
               shape: WidgetStatePropertyAll(controlShape),
+              minimumSize:
+                  isIosLike ? const WidgetStatePropertyAll(Size(44, 44)) : null,
               overlayColor: controlOverlay)),
       filledButtonTheme: FilledButtonThemeData(
           style: ButtonStyle(
               shape: WidgetStatePropertyAll(controlShape),
+              minimumSize:
+                  isIosLike ? const WidgetStatePropertyAll(Size(44, 44)) : null,
               overlayColor: controlOverlay)),
       iconButtonTheme: IconButtonThemeData(
           style: ButtonStyle(
               shape: WidgetStatePropertyAll(controlShape),
+              minimumSize:
+                  isIosLike ? const WidgetStatePropertyAll(Size(44, 44)) : null,
               overlayColor: controlOverlay)),
       switchTheme: SwitchThemeData(
         trackColor: WidgetStateProperty.resolveWith((states) {
