@@ -451,7 +451,7 @@ class GitHubUpdater {
         final helper = await _windowsHelperPath(transaction.file.parent);
         await transaction.update(UpdateTransactionStatus.stopping);
         final installRoot = File(Platform.resolvedExecutable).parent.path;
-        await Process.start(
+        final helperProcess = await Process.start(
             'powershell.exe',
             [
               '-NoProfile',
@@ -475,7 +475,15 @@ class GitHubUpdater {
               '-ExpectedSha256',
               packageHash,
             ],
-            mode: ProcessStartMode.detached);
+            workingDirectory: transaction.file.parent.path,
+            mode: ProcessStartMode.normal);
+        unawaited(helperProcess.stdin.close());
+        unawaited(helperProcess.stdout.drain<void>());
+        unawaited(helperProcess.stderr.drain<void>());
+        int? helperExitCode;
+        unawaited(helperProcess.exitCode.then((code) {
+          helperExitCode = code;
+        }));
         final deadline = DateTime.now().add(const Duration(seconds: 90));
         final ready = File(
             '${transaction.file.parent.path}${Platform.pathSeparator}ready');
@@ -487,6 +495,14 @@ class GitHubUpdater {
                 '${transaction.file.parent.path}${Platform.pathSeparator}error');
             throw FileSystemException(
                 'Windows could not prepare the update: ${await error.exists() ? await error.readAsString() : 'helper failed'}');
+          }
+          if (helperExitCode != null) {
+            throw ProcessException(
+              'powershell.exe',
+              const [],
+              'Windows update helper exited before preparing the handoff (exit code $helperExitCode).',
+              helperExitCode!,
+            );
           }
           if (DateTime.now().isAfter(deadline)) {
             await File(

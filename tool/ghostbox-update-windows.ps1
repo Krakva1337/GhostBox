@@ -274,7 +274,7 @@ try {
   Remove-Item -LiteralPath (Join-Path $transactionDir 'failed') -Force -ErrorAction SilentlyContinue
   $newProc = Start-Process -FilePath $app -ArgumentList @(
     "--ghostbox-updated=$TransactionId",
-    "--ghostbox-update-handoff=$transactionDir"
+    ('"--ghostbox-update-handoff=' + $transactionDir + '"')
   ) -PassThru
   $script:newProcess = $newProc
   $healthStartPid = $newProc.Id

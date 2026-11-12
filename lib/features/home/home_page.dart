@@ -2641,33 +2641,47 @@ class _HomePageState extends State<HomePage>
       // Wintun adapter creation is asynchronous. Wait for Windows to expose
       // the adapter before declaring the tunnel ready or probing HTTPS.
       const script = r'''
-$ErrorActionPreference = 'SilentlyContinue'
-for ($i = 0; $i -lt 80; $i++) {
-  $adapter = Get-NetAdapter -Name 'ghostbox0' -IncludeHidden -ErrorAction SilentlyContinue |
-    Where-Object { $_.Name -eq 'ghostbox0' -and $_.InterfaceDescription -match 'Wintun' } |
+$ErrorActionPreference = 'Stop'
+$deadline = [Diagnostics.Stopwatch]::StartNew()
+while ($deadline.Elapsed.TotalSeconds -lt 20) {
+  $adapter = [Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces() |
+    Where-Object { $_.Name -eq 'ghostbox0' -and $_.OperationalStatus -eq 'Up' } |
     Select-Object -First 1
-  if ($adapter -and $adapter.Status -eq 'Up') {
-    Write-Output "$($adapter.Name)|$($adapter.InterfaceDescription)"
+  if ($adapter) {
+    Write-Output "$($adapter.Name)|$($adapter.Description)"
     exit 0
   }
   Start-Sleep -Milliseconds 250
 }
 exit 1
 ''';
-      final result = await Process.run('powershell.exe', [
+      final checker = await Process.start('powershell.exe', [
+        '-NoLogo',
         '-NoProfile',
         '-NonInteractive',
         '-ExecutionPolicy',
         'Bypass',
         '-Command',
         script,
-      ]).timeout(const Duration(seconds: 24));
-      if (result.exitCode != 0) {
+      ]);
+      final output = checker.stdout.transform(systemEncoding.decoder).join();
+      final errors = checker.stderr.transform(systemEncoding.decoder).join();
+      int exitCode;
+      try {
+        exitCode = await checker.exitCode.timeout(const Duration(seconds: 30));
+      } on TimeoutException {
+        checker.kill();
+        throw const FormatException(
+            'Windows не ответила на проверку интерфейса ghostbox0 за 30 секунд.');
+      }
+      final stdout = await output;
+      final stderr = await errors;
+      if (exitCode != 0) {
         throw FormatException(
-          'sing-box не поднял адаптер Wintun ghostbox0. Проверьте права администратора, наличие vendor/bin/wintun.dll и состояние адаптера в Windows. ${result.stderr.toString().trim()}',
+          'sing-box не поднял адаптер Wintun ghostbox0. Проверьте права администратора, наличие vendor/bin/wintun.dll и состояние адаптера в Windows. ${stderr.trim()}',
         );
       }
-      _recordAppLog('Адаптер TUN активен: ${result.stdout.toString().trim()}');
+      _recordAppLog('Адаптер TUN активен: ${stdout.trim()}');
       return;
     }
     if (Platform.isMacOS) {
