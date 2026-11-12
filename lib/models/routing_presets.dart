@@ -1,3 +1,8 @@
+import 'dart:convert';
+
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
+
 import 'core_settings.dart';
 
 /// A named, reusable collection of routing patterns.
@@ -14,14 +19,64 @@ class RoutingPreset {
   final List<String> domains;
   final bool builtIn;
 
-  static const Set<String> _builtInIds = {'yandex', 'roblox', 'discord'};
-  static final List<RoutingPreset> _builtIns = List.unmodifiable([
+  static const Set<String> _builtInIds = {
+    'yandex',
+    'roblox',
+    'discord',
+    'ru-banks',
+    'ru-gos',
+    'ru-other'
+  };
+  static final List<RoutingPreset> _fallbackBuiltIns = List.unmodifiable([
     _builtIn('yandex', 'Yandex', _yandexDomains),
     _builtIn('roblox', 'Roblox', _robloxDomains),
     _builtIn('discord', 'Discord', _discordDomains),
   ]);
+  static List<RoutingPreset> _bundledBuiltIns = const [];
 
-  static List<RoutingPreset> builtIns() => _builtIns;
+  static List<RoutingPreset> builtIns() =>
+      _bundledBuiltIns.isEmpty ? _fallbackBuiltIns : _bundledBuiltIns;
+
+  static Future<void> loadBundled() async {
+    const definitions = <(String, String, String)>[
+      ('yandex', 'Yandex', 'dnslists/routing/yandex'),
+      ('roblox', 'Roblox', 'dnslists/routing/roblox'),
+      ('discord', 'Discord', 'dnslists/routing/discord'),
+      ('ru-banks', 'Банки России', 'dnslists/routing/ru.banks'),
+      ('ru-gos', 'Госуслуги России', 'dnslists/routing/ru.gos'),
+      ('ru-other', 'Российские сервисы', 'dnslists/routing/ru.other'),
+    ];
+    final sources = await Future.wait(definitions.map((definition) async {
+      final (id, name, asset) = definition;
+      try {
+        return <String, String>{
+          'id': id,
+          'name': name,
+          'source': await rootBundle.loadString(asset),
+        };
+      } on Object {
+        // An older build can still start if one optional list asset is absent.
+        return null;
+      }
+    }));
+    final parsed =
+        await compute<List<Map<String, String>>, List<Map<String, Object?>>>(
+      _parseBundledRoutingAssets,
+      sources.whereType<Map<String, String>>().toList(),
+      debugLabel: 'GhostBox routing lists',
+    );
+    final presets = parsed
+        .where((entry) => (entry['domains'] as List).isNotEmpty)
+        .map((entry) => RoutingPreset(
+              id: entry['id']! as String,
+              name: entry['name']! as String,
+              domains:
+                  List.unmodifiable((entry['domains']! as List).cast<String>()),
+              builtIn: true,
+            ))
+        .toList();
+    if (presets.isNotEmpty) _bundledBuiltIns = List.unmodifiable(presets);
+  }
 
   static RoutingPreset _builtIn(String id, String name, String source) {
     final domains = source
@@ -84,6 +139,25 @@ class RoutingPreset {
   static bool _isValidId(String id) =>
       RegExp(r'^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$').hasMatch(id);
 }
+
+List<Map<String, Object?>> _parseBundledRoutingAssets(
+        List<Map<String, String>> sources) =>
+    [
+      for (final entry in sources)
+        {
+          'id': entry['id']!,
+          'name': entry['name']!,
+          'domains': {
+            for (final raw in const LineSplitter().convert(entry['source']!))
+              if (raw.trim().isNotEmpty &&
+                  !raw.trim().startsWith('#') &&
+                  !raw.trim().startsWith('//'))
+                if (CoreSettings.isValidRoutePattern(
+                    CoreSettings.normalizeRoutePattern(raw.trim())))
+                  CoreSettings.normalizeRoutePattern(raw.trim()),
+          }.toList(),
+        },
+    ];
 
 const String _yandexDomains = '''
 yandex.ru

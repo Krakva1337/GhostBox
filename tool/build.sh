@@ -89,6 +89,8 @@ build_linux() {
   install -m 0755 "$project_dir/vendor/bin/xray" "$appdir/vendor/bin/xray"
   install -m 0755 "$project_dir/vendor/bin/sing-box" "$appdir/vendor/bin/sing-box"
   install -m 0644 "$project_dir/vendor/bin/BUILD-INFO.txt" "$appdir/vendor/bin/BUILD-INFO.txt"
+  install -m 0755 "$project_dir/tool/linux_hotspot_vpn.sh" \
+    "$appdir/vendor/bin/ghostbox-hotspot-vpn.sh"
   chmod 0755 "$appdir/AppRun"
 
   if [[ ! -x "$appimagetool" ]]; then

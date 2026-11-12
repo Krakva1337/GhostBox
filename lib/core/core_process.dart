@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/services.dart';
+import 'package:flutter/foundation.dart';
 import '../services/log_store.dart';
 import '../models/server_profile.dart';
 import '../models/core_settings.dart';
@@ -74,8 +75,27 @@ class CoreProcessBackend implements VpnBackend {
     for (final core in _runningCores.toList()) {
       await core._disconnect();
     }
+    if (Platform.isWindows) await _stopWindowsGhostBoxOrphanCores();
     await _stopLinuxGhostBoxOrphanCores();
     if (Platform.isMacOS) await _stopMacGhostBoxOrphanCores();
+  }
+
+  /// A previous GhostBox process can outlive the Flutter backend instance.
+  /// Inspect and stop bundled Windows cores before every ordinary connect;
+  /// the native lifecycle matches their full executable paths and fails closed
+  /// if it cannot confirm that they exited.
+  Future<void> _stopWindowsGhostBoxOrphanCores() async {
+    final directory = File(executable).absolute.parent.path;
+    final suffix = Platform.isWindows ? '.exe' : '';
+    final stopped = await WindowsCoreLifecycle.cleanupStaleCores(
+      executables: [
+        '$directory${Platform.pathSeparator}xray$suffix',
+        '$directory${Platform.pathSeparator}sing-box$suffix',
+      ],
+    );
+    if (stopped > 0) {
+      _writeLifecycleLog('Очищены оставшиеся процессы VPN-ядер: $stopped');
+    }
   }
 
   /// Starts a sibling core that belongs to the already-cleaned user session,
@@ -402,7 +422,16 @@ class CoreProcessBackend implements VpnBackend {
       _logs.add(
           'Эта сборка sing-box не поддерживает uTLS. Отпечаток браузера не применяется; для него выберите Xray.');
     }
-    final config = makeConfig(serverProfile);
+    final config = await compute<Map<String, Object?>, Map<String, dynamic>>(
+      _buildConfigInBackground,
+      <String, Object?>{
+        'name': name,
+        'profile': serverProfile.toJson(),
+        'settings': settings.toJson(),
+        'adBlockDomains': settings.adBlockDomains,
+      },
+      debugLabel: 'GhostBox connection config',
+    );
     final splitEntries = settings.routing == 'exclude'
         ? settings.directDomains
         : settings.proxyDomains;
@@ -2109,4 +2138,21 @@ end try
     }
     return const {};
   }
+}
+
+Map<String, dynamic> _buildConfigInBackground(Map<String, Object?> message) {
+  final backend = CoreProcessBackend(
+    name: message['name']! as String,
+    executable: '',
+    configPath: '',
+  )..settings = CoreSettings.fromJson(
+      Map<String, dynamic>.from(message['settings']! as Map),
+    );
+  backend.settings = backend.settings.copyWith(
+    adBlockDomains: (message['adBlockDomains']! as List).cast<String>(),
+  );
+  final profile = ServerProfile.fromJson(
+    Map<String, dynamic>.from(message['profile']! as Map),
+  );
+  return backend.makeConfig(profile);
 }

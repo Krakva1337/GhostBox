@@ -49,6 +49,11 @@ if [ -f "$HERE/vendor/bin/BUILD-INFO.txt" ]; then
 		install -m 0644 "$HERE/vendor/bin/BUILD-INFO.txt" "$VENDOR_DIR/bin/BUILD-INFO.txt"
 	fi
 fi
+if [ -f "$HERE/vendor/bin/ghostbox-hotspot-vpn.sh" ]; then
+	if [ ! -x "$VENDOR_DIR/bin/ghostbox-hotspot-vpn.sh" ] || ! cmp -s "$HERE/vendor/bin/ghostbox-hotspot-vpn.sh" "$VENDOR_DIR/bin/ghostbox-hotspot-vpn.sh"; then
+		install -m 0755 "$HERE/vendor/bin/ghostbox-hotspot-vpn.sh" "$VENDOR_DIR/bin/ghostbox-hotspot-vpn.sh"
+	fi
+fi
 
 export GHOSTBOX_VENDOR_DIR="$VENDOR_DIR"
 export GHOSTBOX_ICON_PATH="$HERE/ghostbox.png"

@@ -60,6 +60,10 @@ chmod +x ./GhostBox-*-linux-*.AppImage
 
 На Android используется системный VPN-режим; другие варианты могут быть недоступны. Режим TUN на Windows требует подтверждения администратора. Доступность режимов также зависит от выбранного ядра и профиля.
 
+### VPN через точку доступа
+
+Автоматического переключателя VPN-раздачи в приложении пока нет. На Android для маршрутизации клиентов hotspot VPN-приложению нужны root-права или поддержка производителя. На iOS Packet Tunnel маршрутизирует трафик самого устройства; Network Extension не предоставляет приложению поддерживаемого API для передачи через туннель трафика клиентов Personal Hotspot. На Linux есть ручной IPv4-сценарий через nftables и TUN: см. [инструкцию](linux/README.md). На Windows и macOS GhostBox пока не настраивает пересылку и NAT между hotspot и TUN. Включение системной точки доступа само по себе не гарантирует, что её клиенты идут через VPN.
+
 ## Раздельная маршрутизация, DNS и проверки
 
 В разделе **Маршрут и DNS** можно выбрать, как использовать списки правил:
@@ -131,6 +135,10 @@ A core handles the connection to the selected server. Xray is selected by defaul
 - **Mixed** — combines the system TUN route with a local proxy.
 
 Android uses system VPN mode; other modes may not be available there. Windows requires administrator approval for TUN. Available modes also depend on the selected core and profile.
+
+### VPN through a hotspot
+
+The app does not yet have an automatic VPN-sharing switch. On Android, routing hotspot clients through a VPN app requires root access or manufacturer support. On iOS, Packet Tunnel routes traffic from the device itself; Network Extension does not provide apps with a supported API to send Personal Hotspot clients' traffic through the tunnel. On Linux, a manual IPv4 path through nftables and TUN is available; see the [instructions](linux/README.md). On Windows and macOS, GhostBox does not yet configure forwarding and NAT between the hotspot and TUN interfaces. Turning on the system hotspot alone does not guarantee that its clients use the VPN.
 
 ## Split routing, DNS, and checks
 

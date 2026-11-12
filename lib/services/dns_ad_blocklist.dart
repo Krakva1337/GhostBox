@@ -1,12 +1,15 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
+
 import '../models/core_settings.dart';
 import 'app_version.dart';
 
 /// Downloads HaGeZi's domain lists and keeps a local copy for offline starts.
 class DnsAdBlocklist {
-  static const sources = [
+  static const _fallbackSources = [
     'https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/pro.txt',
     'https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/popupads.txt',
   ];
@@ -15,7 +18,8 @@ class DnsAdBlocklist {
     try {
       final file = await _cacheFile();
       if (!await file.exists()) return const [];
-      return _domainsFromText(await file.readAsString());
+      return await compute(_parseDnsListTexts, [await file.readAsString()],
+          debugLabel: 'GhostBox cached DNS list');
     } on Object {
       return const [];
     }
@@ -23,11 +27,40 @@ class DnsAdBlocklist {
 
   Future<List<String>> update(
       {List<String> additionalSources = const []}) async {
+    final sources = await _bundledSources();
+    return _download([...sources, ...additionalSources]);
+  }
+
+  Future<List<String>> _bundledSources() async {
+    final sources = <String>[];
+    for (final asset in const [
+      'dnslists/blacklists/ads',
+      'dnslists/blacklists/ru.ads',
+    ]) {
+      try {
+        final contents = await rootBundle.loadString(asset);
+        sources.addAll(const LineSplitter()
+            .convert(contents)
+            .map((line) => line.trim())
+            .where((line) => line.isNotEmpty && !line.startsWith('#')));
+      } on Object {
+        // Older builds may not include the optional list catalog.
+      }
+    }
+    return sources.isEmpty ? _fallbackSources : sources.toSet().toList();
+  }
+
+  /// Downloads only user supplied sources, without the built-in ad lists.
+  Future<List<String>> updateCustom(List<String> sources) async {
+    if (sources.isEmpty) return const [];
+    return _download(sources);
+  }
+
+  Future<List<String>> _download(List<String> allSources) async {
     final client = HttpClient()
       ..connectionTimeout = const Duration(seconds: 15)
       ..idleTimeout = const Duration(seconds: 30);
     try {
-      final allSources = [...sources, ...additionalSources];
       final lists = await Future.wait(allSources.map((url) async {
         if (!isValidSourceUrl(url)) {
           throw FormatException('Некорректная ссылка DNS-листа: $url');
@@ -44,12 +77,9 @@ class DnsAdBlocklist {
               const Duration(seconds: 60),
             );
       }));
-      final domains = <String>{};
-      for (final text in lists) {
-        domains.addAll(_domainsFromText(text));
-      }
-      if (domains.isEmpty) throw const FormatException('DNS-листы пустые');
-      final sorted = domains.toList()..sort();
+      final sorted = await compute(_parseDnsListTexts, lists,
+          debugLabel: 'GhostBox downloaded DNS lists');
+      if (sorted.isEmpty) throw const FormatException('DNS-листы пустые');
       final cache = await _cacheFile();
       await cache.parent.create(recursive: true);
       await cache.writeAsString('${sorted.join('\n')}\n', flush: true);
@@ -66,31 +96,6 @@ class DnsAdBlocklist {
         uri.host.isNotEmpty &&
         uri.userInfo.isEmpty &&
         uri.path.toLowerCase().endsWith('.txt');
-  }
-
-  List<String> _domainsFromText(String text) {
-    final domains = <String>{};
-    for (final raw in const LineSplitter().convert(text)) {
-      var value = raw.trim();
-      if (value.isEmpty || value.startsWith('#') || value.startsWith('!'))
-        continue;
-      final fields = value.split(RegExp(r'\s+'));
-      if (fields.length > 1 &&
-          (InternetAddress.tryParse(fields.first) != null ||
-              fields.first == '0.0.0.0' ||
-              fields.first == '127.0.0.1')) {
-        value = fields.last;
-      }
-      value = value
-          .replaceFirst(RegExp(r'^\|\|'), '')
-          .replaceFirst(RegExp(r'\^.*$'), '')
-          .replaceFirst(RegExp(r'^\*\.'), '')
-          .replaceFirst(RegExp(r'^\.'), '')
-          .replaceFirst(RegExp(r'\.$'), '')
-          .toLowerCase();
-      if (CoreSettings.isValidDomain(value)) domains.add(value);
-    }
-    return domains.toList();
   }
 
   Future<File> _cacheFile() async {
@@ -111,4 +116,32 @@ class DnsAdBlocklist {
     return File(
         '$base${Platform.pathSeparator}GhostBox${Platform.pathSeparator}dns-ad-blocklist.txt');
   }
+}
+
+List<String> _parseDnsListTexts(List<String> texts) {
+  final domains = <String>{};
+  for (final text in texts) {
+    for (final raw in const LineSplitter().convert(text)) {
+      var value = raw.trim();
+      if (value.isEmpty || value.startsWith('#') || value.startsWith('!')) {
+        continue;
+      }
+      final fields = value.split(RegExp(r'\s+'));
+      if (fields.length > 1 &&
+          (InternetAddress.tryParse(fields.first) != null ||
+              fields.first == '0.0.0.0' ||
+              fields.first == '127.0.0.1')) {
+        value = fields.last;
+      }
+      value = value
+          .replaceFirst(RegExp(r'^\|\|'), '')
+          .replaceFirst(RegExp(r'\^.*$'), '')
+          .replaceFirst(RegExp(r'^\*\.'), '')
+          .replaceFirst(RegExp(r'^\.'), '')
+          .replaceFirst(RegExp(r'\.$'), '')
+          .toLowerCase();
+      if (CoreSettings.isValidDomain(value)) domains.add(value);
+    }
+  }
+  return domains.toList()..sort();
 }

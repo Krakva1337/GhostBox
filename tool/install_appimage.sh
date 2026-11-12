@@ -55,6 +55,10 @@ done
 if [[ -f "$RELEASE_DIR/vendor/bin/BUILD-INFO.txt" ]]; then
   install -m 0644 "$RELEASE_DIR/vendor/bin/BUILD-INFO.txt" "$VENDOR_DIR/BUILD-INFO.txt"
 fi
+if [[ -f "$RELEASE_DIR/vendor/bin/ghostbox-hotspot-vpn.sh" ]]; then
+  install -m 0755 "$RELEASE_DIR/vendor/bin/ghostbox-hotspot-vpn.sh" \
+    "$VENDOR_DIR/ghostbox-hotspot-vpn.sh"
+fi
 
 # Run the extracted AppDir directly. This avoids FUSE and AppImage runtime
 # extraction quirks in Rofi and other desktop launchers.

@@ -192,6 +192,20 @@ class MainActivity : FlutterActivity() {
                     "vpnError" -> result.success(VpnStateStore.error(this))
                     "androidCoreInventory" -> result.success(androidCoreInventory())
                     "androidKillSwitchStatus" -> result.success(androidKillSwitchStatus())
+                    "openAndroidHotspotSettings" -> {
+                        val opened = listOf(
+                            "android.settings.TETHER_SETTINGS",
+                            "android.settings.WIRELESS_SETTINGS",
+                        ).any { action ->
+                            try {
+                                startActivity(Intent(action))
+                                true
+                            } catch (_: Exception) {
+                                false
+                            }
+                        }
+                        result.success(opened)
+                    }
                     "openAndroidVpnSettings" -> {
                         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
                             result.success(false)

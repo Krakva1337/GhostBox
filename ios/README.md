@@ -12,6 +12,16 @@ do not expose arbitrary application selection for per-app VPN: Apple's per-app
 mode requires a managed device. Do not present process rules as supported on
 unmanaged iOS devices. See [Apple TN3134](https://developer.apple.com/documentation/technotes/tn3134-network-extension-provider-deployment).
 
+Personal Hotspot clients are not a supported traffic source for GhostBox's
+Packet Tunnel. The extension configures an `NEPacketTunnelNetworkSettings`
+virtual interface and routes traffic selected by the system; Network Extension
+does not expose an API for an app to NAT or inject tethered-client traffic into
+that interface. `includeAllNetworks` changes which device traffic uses the VPN,
+but does not add hotspot forwarding. This is an iOS platform/API constraint,
+not a missing GhostBox entitlement or a setting that can be fixed in this
+extension. See Apple's docs for [VPN traffic routing](https://developer.apple.com/documentation/networkextension/routing-your-vpn-network-traffic)
+and [supported packet-tunnel use cases](https://developer.apple.com/documentation/technotes/tn3120-expected-use-cases-for-network-extension-packet-tunnel-providers).
+
 ## Build
 
 Use a Mac with Xcode, Flutter, Go and Python 3. An iOS Simulator runtime is

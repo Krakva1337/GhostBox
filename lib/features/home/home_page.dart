@@ -984,6 +984,12 @@ class _HomePageState extends State<HomePage>
     }).catchError((Object error) {
       _recordAppLog('Не удалось прочитать ссылку GhostBox: $error');
     }));
+    unawaited(RoutingPreset.loadBundled().then((_) {
+      if (mounted) setState(() {});
+    }).catchError((Object error) {
+      _recordAppLog(
+          'Не удалось загрузить встроенные списки маршрутизации: $error');
+    }));
     _load();
   }
 
@@ -1339,9 +1345,13 @@ class _HomePageState extends State<HomePage>
     if (p.getBool('proxyGetPingMigrated') != true) {
       await p.setBool('proxyGetPingMigrated', true);
     }
-    if (coreSettings.dnsBlacklistMode == 'ads') {
+    if (coreSettings.dnsBlacklistMode == 'ads' ||
+        (coreSettings.dnsBlacklistMode == 'custom' &&
+            customDnsBlocklistUrls.isNotEmpty)) {
       final cachedDomains = await dnsAdBlocklist.readCache();
-      if (mounted && cachedDomains.isNotEmpty) {
+      if (mounted &&
+          cachedDomains.isNotEmpty &&
+          coreSettings.dnsBlacklistMode == 'ads') {
         setState(() {
           coreSettings = coreSettings.copyWith(adBlockDomains: cachedDomains);
           process?.settings = coreSettings;
@@ -2679,8 +2689,22 @@ exit 1
     }
     if (!Platform.isLinux) return;
     final tun = Directory('/sys/class/net/ghostbox0');
-    for (var attempt = 0; attempt < 60; attempt++) {
+    for (var attempt = 0; attempt < 120; attempt++) {
       if (await tun.exists()) return;
+      if (attempt % 5 == 0) {
+        final startupError = process?.logs.lastWhere(
+          (line) {
+            final lower = line.toLowerCase();
+            return lower.contains('operation not permitted') ||
+                lower.contains('permission denied') ||
+                lower.contains('/dev/net/tun');
+          },
+          orElse: () => '',
+        );
+        if (startupError != null && startupError.isNotEmpty) {
+          throw FormatException('sing-box не смог создать TUN: $startupError');
+        }
+      }
       if (process?.state != VpnState.connected) break;
       await Future<void>.delayed(const Duration(milliseconds: 100));
     }
@@ -6382,6 +6406,68 @@ foreach ($route in $routes) {
                       style:
                           TextStyle(color: _muted, fontSize: 11, height: 1.4))),
             ],
+            const SizedBox(height: 18),
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(14),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(children: [
+                      const Icon(Icons.wifi_tethering_rounded),
+                      const SizedBox(width: 9),
+                      Expanded(
+                        child: Text(
+                          _text('VPN для точки доступа', 'VPN for hotspot'),
+                          style: const TextStyle(fontWeight: FontWeight.w700),
+                        ),
+                      ),
+                    ]),
+                    const SizedBox(height: 8),
+                    Text(
+                      Platform.isAndroid
+                          ? _text(
+                              'Android направляет в VPN трафик телефона, но не подключённых к точке доступа устройств. Для VPN-раздачи на телефоне нужны root-права или системная поддержка производителя.',
+                              'Android routes the phone’s traffic through its VPN, but not traffic from hotspot clients. Sharing the VPN from a phone requires root access or manufacturer system support.')
+                          : Platform.isIOS
+                              ? _text(
+                                  'iOS не предоставляет приложению VPN поддерживаемый API для маршрутизации трафика клиентов Personal Hotspot через Packet Tunnel. GhostBox защищает трафик самого iPhone.',
+                                  'iOS does not provide VPN apps with a supported API to route Personal Hotspot clients through a Packet Tunnel. GhostBox protects traffic from the iPhone itself.')
+                              : Platform.isLinux
+                                  ? _text(
+                                      'На Linux можно вручную направить IPv4-трафик точки доступа через GhostBox TUN: подключись в режиме TUN и запусти sudo "\$HOME/.local/share/ghostbox-appimage/vendor/bin/ghostbox-hotspot-vpn.sh" start <интерфейс>. Нужны root и nftables; останови раздачу до отключения VPN.',
+                                      'On Linux, you can manually route hotspot IPv4 traffic through GhostBox TUN. Connect in TUN mode, then run sudo "\$HOME/.local/share/ghostbox-appimage/vendor/bin/ghostbox-hotspot-vpn.sh" start <interface>. Root and nftables are required; stop sharing before disconnecting the VPN.')
+                                  : _text(
+                                      'GhostBox направляет через TUN трафик компьютера. Для раздачи VPN-интернета подключённым устройствам нужны системная маршрутизация и NAT для интерфейса точки доступа; GhostBox пока их не настраивает.',
+                                      'GhostBox routes the computer’s traffic through TUN. Sharing VPN internet with connected devices requires system routing and NAT for the hotspot interface; GhostBox does not configure those yet.'),
+                      style:
+                          TextStyle(color: _muted, fontSize: 12, height: 1.4),
+                    ),
+                    if (Platform.isAndroid) ...[
+                      const SizedBox(height: 8),
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: TextButton.icon(
+                          onPressed: () async {
+                            try {
+                              await const MethodChannel(
+                                      'app.ghostbox.ghostbox/vpn')
+                                  .invokeMethod<bool>(
+                                      'openAndroidHotspotSettings');
+                            } on PlatformException {
+                              // The settings page is vendor-specific.
+                            }
+                          },
+                          icon: const Icon(Icons.settings_outlined, size: 18),
+                          label: Text(_text(
+                              'Настройки точки доступа', 'Hotspot settings')),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ),
             _routingPresetsPanel(),
             _animatedReconnectBanner(
                 visible: pendingReconnect,
@@ -9136,33 +9222,46 @@ foreach ($route in $routes) {
   }
 
   Future<void> _setDnsBlacklistMode(String mode) async {
-    if (mode != 'ads') {
+    if (mode == 'none') {
       await _saveCore(coreSettings.copyWith(
           dnsBlacklistMode: mode, blocklistEnabled: mode != 'none'));
+      return;
+    }
+    if (mode == 'custom' && customDnsBlocklistUrls.isEmpty) {
+      await _saveCore(coreSettings.copyWith(
+          dnsBlacklistMode: mode, blocklistEnabled: true));
       return;
     }
     if (loadingAdBlocklist) return;
     setState(() => loadingAdBlocklist = true);
     var refreshCache = false;
     try {
-      var domains = await dnsAdBlocklist.readCache();
+      var domains =
+          mode == 'ads' ? await dnsAdBlocklist.readCache() : <String>[];
       final fromCache = domains.isNotEmpty;
       if (!fromCache) {
-        domains = await dnsAdBlocklist.update(
-            additionalSources: customDnsBlocklistUrls);
+        domains = mode == 'ads'
+            ? await dnsAdBlocklist.update(
+                additionalSources: customDnsBlocklistUrls)
+            : await dnsAdBlocklist.updateCustom(customDnsBlocklistUrls);
       }
       if (domains.isEmpty) {
         throw const FormatException('DNS-список не содержит доменов');
       }
-      await _saveCore(coreSettings.copyWith(
-          dnsBlacklistMode: 'ads',
-          blocklistEnabled: true,
-          adBlockDomains: domains));
+      await _saveCore(mode == 'ads'
+          ? coreSettings.copyWith(
+              dnsBlacklistMode: mode,
+              blocklistEnabled: true,
+              adBlockDomains: domains)
+          : coreSettings.copyWith(
+              dnsBlacklistMode: mode,
+              blocklistEnabled: true,
+              blockedDomains: domains));
       refreshCache = fromCache;
       if (mounted) {
         _message(fromCache
-            ? 'Блок рекламы включён · ${domains.length} доменов из кэша'
-            : 'Блок рекламы включён · ${domains.length} доменов');
+            ? 'DNS-фильтр включён · ${domains.length} доменов из кэша'
+            : 'DNS-фильтр включён · ${domains.length} доменов');
       }
     } on Object catch (error) {
       if (mounted) {
@@ -9178,19 +9277,29 @@ foreach ($route in $routes) {
 
   Future<void> _refreshAdBlocklist({bool silent = false}) async {
     if (loadingAdBlocklist) return;
+    if (coreSettings.dnsBlacklistMode == 'custom' &&
+        customDnsBlocklistUrls.isEmpty) return;
     if (mounted) setState(() => loadingAdBlocklist = true);
     try {
-      final domains = await dnsAdBlocklist.update(
-          additionalSources: customDnsBlocklistUrls);
-      if (!mounted || coreSettings.dnsBlacklistMode != 'ads') return;
-      final changed = !listEquals(coreSettings.adBlockDomains, domains);
+      final mode = coreSettings.dnsBlacklistMode;
+      final domains = mode == 'ads'
+          ? await dnsAdBlocklist.update(
+              additionalSources: customDnsBlocklistUrls)
+          : await dnsAdBlocklist.updateCustom(customDnsBlocklistUrls);
+      if (!mounted || !{'ads', 'custom'}.contains(mode)) return;
+      final current = mode == 'ads'
+          ? coreSettings.adBlockDomains
+          : coreSettings.blockedDomains;
+      final changed = !listEquals(current, domains);
       if (changed) {
-        await _saveCore(coreSettings.copyWith(adBlockDomains: domains));
+        await _saveCore(mode == 'ads'
+            ? coreSettings.copyWith(adBlockDomains: domains)
+            : coreSettings.copyWith(blockedDomains: domains));
       }
       if (!silent && mounted) {
         _message(changed
-            ? 'Список рекламы обновлён · ${domains.length} доменов'
-            : 'Список рекламы актуален · ${domains.length} доменов');
+            ? 'DNS-список обновлён · ${domains.length} доменов'
+            : 'DNS-список актуален · ${domains.length} доменов');
       }
     } on Object catch (error) {
       if (!silent && mounted) {
@@ -9212,8 +9321,8 @@ foreach ($route in $routes) {
                 width: 520,
                 child: Column(mainAxisSize: MainAxisSize.min, children: [
                   Text(_text(
-                      'Добавь по одной HTTPS-ссылке на raw .txt файл. Списки объединяются с базовым списком рекламы.',
-                      'Add one HTTPS URL per raw .txt file. These lists are combined with the built-in ad list.')),
+                      'Добавь HTTPS-ссылки на .txt-файлы, по одной на строку. В режиме «Свои списки» используются только они; в режиме рекламы они дополняют встроенные списки.',
+                      'Add one HTTPS URL per raw .txt file. In custom mode these are your blocklists; in ad mode they are added to the built-in ad lists.')),
                   const SizedBox(height: 12),
                   TextField(
                     controller: controller,
@@ -9258,7 +9367,8 @@ foreach ($route in $routes) {
     setState(() => customDnsBlocklistUrls = urls);
     final storage = prefs ??= await SharedPreferences.getInstance();
     await storage.setStringList('customDnsBlocklistUrls', urls);
-    if (coreSettings.dnsBlacklistMode == 'ads') {
+    if (const {'ads', 'custom'}.contains(coreSettings.dnsBlacklistMode) &&
+        urls.isNotEmpty) {
       await _refreshAdBlocklist();
     } else {
       _message(_text('Ссылки DNS-листов сохранены', 'DNS list URLs saved'));
@@ -9993,6 +10103,7 @@ foreach ($route in $routes) {
                         coreSettings.routing == 'rules' ? 'rules' : 'exclude');
                   },
                   icon: const Icon(Icons.chevron_right_rounded))),
+          _routingPresetsPanel(),
           const SizedBox(height: 12),
           _section(_text('DNS И ФИЛЬТРАЦИЯ', 'DNS AND FILTERING')),
           _row(
@@ -10027,21 +10138,27 @@ foreach ($route in $routes) {
                   const {
                     'none': 'Нет',
                     'ads': 'Блок рекламы',
-                    'custom': 'Кастом'
+                    'custom': 'Свои списки'
                   },
                   _setDnsBlacklistMode)),
           if (coreSettings.dnsBlacklistMode == 'custom')
             _row(
                 Icons.list_alt_rounded,
-                _text('Домены для блокировки', 'Blocked domains'),
-                '${coreSettings.blockedDomains.length} ${_text('доменов', 'domains')}',
+                _text('Свой список', 'Custom blocklist'),
+                '${coreSettings.blockedDomains.length} ${_text('доменов', 'domains')} · ${customDnsBlocklistUrls.length} .txt',
                 IconButton(
-                    tooltip: _localized('Изменить список'),
-                    onPressed: () => _editDomains(
-                        'Домены для блокировки',
-                        coreSettings.blockedDomains,
-                        (v) => coreSettings.copyWith(blockedDomains: v)),
-                    icon: const Icon(Icons.chevron_right_rounded))),
+                    tooltip: _localized('Обновить список'),
+                    onPressed: loadingAdBlocklist
+                        ? null
+                        : customDnsBlocklistUrls.isEmpty
+                            ? () => _editDomains(
+                                'Домены для блокировки',
+                                coreSettings.blockedDomains,
+                                (v) => coreSettings.copyWith(blockedDomains: v))
+                            : _refreshAdBlocklist,
+                    icon: Icon(customDnsBlocklistUrls.isEmpty
+                        ? Icons.edit_outlined
+                        : Icons.refresh_rounded))),
           if (coreSettings.dnsBlacklistMode == 'ads')
             _row(
                 Icons.ads_click_rounded,
@@ -12078,21 +12195,28 @@ foreach ($route in $routes) {
                     const {
                       'none': 'Нет',
                       'ads': 'Блок рекламы',
-                      'custom': 'Кастом',
+                      'custom': 'Свои списки',
                     },
                     _setDnsBlacklistMode)),
             if (coreSettings.dnsBlacklistMode == 'custom')
               _row(
                   Icons.list_alt_rounded,
-                  'Домены для блокировки',
-                  '${coreSettings.blockedDomains.length} доменов',
+                  'Свой список',
+                  '${coreSettings.blockedDomains.length} доменов · ${customDnsBlocklistUrls.length} .txt',
                   IconButton(
-                      tooltip: _localized('Изменить список'),
-                      onPressed: () => _editDomains(
-                          'Домены для блокировки',
-                          coreSettings.blockedDomains,
-                          (v) => coreSettings.copyWith(blockedDomains: v)),
-                      icon: const Icon(Icons.chevron_right_rounded))),
+                      tooltip: _localized('Обновить список'),
+                      onPressed: loadingAdBlocklist
+                          ? null
+                          : customDnsBlocklistUrls.isEmpty
+                              ? () => _editDomains(
+                                  'Домены для блокировки',
+                                  coreSettings.blockedDomains,
+                                  (v) =>
+                                      coreSettings.copyWith(blockedDomains: v))
+                              : _refreshAdBlocklist,
+                      icon: Icon(customDnsBlocklistUrls.isEmpty
+                          ? Icons.edit_outlined
+                          : Icons.refresh_rounded))),
             if (coreSettings.dnsBlacklistMode == 'ads')
               _row(
                   Icons.ads_click_rounded,

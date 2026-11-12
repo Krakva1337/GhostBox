@@ -1,7 +1,7 @@
 name: ghostbox
 description: Cross-platform VPN client powered by xray-core and sing-box.
 publish_to: 'none'
-version: 2.2.0-alpha+31
+version: 2.3.0-alpha+32
 environment:
   sdk: '>=3.3.0 <4.0.0'
   flutter: '>=3.19.0'
@@ -29,6 +29,8 @@ flutter:
     - assets/icons/
     - assets/flags/
     - assets/fonts/DejaVu-LICENSE.txt
+    - dnslists/blacklists/
+    - dnslists/routing/
   fonts:
     - family: DejaVu Sans
       fonts:
