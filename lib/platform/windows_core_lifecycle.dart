@@ -77,16 +77,56 @@ class WindowsCoreLifecycle {
   static Future<bool> cleanupGhostBoxTunAdapter() async {
     if (!Platform.isWindows) return false;
 
-    const detectScript = r'''
-$ErrorActionPreference = 'Stop'
-$aliasName = 'ghostbox0'
-$adapters = @(Get-NetAdapter -Name $aliasName -IncludeHidden -ErrorAction SilentlyContinue)
-if ($adapters.Count -eq 0) { Write-Output 'ABSENT'; exit 0 }
-foreach ($adapter in $adapters) {
-  if ($adapter.Name -ne $aliasName -or $adapter.InterfaceDescription -notmatch 'Wintun') {
-    throw "Интерфейс $aliasName найден, но не опознан как GhostBox Wintun; адаптер оставлен без изменений."
+    // Get-NetAdapter can omit a half-removed/phantom device even though the
+    // Wintun driver still reserves its adapter name. Recover those devices by
+    // joining the PnP instance to Windows' network-connection registry entry;
+    // only a Wintun device whose registered connection name is exactly
+    // `ghostbox0` is considered GhostBox-owned.
+    const discoveryScript = r'''
+function Get-GhostBoxTunAdapters {
+  $aliasName = 'ghostbox0'
+  $networkClass = '{4D36E972-E325-11CE-BFC1-08002BE10318}'
+  $devices = @{}
+
+  foreach ($adapter in @(Get-NetAdapter -Name $aliasName -IncludeHidden -ErrorAction SilentlyContinue)) {
+    if ($adapter.Name -ne $aliasName -or $adapter.InterfaceDescription -notmatch 'Wintun') {
+      throw "Интерфейс $aliasName найден, но не опознан как GhostBox Wintun; адаптер оставлен без изменений."
+    }
+    $instanceId = [string]$adapter.PnPDeviceID
+    if ([string]::IsNullOrWhiteSpace($instanceId)) {
+      throw "Не удалось безопасно определить PnP-устройство адаптера $aliasName."
+    }
+    $devices[$instanceId] = [pscustomobject]@{ InstanceId = $instanceId; Description = [string]$adapter.InterfaceDescription }
   }
+
+  if ((Get-Command Get-PnpDevice -ErrorAction SilentlyContinue) -and
+      (Get-Command Get-PnpDeviceProperty -ErrorAction SilentlyContinue)) {
+    foreach ($device in @(Get-PnpDevice -Class Net -ErrorAction SilentlyContinue)) {
+      $instanceId = [string]$device.InstanceId
+      if ([string]::IsNullOrWhiteSpace($instanceId)) { continue }
+      $netCfgProperty = Get-PnpDeviceProperty -InstanceId $instanceId `
+        -KeyName 'DEVPKEY_NetCfgInstanceId' -ErrorAction SilentlyContinue
+      if ($null -eq $netCfgProperty.Data) { continue }
+      try { $netCfgId = ([Guid]$netCfgProperty.Data).ToString('B') }
+      catch { continue }
+      $connectionKey = "HKLM:\SYSTEM\CurrentControlSet\Control\Network\$networkClass\$netCfgId\Connection"
+      $connection = Get-ItemProperty -LiteralPath $connectionKey -Name Name -ErrorAction SilentlyContinue
+      if ([string]$connection.Name -ne $aliasName) { continue }
+      if ([string]$device.FriendlyName -notmatch 'Wintun') {
+        throw "Интерфейс $aliasName найден в PnP, но не опознан как Wintun; устройство оставлено без изменений."
+      }
+      $devices[$instanceId] = [pscustomobject]@{ InstanceId = $instanceId; Description = [string]$device.FriendlyName }
+    }
+  }
+
+  return @($devices.Values)
 }
+''';
+    const detectScript = '$discoveryScript\n'
+        r'''
+$ErrorActionPreference = 'Stop'
+$adapters = @(Get-GhostBoxTunAdapters)
+if ($adapters.Count -eq 0) { Write-Output 'ABSENT'; exit 0 }
 Write-Output 'PRESENT'
 ''';
     final detection = await _runPowerShell(
@@ -117,10 +157,11 @@ Write-Output 'PRESENT'
       );
     }
 
-    const script = r'''
+    const script = '$discoveryScript\n'
+        r'''
 $ErrorActionPreference = 'Stop'
 $aliasName = 'ghostbox0'
-$adapters = @(Get-NetAdapter -Name $aliasName -IncludeHidden -ErrorAction SilentlyContinue)
+$adapters = @(Get-GhostBoxTunAdapters)
 if ($adapters.Count -eq 0) { Write-Output 'ABSENT'; exit 0 }
 
 Add-Type -TypeDefinition @'
@@ -146,10 +187,7 @@ public static class GhostBoxDeviceRemoval {
 '@
 
 foreach ($adapter in $adapters) {
-  if ($adapter.Name -ne $aliasName -or $adapter.InterfaceDescription -notmatch 'Wintun') {
-    throw "Интерфейс $aliasName найден, но не опознан как GhostBox Wintun; адаптер оставлен без изменений."
-  }
-  $instanceId = [string]$adapter.PnPDeviceID
+  $instanceId = [string]$adapter.InstanceId
   if ([string]::IsNullOrWhiteSpace($instanceId)) {
     throw "Не удалось безопасно определить PnP-устройство адаптера $aliasName."
   }
@@ -173,7 +211,7 @@ foreach ($adapter in $adapters) {
 
 $deadline = [DateTime]::UtcNow.AddSeconds(12)
 do {
-  $remaining = @(Get-NetAdapter -Name $aliasName -IncludeHidden -ErrorAction SilentlyContinue)
+  $remaining = @(Get-GhostBoxTunAdapters)
   if ($remaining.Count -eq 0) { Write-Output 'REMOVED'; exit 0 }
   Start-Sleep -Milliseconds 250
 } while ([DateTime]::UtcNow -lt $deadline)
