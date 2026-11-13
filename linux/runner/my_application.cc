@@ -174,8 +174,12 @@ static void my_application_activate(GApplication* application) {
     gtk_window_set_title(window, "GhostBox");
   }
 
-  gtk_window_set_default_size(window, 393, 852);
-  gtk_window_set_resizable(window, FALSE);
+  // Start with enough room for Flutter's desktop navigation layout while
+  // keeping the window usable on smaller displays. Users can resize it down
+  // to the compact layout or expand it to make settings easier to navigate.
+  gtk_window_set_default_size(window, 1100, 800);
+  gtk_window_set_resizable(window, TRUE);
+  gtk_widget_set_size_request(GTK_WIDGET(window), 360, 480);
 
   g_autoptr(FlDartProject) project = fl_dart_project_new();
   fl_dart_project_set_dart_entrypoint_arguments(

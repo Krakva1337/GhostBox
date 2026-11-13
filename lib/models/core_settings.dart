@@ -43,7 +43,7 @@ class CoreSettings {
     this.tcpFastOpen = false,
     this.udpFragment = false,
     this.pingMode = 'proxy',
-    this.proxyGetUrl = 'https://example.com/ghostbox-probe-404',
+    this.proxyGetUrl = 'https://api.krakva1337.ru/gen/200',
     this.pingView = 'full',
     this.pingCount = 3,
     this.pingTimeoutSeconds = 4,
@@ -266,10 +266,14 @@ class CoreSettings {
       udpFragment: data['udpFragment'] == true,
       pingMode: choice('pingMode', ['proxy', 'tcp', 'icmp'],
           Platform.isAndroid || Platform.isIOS ? 'tcp' : 'proxy'),
-      proxyGetUrl: data['proxyGetUrl'] == 'https://httpbin.org/status/404'
-          ? 'https://example.com/ghostbox-probe-404'
-          : data['proxyGetUrl'] as String? ??
-              'https://example.com/ghostbox-probe-404',
+      proxyGetUrl: switch (data['proxyGetUrl']) {
+        null ||
+        'https://httpbin.org/status/404' ||
+        'https://example.com/ghostbox-probe-404' =>
+          'https://api.krakva1337.ru/gen/200',
+        final String value => value,
+        _ => 'https://api.krakva1337.ru/gen/200',
+      },
       pingView: choice('pingView', ['full', 'number', 'quality'], 'full'),
       pingCount:
           [1, 3, 5].contains(data['pingCount']) ? data['pingCount'] as int : 3,

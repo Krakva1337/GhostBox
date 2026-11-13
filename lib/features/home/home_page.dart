@@ -163,6 +163,7 @@ class _HomePageState extends State<HomePage>
   bool pendingReconnect = false;
   bool applyingReconnect = false;
   bool switchingServer = false;
+  bool _connectionPreparationInProgress = false;
   String? activeProfileId;
   String? connectionIssue;
   bool _suppressAndroidVpnRecoveryPrompt = false;
@@ -1672,6 +1673,7 @@ class _HomePageState extends State<HomePage>
 
   Future<void> _toggle({bool allowDuringSwitch = false}) async {
     if (backend.state == VpnState.connecting ||
+        _connectionPreparationInProgress ||
         (switchingServer && !allowDuringSwitch)) return;
     if (backend.state == VpnState.connected) {
       _recordAppLog('Отключено');
@@ -1718,11 +1720,14 @@ class _HomePageState extends State<HomePage>
       final attemptCore = androidXhttpUsesXray ? 'xray' : requestedCore;
       final attemptMode =
           Platform.isAndroid ? 'tun' : coreSettings.connectionMode;
+      _connectionPreparationInProgress = true;
+      if (mounted) setState(() {});
       glow
         ..stop()
         ..value = 0;
       try {
         connectionIssue = null;
+        _recordAppLog('Подготовка подключения: очистка старых ресурсов');
         await _cleanupWindowsCoreProcesses();
         final runtimeLocalPort = await _chooseLocalPort();
         activeLocalPort = runtimeLocalPort;
@@ -1833,6 +1838,7 @@ class _HomePageState extends State<HomePage>
         runtimeProfile = await _withDeviceMetadata(runtimeProfile);
         final activeCore = process;
         if (activeCore != null) _bindCoreRecoveryNotices(activeCore);
+        _recordAppLog('Запуск ядра и проверка готовности интерфейса');
         final connection = backend
             .connect(jsonEncode(runtimeProfile.toJson()))
             .timeout(Platform.isAndroid
@@ -1919,6 +1925,8 @@ class _HomePageState extends State<HomePage>
             await _offerCoreCleanup();
           }
         }
+      } finally {
+        _connectionPreparationInProgress = false;
       }
     } else if (mounted) {
       _message('Сначала добавьте и выберите сервер');
@@ -7135,14 +7143,17 @@ foreach ($route in $routes) {
   Widget _power() => _iosLike
       ? IosLikeConnectionControl(
           connected: backend.state == VpnState.connected,
-          busy: backend.state == VpnState.connecting || switchingServer,
+          busy: backend.state == VpnState.connecting ||
+              _connectionPreparationInProgress ||
+              switchingServer,
           error: backend.state == VpnState.error,
           blurEnabled: !optimizedMode,
           title: switchingServer
               ? _text('Переключение', 'Switching')
               : backend.state == VpnState.connected
                   ? _text('Отключиться', 'Disconnect')
-                  : backend.state == VpnState.connecting
+                  : backend.state == VpnState.connecting ||
+                          _connectionPreparationInProgress
                       ? _text('Подключение', 'Connecting')
                       : backend.state == VpnState.error
                           ? _text('Повторить подключение', 'Try again')
