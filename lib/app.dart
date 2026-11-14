@@ -31,24 +31,35 @@ class _GhostBoxAppState extends State<GhostBoxApp> {
                   themeAnimationCurve: Curves.easeInOutCubic,
                   builder: (context, child) {
                     final scale = controller.interfaceScale;
+                    // Use the native view constraints directly at normal
+                    // scale. Fitting the entire Navigator into another box
+                    // adds an unnecessary full-window paint transform.
+                    if (scale == 1) return child ?? const SizedBox.shrink();
                     final media = MediaQuery.of(context);
                     return LayoutBuilder(builder: (context, bounds) {
                       final size = Size(
                           bounds.maxWidth / scale, bounds.maxHeight / scale);
-                      return FittedBox(
-                        fit: BoxFit.fill,
-                        child: SizedBox(
-                          width: size.width,
-                          height: size.height,
-                          child: MediaQuery(
-                            data: media.copyWith(
-                              size: size,
-                              devicePixelRatio: media.devicePixelRatio * scale,
-                              padding: media.padding / scale,
-                              viewPadding: media.viewPadding / scale,
-                              viewInsets: media.viewInsets / scale,
+                      return ClipRect(
+                        child: OverflowBox(
+                          alignment: Alignment.topLeft,
+                          minWidth: size.width,
+                          maxWidth: size.width,
+                          minHeight: size.height,
+                          maxHeight: size.height,
+                          child: Transform.scale(
+                            alignment: Alignment.topLeft,
+                            scale: scale,
+                            child: MediaQuery(
+                              data: media.copyWith(
+                                size: size,
+                                devicePixelRatio:
+                                    media.devicePixelRatio * scale,
+                                padding: media.padding / scale,
+                                viewPadding: media.viewPadding / scale,
+                                viewInsets: media.viewInsets / scale,
+                              ),
+                              child: child ?? const SizedBox.shrink(),
                             ),
-                            child: child ?? const SizedBox.shrink(),
                           ),
                         ),
                       );

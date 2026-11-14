@@ -126,11 +126,12 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
       std::filesystem::path(executable_directory) / L"flutter_windows.dll";
   if (!IsFile(icu_data) || !IsFile(aot_library) || !IsFile(asset_manifest) ||
       !IsFile(flutter_library) || !IsDirectory(flutter_assets)) {
-    ShowStartupFailure(L"A required Flutter runtime file is missing. " +
-                       L"Expected " + icu_data.wstring() + L", " +
-                       aot_library.wstring() + L", " +
-                       asset_manifest.wstring() + L", and " +
-                       flutter_library.wstring() + L".");
+    std::wstring missing_file_message =
+        L"A required Flutter runtime file is missing. Expected ";
+    missing_file_message += icu_data.wstring() + L", " + aot_library.wstring() +
+                            L", " + asset_manifest.wstring() + L", and " +
+                            flutter_library.wstring() + L".";
+    ShowStartupFailure(missing_file_message);
     ::CoUninitialize();
     return EXIT_FAILURE;
   }
