@@ -104,18 +104,56 @@ function Get-GhostBoxTunAdapters {
     foreach ($device in @(Get-PnpDevice -Class Net -ErrorAction SilentlyContinue)) {
       $instanceId = [string]$device.InstanceId
       if ([string]::IsNullOrWhiteSpace($instanceId)) { continue }
+
+      # DEVPKEY_NetCfgInstanceId is not exposed by every Windows/PnP provider.
+      # The device's DEVPKEY_Device_Driver points at its class-driver registry
+      # key, where NetCfgInstanceId is stored for network devices.
+      $netCfgIds = @()
       $netCfgProperty = Get-PnpDeviceProperty -InstanceId $instanceId `
         -KeyName 'DEVPKEY_NetCfgInstanceId' -ErrorAction SilentlyContinue
-      if ($null -eq $netCfgProperty.Data) { continue }
-      try { $netCfgId = ([Guid]$netCfgProperty.Data).ToString('B') }
-      catch { continue }
-      $connectionKey = "HKLM:\SYSTEM\CurrentControlSet\Control\Network\$networkClass\$netCfgId\Connection"
-      $connection = Get-ItemProperty -LiteralPath $connectionKey -Name Name -ErrorAction SilentlyContinue
-      if ([string]$connection.Name -ne $aliasName) { continue }
-      if ([string]$device.FriendlyName -notmatch 'Wintun') {
+      if ($null -ne $netCfgProperty -and $null -ne $netCfgProperty.Data) {
+        try { $netCfgIds += ([Guid]$netCfgProperty.Data).ToString('B') }
+        catch { }
+      }
+
+      # Always try the driver-key path too. Some providers omit the direct
+      # network-config property, and stale devnodes can expose a stale value.
+      $driverProperty = Get-PnpDeviceProperty -InstanceId $instanceId `
+        -KeyName 'DEVPKEY_Device_Driver' -ErrorAction SilentlyContinue
+      $driverSubkey = [string]$driverProperty.Data
+      $driverInfo = $null
+      $driverSubkey = $driverSubkey -replace `
+        '^(?:SYSTEM\\CurrentControlSet\\Control\\Class\\|\\Registry\\Machine\\System\\CurrentControlSet\\Control\\Class\\)', ''
+      if ($driverSubkey -match `
+          '^\{[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\}\\\d+$') {
+        $driverKey = "HKLM:\SYSTEM\CurrentControlSet\Control\Class\$driverSubkey"
+        $driverInfo = Get-ItemProperty -LiteralPath $driverKey `
+          -ErrorAction SilentlyContinue
+        if ($null -ne $driverInfo -and
+            -not [string]::IsNullOrWhiteSpace([string]$driverInfo.NetCfgInstanceId)) {
+          try { $netCfgIds += ([Guid]$driverInfo.NetCfgInstanceId).ToString('B') }
+          catch { }
+        }
+      }
+
+      $ownsGhostBoxAlias = $false
+      foreach ($netCfgId in ($netCfgIds | Select-Object -Unique)) {
+        $connectionKey = "HKLM:\SYSTEM\CurrentControlSet\Control\Network\$networkClass\$netCfgId\Connection"
+        $connection = Get-ItemProperty -LiteralPath $connectionKey -Name Name -ErrorAction SilentlyContinue
+        if ([string]$connection.Name -eq $aliasName) {
+          $ownsGhostBoxAlias = $true
+          break
+        }
+      }
+      if (-not $ownsGhostBoxAlias) { continue }
+      $description = [string]$device.FriendlyName
+      if ($description -notmatch 'Wintun' -and $null -ne $driverInfo) {
+        $description = [string]$driverInfo.DriverDesc
+      }
+      if ($description -notmatch 'Wintun') {
         throw "Интерфейс $aliasName найден в PnP, но не опознан как Wintun; устройство оставлено без изменений."
       }
-      $devices[$instanceId] = [pscustomobject]@{ InstanceId = $instanceId; Description = [string]$device.FriendlyName }
+      $devices[$instanceId] = [pscustomobject]@{ InstanceId = $instanceId; Description = $description }
     }
   }
 

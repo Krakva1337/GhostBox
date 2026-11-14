@@ -526,7 +526,22 @@ class CoreProcessBackend implements VpnBackend {
       );
       unawaited(_recoverProcess(profile));
     });
-    await Future<void>.delayed(const Duration(milliseconds: 350));
+    if (Platform.isWindows && name == 'sing-box' && tunMode) {
+      try {
+        await _waitForWindowsTunReady(running);
+      } on Object {
+        if (_process == running) {
+          _process = null;
+          running.kill(ProcessSignal.sigkill);
+          await running.exitCode.timeout(const Duration(seconds: 5));
+          _runningCores.remove(this);
+          _startedAt = null;
+        }
+        rethrow;
+      }
+    } else {
+      await Future<void>.delayed(const Duration(milliseconds: 350));
+    }
     if (_process != running) {
       throw FormatException(_lastError ??
           'Ядро завершилось сразу после запуска. Проверьте журнал и локальный порт.');
@@ -534,6 +549,47 @@ class CoreProcessBackend implements VpnBackend {
     _state = VpnState.connected;
     _lastError = null;
     _restartCount = 0;
+  }
+
+  Future<void> _waitForWindowsTunReady(Process running) async {
+    const script = r'''
+$ErrorActionPreference = 'Stop'
+$timer = [Diagnostics.Stopwatch]::StartNew()
+while ($timer.Elapsed.TotalSeconds -lt 20) {
+  $adapter = [Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces() |
+    Where-Object { $_.Name -eq 'ghostbox0' -and $_.OperationalStatus -eq 'Up' } |
+    Select-Object -First 1
+  if ($adapter) { exit 0 }
+  Start-Sleep -Milliseconds 250
+}
+exit 1
+''';
+    final checker = await Process.start('powershell.exe', [
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      script,
+    ]);
+    unawaited(checker.stdout.drain<void>());
+    unawaited(checker.stderr.drain<void>());
+    try {
+      final ready = await Future.any<bool>([
+        checker.exitCode.then((code) => code == 0),
+        running.exitCode.then((_) => false),
+      ]).timeout(const Duration(seconds: 25), onTimeout: () => false);
+      if (!ready || _process != running) {
+        throw FormatException(_lastError ??
+            'Не удалось поднять Windows TUN ghostbox0: ${_logs.isEmpty ? 'ядро не подтвердило запуск интерфейса' : _logs.last}');
+      }
+    } finally {
+      checker.kill();
+      try {
+        await checker.exitCode.timeout(const Duration(seconds: 2));
+      } on TimeoutException {
+        checker.kill(ProcessSignal.sigkill);
+      }
+    }
   }
 
   Future<void> _startMacElevated(ServerProfile profile) async {
@@ -949,7 +1005,12 @@ end try
       return 'Windows не предоставила ядру права администратора для TUN. Закройте GhostBox, запустите его через «Запуск от имени администратора» и подтвердите запрос UAC.';
     }
     if (Platform.isWindows &&
-        (lower.contains('wintun') ||
+        (lower.contains('cannot create a file when that file already exists') ||
+            lower.contains('open existing adapter: element not found'))) {
+      return 'Windows не смогла создать TUN ghostbox0: остался конфликтующий Wintun-адаптер. $detail';
+    }
+    if (Platform.isWindows &&
+        (lower.contains('wintun.dll') ||
             lower.contains('specified module could not be found') ||
             error is ProcessException && error.errorCode == 126)) {
       return 'Windows не смогла загрузить sing-box или Wintun. Переустановите полный GhostBox Setup/ZIP: рядом с vendor/bin/sing-box.exe должны быть wintun.dll и библиотеки Visual C++.';
