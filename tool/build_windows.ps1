@@ -122,6 +122,42 @@ try {
     throw "Windows build completed without expected app: $application"
   }
 
+  # Catch incomplete Flutter bundles before packaging them. The installer and
+  # portable ZIP both use this exact release directory as their source.
+  $requiredFlutterFiles = @(
+    'flutter_windows.dll',
+    'data/icudtl.dat',
+    'data/app.so',
+    'data/flutter_assets/AssetManifest.bin',
+    'data/flutter_assets/FontManifest.json'
+  )
+  $missingFlutterFiles = $requiredFlutterFiles | Where-Object {
+    -not (Test-Path (Join-Path $releaseDirectory $_) -PathType Leaf)
+  }
+  if ($missingFlutterFiles) {
+    throw "Windows Flutter bundle is incomplete; missing: $($missingFlutterFiles -join ', ')"
+  }
+  if (-not (Test-Path (Join-Path $releaseDirectory 'data/flutter_assets') -PathType Container)) {
+    throw 'Windows Flutter bundle is missing data/flutter_assets.'
+  }
+
+  # CMake copies each generated Windows plugin DLL to the release root. Check
+  # the generated plugin list too, so a missing native plugin is reported by
+  # the build instead of surfacing as a blank post-install launch.
+  $generatedPlugins = Get-Content (Join-Path $ProjectRoot 'windows/flutter/generated_plugins.cmake') -Raw
+  $pluginList = [regex]::Match($generatedPlugins, 'list\(APPEND FLUTTER_PLUGIN_LIST(?<plugins>[\s\S]*?)\)')
+  if (-not $pluginList.Success) {
+    throw 'Could not read the Windows Flutter plugin list.'
+  }
+  $pluginNames = [regex]::Matches($pluginList.Groups['plugins'].Value, '(?m)^\s+([A-Za-z0-9_]+)\s*$') |
+    ForEach-Object { $_.Groups[1].Value }
+  foreach ($pluginName in $pluginNames) {
+    $pluginDll = Join-Path $releaseDirectory "${pluginName}_plugin.dll"
+    if (-not (Test-Path $pluginDll -PathType Leaf)) {
+      throw "Windows Flutter bundle is missing plugin runtime: $pluginDll"
+    }
+  }
+
   # Flutter's Windows runner dynamically links the Microsoft VC runtime.
   # Ship the redistributable app-local CRT so a clean Windows machine does not
   # fail at startup with VCRUNTIME140.dll / MSVCP140.dll missing.

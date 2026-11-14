@@ -89,7 +89,7 @@ function Get-GhostBoxTunAdapters {
   $devices = @{}
 
   foreach ($adapter in @(Get-NetAdapter -Name $aliasName -IncludeHidden -ErrorAction SilentlyContinue)) {
-    if ($adapter.Name -ne $aliasName -or $adapter.InterfaceDescription -notmatch 'Wintun') {
+    if ($adapter.Name -ne $aliasName -or $adapter.InterfaceDescription -notmatch '(Wintun|^sing-tun Tunnel(?: #\d+)?$)') {
       throw "Интерфейс $aliasName найден, но не опознан как GhostBox Wintun; адаптер оставлен без изменений."
     }
     $instanceId = [string]$adapter.PnPDeviceID
@@ -147,10 +147,10 @@ function Get-GhostBoxTunAdapters {
       }
       if (-not $ownsGhostBoxAlias) { continue }
       $description = [string]$device.FriendlyName
-      if ($description -notmatch 'Wintun' -and $null -ne $driverInfo) {
+      if ($description -notmatch '(Wintun|^sing-tun Tunnel(?: #\d+)?$)' -and $null -ne $driverInfo) {
         $description = [string]$driverInfo.DriverDesc
       }
-      if ($description -notmatch 'Wintun') {
+      if ($description -notmatch '(Wintun|^sing-tun Tunnel(?: #\d+)?$)') {
         throw "Интерфейс $aliasName найден в PnP, но не опознан как Wintun; устройство оставлено без изменений."
       }
       $devices[$instanceId] = [pscustomobject]@{ InstanceId = $instanceId; Description = $description }

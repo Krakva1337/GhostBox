@@ -11,6 +11,9 @@ import 'services/update_startup.dart';
 
 Future<void> main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
+  PaintingBinding.instance.imageCache
+    ..maximumSize = 128
+    ..maximumSizeBytes = 32 * 1024 * 1024;
   if (Platform.isWindows && await _startWindowsRecoveryIfNeeded()) {
     exit(0);
   }

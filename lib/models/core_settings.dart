@@ -22,7 +22,7 @@ class CoreSettings {
     this.directPresetIds = const [],
     this.directApps = const [],
     this.proxyApps = const [],
-    this.memoryMb = 128,
+    this.memoryMb = 64,
     this.showRamUsage = false,
     this.localPort = 2080,
     this.autoLocalPort = true,
@@ -302,7 +302,7 @@ class CoreSettings {
       directApps: appIds('directApps'),
       proxyApps: appIds('proxyApps'),
       memoryMb: clampMemoryMb(
-          (data['memoryMb'] as num?)?.toInt() ?? (Platform.isIOS ? 25 : 128)),
+          (data['memoryMb'] as num?)?.toInt() ?? (Platform.isIOS ? 25 : 64)),
       showRamUsage: data['showRamUsage'] == true,
       localPort:
           ((data['localPort'] as num?)?.toInt() ?? 2080).clamp(1024, 65535),

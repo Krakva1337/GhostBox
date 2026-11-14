@@ -153,7 +153,7 @@ class _HomePageState extends State<HomePage>
           ? 1
           : 0;
   CoreSettings coreSettings = CoreSettings(
-    memoryMb: Platform.isIOS ? 25 : 128,
+    memoryMb: Platform.isIOS ? 25 : 64,
     pingMode: Platform.isAndroid || Platform.isIOS ? 'tcp' : 'proxy',
   );
   final DnsAdBlocklist dnsAdBlocklist = DnsAdBlocklist();
@@ -1228,7 +1228,7 @@ class _HomePageState extends State<HomePage>
       coreSettings = rawCore == null
           ? CoreSettings(
               memoryMb: CoreSettings.clampMemoryMb(
-                  p.getInt('memoryMb') ?? (Platform.isIOS ? 25 : 128)),
+                  p.getInt('memoryMb') ?? (Platform.isIOS ? 25 : 64)),
               autoConnect: p.getBool('autoConnect') ?? false,
               pingMode: Platform.isAndroid || Platform.isIOS ? 'tcp' : 'proxy')
           : CoreSettings.fromJson(
@@ -1538,9 +1538,22 @@ class _HomePageState extends State<HomePage>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    final wasVisible = _visualsVisible;
     _visualsVisible = state == AppLifecycleState.resumed ||
         state == AppLifecycleState.inactive;
     _syncAmbientMotion();
+    if (wasVisible != _visualsVisible && mounted) {
+      if (!_visualsVisible) glow.stop();
+      setState(() {});
+      if (!_visualsVisible) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted || _visualsVisible) return;
+          PaintingBinding.instance.imageCache
+            ..clear()
+            ..clearLiveImages();
+        });
+      }
+    }
     if (state == AppLifecycleState.resumed && Platform.isAndroid) {
       unawaited(_refreshAndroidKillSwitchStatus());
       unawaited(_refreshAndroidUpdateStatus());
@@ -2059,14 +2072,16 @@ class _HomePageState extends State<HomePage>
           unawaited(_disconnectActive());
           uptimeTicker?.cancel();
         }
-        if (coreSettings.showRamUsage) unawaited(_refreshCoreMemoryUsage());
+        if (_visualsVisible && coreSettings.showRamUsage) {
+          unawaited(_refreshCoreMemoryUsage());
+        }
         final storage = prefs;
         if (storage != null) unawaited(trafficStats.sample(storage));
         if (backend is AndroidVpnBackend) {
           unawaited(_collectAndroidCoreLogs());
         }
         _syncMacTrayConnectionState();
-        setState(() {});
+        if (_visualsVisible) setState(() {});
       });
     } else {
       glow.stop();
@@ -2874,17 +2889,30 @@ exit 1
 
   Future<void> _verifyTunRoute(String probeIp) async {
     if (Platform.isWindows) {
+      final probe = InternetAddress.tryParse(probeIp);
+      if (probe == null)
+        throw const FormatException('Некорректный IP проверки маршрута');
       const script = r'''
-$ErrorActionPreference = 'SilentlyContinue'
-$routes = Get-NetRoute -AddressFamily IPv4 | Where-Object {
-  $_.DestinationPrefix -in @('0.0.0.0/1', '128.0.0.0/1', '0.0.0.0/0')
-}
-foreach ($route in $routes) {
-  $adapter = Get-NetAdapter -InterfaceIndex $route.InterfaceIndex -IncludeHidden
-  if ($adapter -and $adapter.Name -eq 'ghostbox0' -and $adapter.InterfaceDescription -match 'Wintun') {
-    Write-Output "$($route.DestinationPrefix)|$($adapter.Name)|$($adapter.Status)"
+$ErrorActionPreference = 'Stop'
+$timer = [Diagnostics.Stopwatch]::StartNew()
+$lastRoute = 'Windows не вернула выбранный маршрут'
+do {
+  $selected = @(Find-NetRoute -RemoteIPAddress '__PROBE_IP__' -ErrorAction SilentlyContinue |
+    Where-Object { $_.DestinationPrefix })
+  foreach ($route in $selected) {
+    $interfaces = @(Get-NetIPInterface -InterfaceIndex $route.InterfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue)
+    foreach ($interface in $interfaces) {
+      $lastRoute = "$($route.DestinationPrefix)|$($interface.InterfaceAlias)|$($route.InterfaceIndex)|$($interface.ConnectionState)"
+      if ($interface.InterfaceAlias -eq 'ghostbox0' -and $interface.ConnectionState -eq 'Connected') {
+        Write-Output "READY|$lastRoute"
+        exit 0
+      }
+    }
   }
-}
+  Start-Sleep -Milliseconds 250
+} while ($timer.Elapsed.TotalSeconds -lt 10)
+Write-Output "ACTUAL|$lastRoute"
+exit 1
 ''';
       final result = await Process.run('powershell.exe', [
         '-NoProfile',
@@ -2892,12 +2920,15 @@ foreach ($route in $routes) {
         '-ExecutionPolicy',
         'Bypass',
         '-Command',
-        script,
-      ]).timeout(const Duration(seconds: 8));
+        script.replaceAll('__PROBE_IP__', probe.address),
+      ]).timeout(const Duration(seconds: 20));
       final routes = result.stdout.toString().trim();
-      if (result.exitCode != 0 || routes.isEmpty) {
-        throw const FormatException(
-          'Адаптер Wintun поднялся, но системный маршрут через него не установлен. Перезапустите GhostBox с правами администратора и проверьте, что Windows не отключила виртуальный адаптер.',
+      if (result.exitCode != 0 || !routes.startsWith('READY|')) {
+        final detail = [routes, result.stderr.toString().trim()]
+            .where((part) => part.isNotEmpty)
+            .join(' · ');
+        throw FormatException(
+          'Windows не выбрала ghostbox0 для маршрута к $probeIp. $detail',
         );
       }
       _recordAppLog(
@@ -5182,6 +5213,10 @@ foreach ($route in $routes) {
   @override
   Widget build(BuildContext context) {
     _syncAmbientMotion();
+    // Retain the VPN/controller state, but dispose image listeners, blur
+    // layers and animated render objects while the desktop window is hidden.
+    // Offstage would retain those resources and therefore retain their RAM.
+    if (!_visualsVisible) return const SizedBox.shrink();
     return GhostMenuScope(
       blurEnabled: !optimizedMode,
       reduceMotion: reduceAnimations,
@@ -5417,11 +5452,15 @@ foreach ($route in $routes) {
                             child: IgnorePointer(
                                 child: Opacity(
                                     opacity: .32,
-                                    child: Image.memory(
-                                        ThemeController
-                                            .instance.backgroundImage!,
+                                    child: Image(
+                                        image: ResizeImage(
+                                          MemoryImage(ThemeController
+                                              .instance.backgroundImage!),
+                                          width: 1920,
+                                          height: 1920,
+                                          policy: ResizeImagePolicy.fit,
+                                        ),
                                         fit: BoxFit.cover,
-                                        cacheWidth: 1920,
                                         gaplessPlayback: true)))),
                       if (!_iosLike)
                         Positioned.fill(

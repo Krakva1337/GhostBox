@@ -120,6 +120,42 @@ static void set_app_icon(FlMethodChannel* channel, FlMethodCall* call,
   fl_method_call_respond_success(call, result, nullptr);
 }
 
+static gboolean window_state_event_cb(GtkWidget* widget,
+                                      GdkEventWindowState* event,
+                                      gpointer user_data) {
+  (void)widget;
+  const GdkWindowState visibility_changes = static_cast<GdkWindowState>(
+      GDK_WINDOW_STATE_ICONIFIED | GDK_WINDOW_STATE_WITHDRAWN);
+  if ((event->changed_mask & visibility_changes) == 0 ||
+      (event->new_window_state & visibility_changes) == 0) {
+    return FALSE;
+  }
+
+  // Flutter's Linux embedding reports AppLifecycleState.hidden when the
+  // window is minimized, which pauses the UI animation. Also ask Flutter to
+  // release cached assets so the hidden window retains less memory. This does
+  // not stop the engine or VPN core, and restoring the window rebuilds caches
+  // as needed.
+  FlView* view = FL_VIEW(user_data);
+  g_autoptr(FlValue) message = fl_value_new_map();
+  fl_value_set_string_take(message, "type",
+                           fl_value_new_string("memoryPressure"));
+  g_autoptr(FlJsonMessageCodec) codec = fl_json_message_codec_new();
+  g_autoptr(GError) error = nullptr;
+  g_autoptr(GBytes) bytes = fl_message_codec_encode_message(
+      FL_MESSAGE_CODEC(codec), message, &error);
+  if (bytes == nullptr) {
+    g_warning("Could not encode Flutter memory pressure message: %s",
+              error->message);
+    return FALSE;
+  }
+
+  fl_binary_messenger_send_on_channel(
+      fl_engine_get_binary_messenger(fl_view_get_engine(view)),
+      "flutter/system", bytes, nullptr, nullptr, nullptr);
+  return FALSE;
+}
+
 struct _MyApplication {
   GtkApplication parent_instance;
   char** dart_entrypoint_arguments;
@@ -207,6 +243,8 @@ static void my_application_activate(GApplication* application) {
   g_signal_connect_swapped(view, "first-frame", G_CALLBACK(first_frame_cb),
                            self);
   gtk_widget_realize(GTK_WIDGET(view));
+  g_signal_connect(window, "window-state-event",
+                   G_CALLBACK(window_state_event_cb), view);
 
   fl_register_plugins(FL_PLUGIN_REGISTRY(view));
 
